@@ -1,0 +1,14 @@
+diff --git a/sw/applications/example_dma/main.c b/sw/applications/example_dma/main.c
+index 6ee5797..244f878 100644
+--- a/sw/applications/example_dma/main.c
++++ b/sw/applications/example_dma/main.c
+@@ -17,7 +17,7 @@
+ #define TEST_ADDRESS_MODE
+ #define TEST_PENDING_TRANSACTION
+ #define TEST_WINDOW
+-#define TEST_ADDRESS_MODE_EXTERNAL_DEVICE
++//#define TEST_ADDRESS_MODE_EXTERNAL_DEVICE
+ 
+ #define TEST_DATA_SIZE 16
+ #define TEST_DATA_LARGE 256
+ 

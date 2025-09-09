@@ -1,0 +1,15 @@
+// Copyright 2025 EPFL contributors
+// Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+//
+// File: VCO_decoder-waivers.vlt
+// Author: David Mallasen
+// Description: Verilator waivers for VCO decoder
+
+`verilator_config
+// Automatically generated control registers
+lint_off -rule DECLFILENAME -file "*/VCO_decoder/rtl/vco_decoder_reg_top.sv" -match "Filename 'vco_decoder_reg_top' does not match MODULE name: 'vco_decoder_reg_top_intf'"
+
+lint_off -rule WIDTH -file "*/VCO_decoder/rtl/vco_decoder_reg_top.sv" -match "Operator ASSIGNW expects * bits on the Assign RHS, but Assign RHS's SEL generates 32 bits."
+
+lint_off -rule UNUSED -file "*/VCO_decoder/rtl/vco_decoder.sv" -match "Bits of signal are not used: 'vco_adc_refresh'[3]"

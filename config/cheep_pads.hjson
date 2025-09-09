@@ -1,0 +1,805 @@
+// Copyright 2020 ETH Zurich and University of Bologna.
+// Solderpad Hardware License, Version 0.51 see LICENSE for details.
+// SPDX-License-Identifier: SHL-0.51
+// Derived from Occamy: https://github.com/pulp-platform/snitch/blob/master/hw/system/occamy/src/occamy_cfg.hjson
+//
+// Pads configuration for core-v-mini-mcu. Read by mcu_gen.py.
+
+{
+
+     pads: {
+
+        #not in RTL but need to be defined, define them at the top or else the mcu-gen comma elimination script fails
+        spi2_sck: {
+            num: 1
+            type: bypass_inout
+        },
+        spi2_sd_0: {
+            num: 1
+            type: bypass_inout
+        },
+        spi2_sd_1: {
+            num: 1
+            type: bypass_inout
+        },
+        spi2_cs_0: {
+            num: 1
+            type: bypass_inout
+        },
+        spi2_cs_1: {
+            num: 1
+            type: bypass_inout
+        },
+        spi2_sd_2: {
+            num: 1
+            type: bypass_inout
+        },
+        spi2_sd_3: {
+            num: 1
+            type: bypass_inout
+        },
+        pdm2pcm_pdm: {
+            num: 1
+            type: bypass_inout
+        },
+        pdm2pcm_clk: {
+            num: 1
+            type: bypass_inout
+        },
+        gpio: {
+            num_offset: 7
+            num: 25
+            type: bypass_inout
+        },
+        spi_flash_sd: {
+            num_offset: 2
+            num: 2
+            type: bypass_inout
+        },
+        spi_cs: {
+            num: 2
+            type: bypass_inout
+        },
+        spi_sd: {
+            num: 4
+            type: bypass_inout
+        },
+        spi_sck: {
+            num: 1
+            type: bypass_inout
+        },
+
+        # TOP PADS
+
+        uart_rx: {
+            num: 1
+            type: input
+            mapping: top
+            layout_attributes: {
+                index: 0
+                offset: 211
+                skip: 15
+            }
+        },
+        uart_tx: {
+            num: 1
+            type: output
+            mapping: top
+            layout_attributes: {
+                index: 1
+                skip: 15
+            }
+        },
+
+       IO_VDD_1: {
+            num: 1
+            type: supply
+            driven_manually: True
+            mapping: top
+            skip_declaration: True
+            layout_attributes: {
+                index: 2
+                skip: 15
+            }
+        },
+        VSS_1: {
+            num: 1
+            type: supply
+            driven_manually: True
+            mapping: top
+            skip_declaration: True
+            layout_attributes: {
+                index: 3
+                skip: 15
+            }
+        },
+
+        jtag_tdo: {
+            num: 1
+            type: output
+            mapping: top
+            layout_attributes: {
+                index: 4
+                skip: 15
+            }
+        },
+        jtag_tck: {
+            num: 1
+            type: input
+            mapping: top
+            layout_attributes: {
+                index: 5
+                skip: 15
+            }
+        },
+        jtag_tdi: {
+            num: 1
+            type: input
+            mapping: top
+            layout_attributes: {
+                index: 6
+                skip: 15
+            }
+        },
+        jtag_tms: {
+            num: 1
+            type: input
+            mapping: top
+            layout_attributes: {
+                index: 7
+                skip: 15
+            }
+        },
+        jtag_trst: {
+            num: 1
+            active: low
+            type: input
+            mapping: top
+            layout_attributes: {
+                index: 8
+                skip: 15
+            }
+        },
+
+        spi_slave_mosi: {
+            num: 1
+            type: input
+            mapping: top
+            layout_attributes: {
+                index: 9
+                skip: 15
+            }
+        },
+        spi_slave_miso: {
+            num: 1
+            type: inout
+            mapping: top
+            layout_attributes: {
+                index: 10
+                skip: 15
+            }
+        },
+        spi_slave_sck: {
+            num: 1
+            type: input
+            mapping: top
+            layout_attributes: {
+                index: 11
+                skip: 15
+            }
+        },
+        spi_slave_cs: {
+            num: 1
+            type: input
+            mapping: top
+            layout_attributes: {
+                index: 12
+                skip: 15
+            }
+        },
+
+
+        DCORE_VDD_1: {
+            num: 1
+            type: supply
+            driven_manually: True
+            mapping: top
+            skip_declaration: True
+            layout_attributes: {
+                index: 13
+                skip: 15
+            }
+        },
+        VSS_2: {
+            num: 1
+            type: supply
+            driven_manually: True
+            mapping: top
+            skip_declaration: True
+            layout_attributes: {
+                index: 14
+                skip: 15
+            }
+        },
+
+        gpio_0: {
+            num: 1
+            type: inout
+            mapping: top
+            layout_attributes: {
+                index: 15
+                skip: 15
+            }
+        },
+
+
+        # RIGHT PADS
+
+        AMUX_VOUT: {
+            num: 1
+            type: supply
+            mapping: right
+            skip_declaration: True
+            layout_attributes: {
+                index: 0
+                offset: 211
+                skip: 15
+            }
+        },
+
+        AMUX_VDD: {
+            num: 1
+            type: supply
+            driven_manually: True
+            skip_declaration: True
+            mapping: right
+            layout_attributes: {
+                index: 1
+                skip: 15
+            }
+        },
+        ACORE_VSS_1: {
+            num: 1
+            type: supply
+            driven_manually: True
+            skip_declaration: True
+            mapping: right
+            layout_attributes: {
+                index: 2
+                skip: 15
+
+            }
+        },
+        IDAC2_IOUT: {
+            num: 1
+            type: supply
+            mapping: right
+            skip_declaration: True
+            layout_attributes: {
+                index: 3
+                skip: 15
+            }
+        },
+        IDAC2_IIN: {
+            num: 1
+            type: supply
+            mapping: right
+            skip_declaration: True
+            layout_attributes: {
+                index: 4
+                skip: 15
+            }
+        },
+        IREF2_IOUT: {
+            num: 1
+            type: supply
+            mapping: right
+            skip_declaration: True
+            layout_attributes: {
+                index: 5
+                skip: 15
+
+            }
+        },
+
+        IREF_VDD: {
+            num: 1
+            type: supply
+            driven_manually: True
+            mapping: right
+            skip_declaration: True
+            layout_attributes: {
+                index: 6
+                skip: 15
+            }
+        },
+        ACORE_VSS_2: {
+            num: 1
+            type: supply
+            driven_manually: True
+            mapping: right
+            skip_declaration: True
+            layout_attributes: {
+                index: 7
+                skip: 15
+            }
+        },
+        IREF1_IOUT: {
+            num: 1
+            type: supply
+            mapping: right
+            skip_declaration: True
+            layout_attributes: {
+                index: 8
+                skip: 15
+            }
+        },
+        IDAC1_IIN: {
+            num: 1
+            type: supply
+            mapping: right
+            skip_declaration: True
+            layout_attributes: {
+                index: 9
+                skip: 15
+            }
+        },
+
+        IDAC1_IOUT: {
+            num: 1
+            type: supply
+            mapping: right
+            skip_declaration: True
+            layout_attributes: {
+                index: 10
+                skip: 15
+            }
+        },
+        VREF_VOUT: {
+            num: 1
+            type: supply
+            mapping: right
+            skip_declaration: True
+            layout_attributes: {
+                index: 11
+                skip: 15
+            }
+        },
+
+        VREF_VDD: {
+            num: 1
+            type: supply
+            driven_manually: True
+            mapping: right
+            skip_declaration: True
+            layout_attributes: {
+                index: 12
+                skip: 15
+            }
+        },
+        ACORE_VSS_3: {
+            num: 1
+            type: supply
+            driven_manually: True
+            mapping: right
+            skip_declaration: True
+            layout_attributes: {
+                index: 13
+                skip: 15
+            }
+        },
+        ACORE_VDD: {
+            num: 1
+            type: supply
+            driven_manually: True
+            skip_declaration: True
+            mapping: right
+            layout_attributes: {
+                index: 14
+                skip: 15
+            }
+        },
+        LDO_VIN: {
+            num: 1
+            type: supply
+            mapping: right
+            skip_declaration: True
+            layout_attributes: {
+                index: 15
+                skip: 15
+            }
+        },
+
+
+        # BOTTOM PADS
+        LDO_VOUT: {
+            num: 1
+            type: supply
+            mapping: bottom
+            skip_declaration: True
+            layout_attributes: {
+                index: 0
+                offset: 211
+                skip: 15
+            }
+        },
+        ACORE_VSS_4: {
+            num: 1
+            type: supply
+            driven_manually: True
+            mapping: bottom
+            skip_declaration: True
+            layout_attributes: {
+                index: 1
+                skip: 15
+            }
+        },
+        LDO_VBAT: {
+            num: 1
+            type: supply
+            driven_manually: True
+            mapping: bottom
+            skip_declaration: True
+            layout_attributes: {
+                index: 2
+                skip: 15
+            }
+        },
+        VCOP_VN0: {
+            num: 1
+            type: supply
+            mapping: bottom
+            skip_declaration: True
+            layout_attributes: {
+                index: 3
+                skip: 15
+            }
+        },
+        VCO_VN0_VDD: {
+            num: 1
+            type: supply
+            mapping: bottom
+            skip_declaration: True
+            layout_attributes: {
+                index: 4
+                skip: 15
+            }
+        },
+        VCOP_VIN: {
+            num: 1
+            type: supply
+            mapping: bottom
+            skip_declaration: True
+            layout_attributes: {
+                index: 5
+                skip: 15
+            }
+        },
+        VCO_VDD: {
+            num: 1
+            type: supply
+            driven_manually: True
+            mapping: bottom
+            skip_declaration: True
+            layout_attributes: {
+                index: 6
+                skip: 15
+            }
+        },
+        ACORE_VSS_5: {
+            num: 1
+            type: supply
+            driven_manually: True
+            mapping: bottom
+            skip_declaration: True
+            layout_attributes: {
+                index: 7
+                skip: 15
+            }
+        },
+        VCON_VN0: {
+            num: 1
+            type: supply
+            mapping: bottom
+            skip_declaration: True
+            layout_attributes: {
+                index: 8
+                skip: 15
+            }
+        },
+        VCON_VIN: {
+            num: 1
+            type: supply
+            mapping: bottom
+            skip_declaration: True
+            layout_attributes: {
+                index: 9
+                skip: 15
+            }
+        },
+
+        DCORE_VSS_3: {
+            num: 1
+            type: supply
+            driven_manually: True
+            mapping: bottom
+            skip_declaration: True
+            layout_attributes: {
+                index: 10
+                skip: 15
+            }
+        },
+        DCORE_VDD_2: {
+            num: 1
+            type: supply
+            driven_manually: True
+            mapping: bottom
+            skip_declaration: True
+            layout_attributes: {
+                index: 11
+                skip: 15
+            }
+        },
+        spi_flash_cs_0: {
+            num: 1
+            type: output
+            mapping: bottom
+            layout_attributes: {
+                index: 12
+                skip: 15
+            }
+        },
+        spi_flash_sck: {
+            num: 1
+            type: output
+            mapping: bottom
+            layout_attributes: {
+                index: 13
+                skip: 15
+            }
+        },
+        spi_flash_sd_0: {
+            num: 1
+            type: inout
+            mapping: bottom
+            layout_attributes: {
+                index: 14
+                skip: 15
+            }
+        },
+        spi_flash_sd_1: {
+            num: 1
+            type: inout
+            mapping: bottom
+            layout_attributes: {
+                index: 15
+                skip: 15
+            }
+        }
+
+        # LEFT PADS
+
+        spi_flash_cs_1: {
+            num: 1
+            type: inout
+            mapping: left
+            mux: {
+                spi_flash_cs_1: {
+                    type: output
+                },
+                gpio_6: {
+                    type: inout
+                },
+            },
+            layout_attributes: {
+                index: 0
+                offset: 211
+                skip: 15
+            }
+        },
+
+        dsm_in: {
+            num: 1
+            type: inout
+            mapping: left
+            mux: {
+                dsm_in: {
+                    type: input
+                    driven_manually: True
+                },
+                gpio_5: {
+                    type: inout
+                },
+            },
+            layout_attributes: {
+                index: 1
+                skip: 15
+            }
+        },
+        dsm_clk: {
+            num: 1
+            type: inout
+            mapping: left
+            mux: {
+                dsm_clk: {
+                    type: output
+                    driven_manually: True
+                },
+                gpio_4: {
+                    type: inout
+                },
+            },
+            layout_attributes: {
+                index: 2
+                skip: 15
+            }
+        },
+
+       IO_VDD_2: {
+            num: 1
+            type: supply
+            driven_manually: True
+            mapping: left
+            skip_declaration: True
+            layout_attributes: {
+                index: 3
+                skip: 15
+            }
+        },
+        VSS_4: {
+            num: 1
+            type: supply
+            driven_manually: True
+            mapping: left
+            skip_declaration: True
+            layout_attributes: {
+                index: 4
+                skip: 15
+            }
+        },
+
+        lc_xing: {
+            num: 1
+            type: inout
+            mapping: left
+            mux: {
+                lc_xing: {
+                    type: output
+                    driven_manually: True
+                },
+                gpio_2: {
+                    type: inout
+                },
+            },
+            layout_attributes: {
+                index: 5
+                skip: 15
+            }
+        },
+
+        lc_dir: {
+            num: 1
+            type: inout
+            mapping: left
+            mux: {
+                lc_dir: {
+                    type: output
+                    driven_manually: True
+                },
+                gpio_3: {
+                    type: inout
+                },
+            },
+            layout_attributes: {
+                index: 6
+                skip: 15
+            }
+        },
+
+        vco_counter_overflow: {
+            num: 1
+            type: inout
+            mapping: left
+            mux: {
+                vco_counter_overflow: {
+                    type: output
+                    driven_manually: True
+                },
+                gpio_1: {
+                    type: inout
+                },
+            },
+            layout_attributes: {
+                index: 7
+                skip: 15
+            }
+        },
+
+        boot_select: {
+            num: 1
+            type: input
+            mapping: left
+            layout_attributes: {
+                index: 8
+                skip: 15
+            }
+        },
+        exit_value: {
+            num: 1
+            type: output
+            driven_manually: True
+            mapping: left
+            layout_attributes: {
+                index: 9
+                skip: 15
+            }
+        },
+        exit_valid: {
+            num: 1
+            type: output
+            mapping: left
+            layout_attributes: {
+                index: 10
+                skip: 15
+            }
+        },
+        execute_from_flash: {
+            num: 1
+            type: input
+            mapping: left
+            layout_attributes: {
+                index: 11
+                skip: 15
+            }
+        },
+        rst: {
+            num: 1
+            active: low
+            constant_attribute: True
+            driven_manually: True
+            type: input
+            mapping: left
+            layout_attributes: {
+                index: 12
+                skip: 15
+            }
+        },
+
+        DCORE_VDD_3: {
+            num: 1
+            type: supply
+            driven_manually: True
+            mapping: left
+            skip_declaration: True
+            layout_attributes: {
+                index: 13
+                skip: 15
+            }
+        },
+        VSS_5: {
+            num: 1
+            type: supply
+            driven_manually: True
+            skip_declaration: True
+            mapping: left
+            layout_attributes: {
+                index: 14
+                skip: 15
+            }
+        },
+        clk: {
+            num: 1
+            type: input
+            constant_attribute: True
+            driven_manually: True
+            mapping: left
+            layout_attributes: {
+                index: 15
+                skip: 15
+            }
+        },
+
+        # INFO: Make sure the last pad is not a "supply" type or the mcu-gen comma elimination script fails
+
+    }
+}

@@ -1,0 +1,33 @@
+[*]
+[*] GTKWave Analyzer v3.3.118 (w)1999-2023 BSI
+[*] Tue May 20 13:12:36 2025
+[*]
+[dumpfile] "/home/mallasen/shares/repos/eslgit/heep-ams-65/heepidermis/build/epfl_cheep_cheep_0.3.0/sim-verilator/logs/waves.fst"
+[dumpfile_mtime] "Tue May 20 13:07:19 2025"
+[dumpfile_size] 19961324
+[savefile] "/home/mallasen/shares/repos/eslgit/heep-ams-65/heepidermis/tb/misc/verilator-waves.gtkw"
+[timestart] 0
+[size] 1708 1297
+[pos] -1 -1
+*-18.927608 7417 7417 8605 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
+[treeopen] TOP.
+[treeopen] TOP.tb_system.
+[treeopen] TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.ao_peripheral_subsystem_i.dma_subsystem_i.dma_i_gen[0].dma_i.reg2hw.
+[treeopen] TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.ao_peripheral_subsystem_i.soc_ctrl_i.
+[sst_width] 421
+[signals_width] 269
+[sst_expanded] 1
+[sst_vpaned_height] 648
+@28
+TOP.tb_system.boot_select_i
+TOP.tb_system.execute_from_flash_i
+TOP.tb_system.exit_valid_o
+@22
+TOP.tb_system.exit_value_o[31:0]
+@28
+TOP.tb_system.u_cheep_top.system_clk
+@22
+TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.cpu_subsystem_i.gen_cv32e20.cv32e20_i.u_cve2_core.pc_id[31:0]
+TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.cpu_subsystem_i.gen_cv32e20.cv32e20_i.u_cve2_core.pc_if[31:0]
+[pattern_trace] 1
+[pattern_trace] 0

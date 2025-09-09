@@ -1,0 +1,30 @@
+// Copyright 2025 EPFL contributors
+// Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+//
+// File: amux_ctrl.hjson
+// Author: David Mallasen, Juan Sapriza
+// Description: HEEPidermis iDAC controller registers
+
+{
+    name: "aMUX_ctrl"
+    clock_primary: "clk_i"
+    reset_primary: "rst_ni"
+    bus_interfaces: [
+        {
+            protocol: "reg_iface"
+            direction: "device"
+        }
+    ]
+    regwidth: "32"
+    registers: [
+        { name:   "sel"
+        desc:     "Selection among the aMUX options"
+        swaccess: "rw"
+        hwaccess: "hro"
+        fields: [
+            { bits: "4:0" }
+        ]
+        }
+    ]
+}

@@ -1,0 +1,41 @@
+// Copyright 2022 EPFL and Politecnico di Torino.
+// Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+//
+// File: cheep-waivers.sv
+// Author: Michele Caon
+// Date: 14/06/2023
+// Description: Waivers for cheep top-level
+
+`verilator_config
+
+lint_off -rule UNUSED -file "*cheep_top.sv" -match "Bits of signal are not used: 'exit_value'[31:1]"
+lint_off -rule UNUSED -file "*cheep_top.sv" -match "Bits of signal are not used: 'memory_subsystem_banks_powergate_switch'[0]"
+lint_off -rule UNUSED -file "*cheep_top.sv" -match "Signal is not used: 'mem_sw_fb_sync'"
+lint_off -rule UNUSED -file "*cheep_top.sv" -match "Signal is not used: '*_powergate_*'"
+lint_off -rule UNUSED -file "*cheep_top.sv" -match "Signal is not used: '*out_x'"
+lint_off -rule UNUSED -file "*cheep_top.sv" -match "Signal is not used: '*oe_x'"
+lint_off -rule UNUSED -file "*cheep_top.sv" -match "Signal is not*used: '*in_x'"
+lint_off -rule UNUSED -file "*cheep_top.sv" -match "Bits of signal are not used: 'external_subsystem_powergate_switch_n'[1]"
+lint_off -rule UNUSED -file "*cheep_top.sv" -match "Signal is not driven, nor used: 'SUPPLY_*'"
+lint_off -rule UNUSED -file "*cheep_top.sv" -match "Signal is not used: 'cheep_master_resp'"
+lint_off -rule UNUSED -file "*cheep_top.sv" -match "Signal is not used: 'dma_busy'"
+lint_off -rule UNUSED -file "*cheep_top.sv" -match "Signal is not used: 'external_*'"
+lint_off -rule UNUSED -file "*cheep_top.sv" -match "Signal is not used: 'ext_debug_*'"
+lint_off -rule UNUSED -file "*cheep_top.sv" -match "Signal is not used: 'hw_fifo*'"
+lint_off -rule UNUSED -file "*cheep_bus.sv" -match "Signal is not used: 'heep_*'"
+lint_off -rule UNUSED -file "*cheep_bus.sv" -match "Signal is not used: 'cheep_master*'"
+lint_off -rule UNUSED -file "*ext_xbar.sv" -match "Signal is not driven*"
+
+lint_off -rule UNDRIVEN -file "*cheep_top.sv" -match "Signal is not driven: '*_powergate_*'"
+lint_off -rule UNDRIVEN -file "*cheep_top.sv" -match "Signal is not driven: '*out_x'"
+lint_off -rule UNDRIVEN -file "*cheep_top.sv" -match "Bits of signal are not driven: 'external_subsystem_powergate_switch_ack_n'[1]"
+lint_off -rule UNDRIVEN -file "*cheep_top.sv" -match "Signal is not driven: 'cheep_master_req'"
+lint_off -rule UNDRIVEN -file "*cheep_top.sv" -match "Bits of signal are not driven: 'ext_int_vector_o'[2:0]"
+
+lint_off -rule UNDRIVEN -file "*core_v_mini_mcu.sv" -match "Signal is not driven: '*i2*'"
+lint_off -rule IMPLICIT -file "*core_v_mini_mcu.sv" -match "Signal definition not found, creating implicitly*"
+lint_off -rule SYNCASYNCNET -file "*cheep_top.sv" -match "Signal flopped as both synchronous and async: *spi_slave*"
+
+lint_off -rule UNUSED -file "*core-v-mini-mcu/ao_peripheral_subsystem.sv" -match "Signal is not used: *spc*"
+lint_off -rule UNDRIVEN -file "*core-v-mini-mcu/ao_peripheral_subsystem.sv" -match "Signal is not driven: *spc*"

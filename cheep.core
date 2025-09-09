@@ -1,0 +1,467 @@
+CAPI=2:
+
+# Copyright 2022 EPFL and Politecnico di Torino.
+# Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+#
+# File: cheep.core
+# Author: Michele Caon, Luigi Giuffrida
+# Date: 29/04/2024
+# Description: Top-level module for CHEEP
+
+name: epfl:cheep:cheep:0.3.0
+description: Top-level module for CHEEP
+
+filesets:
+  # Generic RTL source files
+  rtl:
+    depend:
+    - epfl:cheep:packages
+    - epfl:cheep:bus
+    - epfl:cheep:peripherals
+    - epfl:cheep:analog_subsystem
+    - epfl:cheep:pad-ring
+    files:
+    - hw/ip/cheep_top.sv
+    file_type: systemVerilogSource
+
+  rtl-format:
+    depend:
+    - epfl:cheep:packages
+    - epfl:cheep:bus
+    # - epfl:cheep:peripherals # TODO_HEEPidermis: fix the verible linting of pdm2pcm
+    files:
+    - hw/ip/cheep_top.sv
+    file_type: systemVerilogSource
+
+  rtl-sim:
+    depend:
+    - epfl:cheep:idac_analog
+    - epfl:cheep:vco_analog
+    - epfl:cheep:iref_analog
+    - epfl:cheep:vref_analog
+    - epfl:cheep:amux_analog
+    - epfl:cheep:buffer_analog
+
+  # Xilinx FPGA implementation files
+  rtl-fpga:
+    files:
+    - hw/vendor/x-heep/hw/fpga/sram_wrapper.sv
+    - hw/vendor/x-heep/hw/fpga/prim_xilinx_clk.sv
+    file_type: systemVerilogSource
+
+  fpga-top:
+    files:
+    - hw/fpga/xilinx/xilinx_cheep_top_wrapper.sv
+    file_type: systemVerilogSource
+
+  # X-HEEP RTL (separated to avoid Verible errors)
+  rtl-x-heep:
+    depend:
+    - openhwgroup.org:systems:core-v-mini-mcu
+    - x-heep::packages
+    - x-heep:ip:pad_control
+
+  rtl-vco_behavior:
+    depend:
+    - epfl:cheep:vco_behavior
+
+  rtl-iref_behavior:
+    depend:
+    - epfl:cheep:iref_behavior
+
+  rtl-vref_behavior:
+    depend:
+    - epfl:cheep:vref_behavior
+
+  rtl-amux_behavior:
+    depend:
+    - epfl:cheep:amux_behavior
+
+  rtl-ldo-behavior:
+    depend:
+    - epfl:cheep:ldo_behavior
+
+  rtl-buffer-behavior:
+    depend:
+    - epfl:cheep:buffer_analog
+
+  # RTL testbench system
+  tb-system:
+    depend:
+    - example:ip:pdm2pcm_dummy
+    files:
+    - tb/tb_system.sv
+    - tb/tb_util.svh: {is_include_file: true}
+    file_type: systemVerilogSource
+
+  # RTL testbench system vendored modules
+  # NOTE: defined separately to avoid formatting
+  tb-system-vendor:
+    depend:
+    - lowrisc:dv_dpi:uartdpi
+    - example:ip:gpio_cnt
+
+  # Verilator C++ testbench
+  tb-verilator:
+    files:
+    - tb/verilator/tb_macros.cpp
+    - tb/verilator/cheep_tb.cpp
+    - tb/verilator/tb_macros.hh: {is_include_file: true}
+    file_type: cppSource
+
+  # Modelsim testbench
+  # NOTE: defined separately to avoid formatting
+  tb-others:
+    depend:
+    - pulp-platform.org::riscv_dbg_pkg
+    files:
+    - tb/include/riscv_pkg.sv
+    - tb/include/jtag_pkg.sv
+    - tb/include/srec_pkg.sv
+    - tb/tb_top.sv
+    file_type: systemVerilogSource
+
+  # Modelsim testbench vendored modules
+  tb-others-vendor:
+    depend:
+    - ::spiflash:0
+
+  # Verilator waviver files
+  verilator-waivers:
+    files:
+    - hw/misc/cheep-waivers.vlt
+    - hw/misc/heep-waivers.vlt
+    - tb/misc/tb-waivers.vlt
+    - hw/vendor/x-heep/hw/ip_examples/pdm2pcm_dummy/pdm2pcm_dummy.vlt
+    - hw/vendor/x-heep/hw/ip_examples/dlc/dlc.vlt
+    file_type: vlt
+
+  # Scripts for hooks
+  pre_build_uartdpi:
+    files:
+    - scripts/sim/compile_uart_dpi.sh
+    file_type: user
+
+  # FPGA IPs
+  ip-fpga:
+    depend:
+    - openhwgroup.org:systems:core-v-mini-mcu-fpga
+    files:
+    - hw/fpga/xilinx/scripts/generate_sram_emem.tcl: {file_type: tclSource}
+    # Set up vivado hooks
+    - hw/fpga/xilinx/scripts/vivado_setup_hooks.tcl: {file_type: tclSource}
+    # File copied by fusesoc into the workroot (the file containing the
+    # .eda.yml file), and referenced from vivado_setup_hooks.tcl
+    - hw/fpga/xilinx/scripts/vivado_hook_opt_design_pre.tcl: { file_type: user, copyto: vivado_hook_opt_design_pre.tcl }
+
+scripts:
+  # Create log directory
+  prepare_dirs:
+    cmd:
+    - mkdir
+    - -p
+    - logs
+
+  # Copy waveforms
+  copy_waves:
+    cmd:
+    - bash
+    - ../../../scripts/sim/copy-waves.sh
+    - logs/waves.fst
+    - logs/waves-0.vcd
+
+  # Copy UART log
+  copy_uart:
+    cmd:
+    - cp
+    - uart.log
+    - ../../sim-common/
+
+  # QuestaSim build uartdip
+  pre_build_uartdpi:
+    cmd:
+    - bash
+    - ../../../scripts/sim/compile_uart_dpi.sh
+
+  pre_patch_modelsim_Makefile:
+    cmd:
+    - python
+    - ../../../hw/vendor/x-heep/scripts/sim/modelsim/patch_modelsim_Makefile.py
+
+  pre_build_modelsim_scripts_postlayout:
+    cmd:
+    - sh
+    - ../../../scripts/sim/async_pl_tcheck.sh
+
+targets:
+  default: &default
+    filesets:
+    - rtl
+    - rtl-x-heep
+    parameters:
+    - "example_disable? (EXAMPLE_DISABLE=true)"
+    - "!example_disable? (EXAMPLE_DISABLE=false)"
+    toplevel: cheep_top
+
+  # Synthesis
+  asic_synthesis:
+    <<: *default
+    default_tool: design_compiler
+    description: Design Compiler Script
+    parameters_append:
+    - SYNTHESIS=true
+    toplevel: [cheep_top]
+
+  # FPGA synthesis
+  pynq-z2:
+    <<: *default
+    default_tool: vivado
+    description: TUL Pynq-Z2 Board
+    filesets_append:
+    - rtl-fpga
+    - fpga-top
+    - ip-fpga
+    parameters_append:
+    - SYNTHESIS=true
+    - FPGA=true
+    tools:
+      vivado:
+        part: xc7z020clg400-1
+        board_part: tul.com.tw:pynq-z2:part0:1.0
+        board_repo_paths: [../../../hw/vendor/x-heep/hw/fpga/board_files/vendor/esl_epfl_pynq_z2_board_files]
+    toplevel: [xilinx_cheep_top_wrapper]
+
+  zcu104:
+    <<: *default
+    default_tool: vivado
+    description: ZCU104 Evaluation Board
+    filesets_append:
+    - rtl-fpga
+    - fpga-top
+    - ip-fpga
+    parameters_append:
+    - SYNTHESIS=true
+    - FPGA_ZCU104=true
+    - FPGA=true
+    tools:
+      vivado:
+        part: xczu7ev-ffvc1156-2-e
+        board_part: xilinx.com:zcu104:part0:1.0
+        board_repo_paths: [../../../hw/vendor/x-heep/hw/fpga/board_files/vendor/esl_epfl_zcu104_board_files]
+    toplevel: [xilinx_cheep_top_wrapper]
+
+  # RTL simulation
+  sim: &sim
+    <<: *default
+    description: Simulate the design using Verilator
+    default_tool: verilator
+    filesets_append:
+    - rtl-sim
+    - tb-system
+    - tb-system-vendor
+    - "!tool_verilator ? (tb-others)"
+    - "!tool_verilator ? (tb-others-vendor)"
+    - tool_verilator ? (tb-verilator)
+    - tool_verilator ? (verilator-waivers)
+    - tool_modelsim? (pre_build_uartdpi)
+    toplevel:
+    - tool_verilator ? (tb_system)
+    - "!tool_verilator ? (tb_top)"
+    hooks:
+      pre_build:
+      - tool_modelsim? (pre_build_uartdpi)
+      - tool_modelsim? (pre_patch_modelsim_Makefile)
+      pre_run:
+      - prepare_dirs
+      post_run:
+      - copy_waves
+      - copy_uart
+    parameters_append:
+    - boot_mode
+    - firmware
+    - max_cycles
+    - "!tool_verilator ? (verbose)"
+    - "!tool_verilator ? (vcd_mode)"
+    - tool_verilator ? (log_level)
+    - tool_verilator ? (trace)
+    - tool_verilator ? (no_err)
+    - RTL_SIMULATION=true
+    - tool_verilator ? (EXAMPLE_DISABLE=false)
+    - use_idac_spice ? (AMS_IDAC=true)
+    tools:
+      modelsim:
+        vlog_options:
+        - -override_timescale 1ns/1ps
+        - -suppress vlog-2577
+        - -suppress vlog-2583
+        - -pedanticerrors
+        - -define MODELSIM
+        vsim_options:
+        - -suppress 3111 # suppress error on passing string variables to $fdumpvars, that is apparently supported instead
+        - -sv_lib ../../sw/sim/uartdpi
+        - -voptargs=+acc=npr
+        - "-64"
+      verilator:
+        mode: cc
+        verilator_options:
+        - '--cc'
+        - '--assert'
+        - '--trace'
+        - '--trace-fst'
+        - '--trace-structs'
+        - '--trace-max-array 128'
+        - '--x-assign unique'
+        - '--x-initial unique'
+        #- '--threads 2' # only use with Verilator v5.XXX
+        - '--exe'
+        - 'cheep_tb.cpp'
+        - '-Wall'
+        - '-Wpedantic'
+        - '-LDFLAGS "-pthread -lutil -lelf"'
+        # - '-CFLAGS "-Wall -g"'
+
+
+  # Format with Verible
+  format:
+    filesets:
+    - rtl-format
+    - tb-system
+    - tb-others
+    - fpga-top
+    toplevel: cheep_top
+    description: Format source files using verible-verilog-format
+    default_tool: veribleformat
+    parameters_append:
+    - EXAMPLE_DISABLE=false
+    tools:
+      veribleformat:
+        verible_format_args:
+        - '--assignment_statement_alignment=align'
+        - '--case_items_alignment=align'
+        - '--formal_parameters_indentation=indent'
+        - '--named_parameter_alignment=align'
+        - '--named_parameter_indentation=indent'
+        - '--named_port_alignment=align'
+        - '--named_port_indentation=indent'
+        - '--port_declarations_alignment=align'
+        - '--port_declarations_indentation=indent'
+        - '--assignment_statement_alignment=align'
+        - '--module_net_variable_alignment=align'
+        - '--inplace'
+
+  # Static analysis
+  lint:
+    filesets:
+    - rtl-format
+    - tb-system
+    - fpga-top
+    toplevel: cheep_top
+    description: Perform static analysis using Verible
+    default_tool: veriblelint
+    parameters_append:
+    - EXAMPLE_DISABLE=false
+    tools:
+      veriblelint:
+        ruleset: default
+        verible_lint_args:
+        - '--waiver_files=../../../hw/misc/verible-lint.waiver,../../../tb/misc/verible-lint.waiver'
+        rules:
+        - 'line-length=length:200'
+
+
+# Parameters
+parameters:
+  log_level:
+    datatype: str
+    description: |
+      Set the log level. Admitted values: LOG_NONE|LOG_LOW|LOG_MEDIUM|LOG_HIGH|LOG_FULL|LOG_DEBUG.
+      Errors and configuration messages are always printed.
+    paramtype: cmdlinearg
+  trace:
+    datatype: str
+    description: If 'true', generate simulation waves dump.
+    default: "true"
+    paramtype: cmdlinearg
+  no_err:
+    datatype: bool
+    description: Always exit with 0. Useful to run post-simulation hooks.
+    default: "true"
+    paramtype: cmdlinearg
+  firmware:
+    datatype: str
+    description: Firmware (in HEX format) to load into the system SRAM.
+    paramtype: plusarg
+  verbose:
+    datatype: bool
+    description: Verbosity mode for QuestaSim testbench.
+    paramtype: plusarg
+  boot_mode:
+    datatype: str
+    description: |
+      Boot mode for QuestaSim testbench. Admitted values: jtag|flash|force.
+    default: 2
+    paramtype: plusarg
+  vcd_mode:
+    datatype: int
+    description: "VCD dump mode: 0 (no dump) | 1 (always active) | 2 (triggered by GPIO 0)"
+    default: 0
+    paramtype: plusarg
+  max_cycles:
+    datatype: int
+    description: Maximum number of simulation cycles (halt the simulation when reached).
+    paramtype: plusarg
+  RTL_SIMULATION:
+    datatype: bool
+    paramtype: vlogdefine
+    description: |
+      Select code for RTL simulation (e.g., faster SRAM initialization)
+  SYNTHESIS:
+    datatype: bool
+    paramtype: vlogdefine
+    description: |
+      Can isolate code that is (or is not) meant for Synthesis/Simulation only
+  POSTLAYOUT:
+    datatype: bool
+    paramtype: vlogdefine
+    description: |
+      Can isolate code that is (or is not) meant for post-layout simulation only
+  USE_PG_PIN:
+    datatype: bool
+    paramtype: vlogdefine
+    description: |
+      Provide supply to a netlist with PG pins meant for postlayout simulation only
+  PRIM_DEFAULT_IMPL:
+    datatype: str
+    paramtype: vlogdefine
+    description: Primitives implementation to use, e.g. "prim_pkg::ImplGeneric".
+    default: prim_pkg::ImplGeneri
+  UNIT_DELAY:
+    datatype: int
+    paramtype: vlogdefine
+    default: 0
+  no_warning:
+    datatype: bool
+    paramtype: vlogdefine
+    default: true
+  FPGA:
+    datatype: bool
+    paramtype: vlogdefine
+    default: false
+  FPGA_ZCU104:
+    datatype: bool
+    paramtype: vlogdefine
+    default: false
+  EXAMPLE_DISABLE:
+    datatype: bool
+    paramtype: vlogdefine
+    description: Example to disable a peripheral
+    default: false
+  ARM_DISABLE_EMA_CHECK:
+    datatype: bool
+    paramtype: vlogdefine
+    default: true
+  AMS_IDAC:
+    datatype: bool
+    paramtype: vlogdefine
+    default: false

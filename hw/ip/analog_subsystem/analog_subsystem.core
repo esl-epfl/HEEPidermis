@@ -1,0 +1,28 @@
+CAPI=2:
+
+# Copyright 2025 EPFL contributors
+# Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+#
+# File: analog_subsystem.core
+# Author: Juan Sapriza, David Mallasen
+
+name: epfl:cheep:analog_subsystem:0.1.0
+description: HEEPidermis analog subsystem
+
+filesets:
+  rtl:
+    depend:
+    - epfl:cheep:idac_packages
+    - epfl:cheep:vco_packages
+    - epfl:cheep:amux_packages
+    - epfl:cheep:iref_packages
+    - epfl:cheep:vref_packages
+    files:
+    - analog_subsystem.sv
+    file_type: systemVerilogSource
+
+targets:
+  default: &default
+    filesets:
+    - rtl

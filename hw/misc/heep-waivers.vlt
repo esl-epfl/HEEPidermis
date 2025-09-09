@@ -1,0 +1,22 @@
+// Copyright 2022 EPFL and Politecnico di Torino.
+// Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+//
+// File: heep-waivers.sv
+// Author: Michele Caon
+// Date: 14/06/2023
+// Description: Waivers for X-HEEP
+
+`verilator_config
+lint_off -rule UNOPTFLAT -file "*x-heep/hw/vendor/pulp_platform_riscv_dbg/src/dm_top.sv" -match "Signal unoptimizable: Feedback to clock or circular logic: '*.u_core_v_mini_mcu.debug_subsystem_i.dm_obi_top_i.i_dm_top.data_valid'"
+lint_off -rule UNOPTFLAT -file "*x-heep/hw/vendor/pulp_platform_riscv_dbg/src/dm_mem.sv" -match "Signal unoptimizable: Feedback to clock or circular logic: '*.u_core_v_mini_mcu.debug_subsystem_i.dm_obi_top_i.i_dm_top.*'"
+lint_off -rule UNOPTFLAT -file "*x-heep/hw/vendor/pulp_platform_register_interface/src/periph_to_reg.sv" -match "Signal unoptimizable: Feedback to clock or circular logic: '*.u_core_v_mini_mcu.peripheral_subsystem_i.*'"
+lint_off -rule UNOPTFLAT -file "*x-heep/hw/vendor/pulp_platform_register_interface/src/periph_to_reg.sv" -match "Signal unoptimizable: Feedback to clock or circular logic: '*.u_core_v_mini_mcu.ao_peripheral_subsystem_i.*'"
+lint_off -rule UNOPTFLAT -file "*x-heep/hw/core-v-mini-mcu/core_v_mini_mcu.sv" -match "Signal unoptimizable: Feedback to clock or circular logic: '*.u_core_v_mini_mcu.flash_mem_slave_resp'"
+lint_off -rule UNOPTFLAT -file "*x-heep/hw/core-v-mini-mcu/memory_subsystem.sv" -match "Signal unoptimizable: Feedback to clock or circular logic: '*.u_core_v_mini_mcu.__Vcellout__memory_subsystem_i__ram_resp_o'"
+lint_off -rule UNOPTFLAT -file "*pulp_platform_common_cells/src/cdc_reset_ctrlr.sv" -match "Signal unoptimizable: *_ack'"
+lint_off -rule UNOPTFLAT -file "*pulp_platform_riscv_dbg/src/dm_top.sv" -match "Signal unoptimizable: *ack'"
+lint_off -rule COMBDLY -file "*/*clock_gate*.sv"
+lint_off -rule COMBDLY -file "*/*clk_gate*.sv"
+lint_off -rule COMBDLY -file "*/tc_clk.sv"
+lint_off -rule UNDRIVEN -file "*x-heep/hw/core-v-mini-mcu/core_v_mini_mcu.sv" -match "Signal is not driven: 'dsm_*'"

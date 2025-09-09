@@ -1,0 +1,20 @@
+// Copyright 2022 EPFL and Politecnico di Torino.
+// Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+//
+// File: tb-waivers.sv
+// Author: Michele Caon
+// Date: 14/06/2023
+// Description: Waivers for cheep testbench
+
+`verilator_config
+// cheep testbench files
+lint_off -rule UNUSED -file "*tb/tb_system.sv" -match "Signal is not*used: '*'"
+lint_off -rule UNUSED -file "*tb/tb_system.sv" -match "Bits of signal are not used: 'gpio'*"
+lint_off -rule UNUSED -file "*tb/tb_system.sv" -match "Bits of signal are not used: 'spi_flash_csb'*"
+lint_off -rule SYNCASYNCNET -file "*tb/tb_system.sv" -match "*"
+lint_off -rule UNUSED -file "*tb/tb_util.svh" -match "Bits of signal are not used: 'addr'*"
+
+// DPI devices
+lint_off -rule WIDTH -file "*/src/lowrisc_dv_dpi_uartdpi_0.1/uartdpi.sv" -match "*"
+lint_off -rule UNUSED -file "*/src/lowrisc_dv_dpi_uartdpi_0.1/uartdpi.sv" -match "*"

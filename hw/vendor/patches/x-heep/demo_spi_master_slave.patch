@@ -1,0 +1,13 @@
+diff --git a/sw/applications/demo_spi_master_slave/main.c b/sw/applications/demo_spi_master_slave/main.c
+index f19d4f0..ab89d1c 100644
+--- a/sw/applications/demo_spi_master_slave/main.c
++++ b/sw/applications/demo_spi_master_slave/main.c
+@@ -93,7 +93,7 @@ so the application will fail (you will read from the wrong address).
+ #define GPIO_LD5_G  13
+
+ #define DUMMY_CYCLES  32
+-#define GPIO_SYNQ 10
++#define GPIO_SYNQ 5
+
+ #define DATA_LENGTH_B   200
+ #define DATA_CHUNK_W    1

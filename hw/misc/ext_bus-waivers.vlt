@@ -1,0 +1,12 @@
+// Copyright 2025 EPFL contributors.
+// Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+//
+// File: ext_bus-waivers.sv
+// Author: David Mallasen
+// Description: Waivers for ext bus
+
+`verilator_config
+
+lint_off -rule UNUSED -file "*/cheep-bus/ext_bus.sv" -match "Signal is not used: 'fwd_xbar_req'"
+lint_off -rule UNUSED -file "*/cheep-bus/ext_bus.sv" -match "Signal is not used: 'fwd_xbar_resp'"

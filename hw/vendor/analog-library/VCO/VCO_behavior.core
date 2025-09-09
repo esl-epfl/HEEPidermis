@@ -1,0 +1,30 @@
+CAPI=2:
+
+# Copyright 2025 EPFL contributors
+# Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+#
+# File: VCO_behavior.core
+# Author: David Mallasen
+
+name: epfl:cheep:vco_behavior:0.1.0
+description: HEEPidermis VCO behavioral model
+
+filesets:
+  rtl:
+    depend:
+    - epfl:cheep:vco_packages
+    files:
+    - Verilog/VCO.sv
+    file_type: systemVerilogSource
+
+  verilator-waivers:
+    files:
+    - misc/VCO-waivers.vlt
+    file_type: vlt
+
+targets:
+  default: &default
+    filesets:
+    - rtl
+    - tool_verilator ? (verilator-waivers)

@@ -1,0 +1,40 @@
+CAPI=2:
+
+# Copyright 2025 EPFL contributors
+# Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+#
+# File: aMUX_analog.core
+# Author: David Mallasen, Juan Sapriza
+
+name: epfl:cheep:amux_analog:0.1.0
+description: HEEPidermis aMUX analog model
+
+filesets:
+  rtl:
+    depend:
+    - epfl:cheep:amux_packages
+    file_type: systemVerilogSource
+
+  rtl_behavior:
+    files:
+    - Verilog/aMUX.sv
+    file_type: systemVerilogSource
+
+  rtl_ams:
+    files:
+    - spice/aMUX.sv 
+    file_type: systemVerilogSource
+
+  verilator-waivers:
+    files:
+    - misc/aMUX-waivers.vlt
+    file_type: vlt
+
+targets:
+  default: &default
+    filesets:
+    - rtl
+    - target_sim? (rtl_behavior)
+    - tool_verilator ? (verilator-waivers)
+    - rtl-amux-ams-sim ? (rtl_ams)

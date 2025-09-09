@@ -1,0 +1,29 @@
+CAPI=2:
+
+# Copyright 2025 EPFL contributors
+# Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+#
+# File: Buffer_analog.core
+# Author: David Mallasen, Juan Sapriza
+
+name: epfl:cheep:buffer_analog:0.1.0
+description: HEEPidermis Buffer analog model
+
+filesets:
+
+  rtl_behavior:
+    files:
+    - Verilog/Buffer.sv
+    file_type: systemVerilogSource
+
+  rtl_ams:
+    files:
+    - spice/Buffer.sv
+    file_type: systemVerilogSource
+
+targets:
+  default: &default
+    filesets:
+    - rtl_behavior
+    - rtl-buffer-ams-sim ? (rtl_ams)

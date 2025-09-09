@@ -1,0 +1,33 @@
+CAPI=2:
+
+# Copyright 2025 EPFL contributors
+# Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+#
+# File: iDAC_ctrl.core
+# Author: David Mallasen
+
+name: epfl:cheep:idac_ctrl:0.1.0
+description: HEEPidermis iDAC controller
+
+filesets:
+  rtl:
+    depend:
+    - epfl:cheep:packages
+    - epfl:cheep:counter_trigger
+    files:
+    - rtl/idac_ctrl_reg_pkg.sv
+    - rtl/idac_ctrl_reg_top.sv
+    - rtl/idac_ctrl.sv
+    file_type: systemVerilogSource
+
+  verilator-waivers:
+    files:
+    - misc/iDAC_ctrl-waivers.vlt
+    file_type: vlt
+
+targets:
+  default: &default
+    filesets:
+    - rtl
+    - tool_verilator ? (verilator-waivers)

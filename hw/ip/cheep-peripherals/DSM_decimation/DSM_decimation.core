@@ -1,0 +1,33 @@
+CAPI=2:
+
+# Copyright 2025 EPFL contributors
+# Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+#
+# File: DSM_decimation.core
+# Author: David Mallasen
+
+name: epfl:cheep:dsm_decimation:0.1.0
+description: HEEPidermis DSM decimation
+
+filesets:
+  rtl:
+    depend:
+    - epfl:cheep:packages
+    - epfl:cheep:ses_filter
+    - x-heep:ip:pdm2pcm
+    files:
+    - rtl/dsm_decimation.sv
+    file_type: systemVerilogSource
+
+  verilator-waivers:
+    files:
+    - ../SES_filter/misc/SES_filter-waivers.vlt
+    - ../../../../hw/vendor/x-heep/hw/ip/pdm2pcm/pdm2pcm.vlt
+    file_type: vlt
+
+targets:
+  default: &default
+    filesets:
+    - rtl
+    - tool_verilator ? (verilator-waivers)

@@ -1,0 +1,26 @@
+diff --git a/hw/ip/pdm2pcm/rtl/pdm2pcm.sv.tpl b/hw/ip/pdm2pcm/rtl/pdm2pcm.sv.tpl
+index d15b6c3..a0c6279 100644
+--- a/hw/ip/pdm2pcm/rtl/pdm2pcm.sv.tpl
++++ b/hw/ip/pdm2pcm/rtl/pdm2pcm.sv.tpl
+@@ -34,7 +34,11 @@ module pdm2pcm #(
+ 
+     // PDM interface
+     input  logic pdm_i,
+-    output logic pdm_clk_o
++    output logic pdm_clk_o,
++
++    // DSM interface
++    output logic CIC_dataValid,
++    output logic CIC_activated
+ );
+ 
+   import pdm2pcm_reg_pkg::*;
+@@ -207,4 +211,8 @@ module pdm2pcm #(
+       .rx_ready_o(rx_ready)
+   );
+ 
++  // DSM link
++  assign CIC_dataValid = cdc_fifo_dst_valid;
++  assign CIC_activated = reg2hw.control.enabl.q;
++
+ endmodule : pdm2pcm

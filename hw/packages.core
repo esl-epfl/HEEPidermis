@@ -1,0 +1,60 @@
+CAPI=2:
+
+# Copyright 2022 EPFL and Politecnico di Torino.
+# Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+#
+# File: packages.core
+# Author: Michele Caon
+# Date: 07/06/2023
+# Description: SystemVerilog packages for cheep
+
+name: epfl:cheep:packages:0.1.0
+description: SystemVerilog packages for cheep
+
+filesets:
+  rtl:
+    depend:
+    - x-heep::packages
+    files:
+    - ip/packages/cheep_pkg.sv
+    file_type: systemVerilogSource
+
+targets:
+  default: &default
+    filesets:
+    - rtl
+
+  # Format using Verible
+  format:
+    <<: *default
+    description: Format source files using verible-verilog-format
+    default_tool: veribleformat
+    toplevel: cheep_pkg
+    tools:
+      veribleformat:
+        verible_format_args:
+        - '--assignment_statement_alignment=align'
+        - '--case_items_alignment=align'
+        - '--formal_parameters_indentation=indent'
+        - '--named_parameter_alignment=align'
+        - '--named_parameter_indentation=indent'
+        - '--named_port_alignment=align'
+        - '--named_port_indentation=indent'
+        - '--port_declarations_alignment=align'
+        - '--port_declarations_indentation=indent'
+        - '--assignment_statement_alignment=align'
+        - '--module_net_variable_alignment=align'
+        - '--inplace'
+
+  # Static analysis
+  lint:
+    <<: *default
+    description: Perform static analysis using Verible
+    default_tool: veriblelint
+    toplevel: cheep_pkg
+    tools:
+      veriblelint:
+        ruleset: default
+        rules:
+        - 'line-length=length:120'

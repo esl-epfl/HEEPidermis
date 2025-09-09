@@ -1,0 +1,23 @@
+CAPI=2:
+
+# Copyright 2025 EPFL contributors
+# Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+#
+# File: iREF_packages.core
+# Author: David Mallasen
+
+name: epfl:cheep:iref_packages:0.1.0
+description: HEEPidermis iREF packages
+
+filesets:
+  rtl:
+    files:
+    - include/iref_pkg.sv
+    file_type: systemVerilogSource
+
+targets:
+  default: &default
+    filesets:
+    - rtl
+  

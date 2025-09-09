@@ -1,0 +1,50 @@
+// Generated register defines for REFs_ctrl
+
+// Copyright information found in source file:
+// Copyright 2025 EPFL contributors
+
+// Licensing information found in source file:
+// 
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+
+#ifndef _REFS_CTRL_REG_DEFS_
+#define _REFS_CTRL_REG_DEFS_
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+// Register width
+#define REFS_CTRL_PARAM_REG_WIDTH 32
+
+// Enable signals for the REFs and the controller
+#define REFS_CTRL_ENABLE_REG_OFFSET 0x0
+#define REFS_CTRL_ENABLE_IREF1_ENABLE_BIT 0
+#define REFS_CTRL_ENABLE_IREF2_ENABLE_BIT 1
+#define REFS_CTRL_ENABLE_VREF_ENABLE_BIT 2
+
+// Calibration bits for the iREF 1
+#define REFS_CTRL_IREF1_CALIBRATION_REG_OFFSET 0x4
+#define REFS_CTRL_IREF1_CALIBRATION_IREF1_CALIBRATION_MASK 0x1f
+#define REFS_CTRL_IREF1_CALIBRATION_IREF1_CALIBRATION_OFFSET 0
+#define REFS_CTRL_IREF1_CALIBRATION_IREF1_CALIBRATION_FIELD \
+  ((bitfield_field32_t) { .mask = REFS_CTRL_IREF1_CALIBRATION_IREF1_CALIBRATION_MASK, .index = REFS_CTRL_IREF1_CALIBRATION_IREF1_CALIBRATION_OFFSET })
+
+// Calibration bits for the iREF 2
+#define REFS_CTRL_IREF2_CALIBRATION_REG_OFFSET 0x8
+#define REFS_CTRL_IREF2_CALIBRATION_IREF2_CALIBRATION_MASK 0x1f
+#define REFS_CTRL_IREF2_CALIBRATION_IREF2_CALIBRATION_OFFSET 0
+#define REFS_CTRL_IREF2_CALIBRATION_IREF2_CALIBRATION_FIELD \
+  ((bitfield_field32_t) { .mask = REFS_CTRL_IREF2_CALIBRATION_IREF2_CALIBRATION_MASK, .index = REFS_CTRL_IREF2_CALIBRATION_IREF2_CALIBRATION_OFFSET })
+
+// Calibration bits for the vREF
+#define REFS_CTRL_VREF_CALIBRATION_REG_OFFSET 0xc
+#define REFS_CTRL_VREF_CALIBRATION_VREF_CALIBRATION_MASK 0x1f
+#define REFS_CTRL_VREF_CALIBRATION_VREF_CALIBRATION_OFFSET 0
+#define REFS_CTRL_VREF_CALIBRATION_VREF_CALIBRATION_FIELD \
+  ((bitfield_field32_t) { .mask = REFS_CTRL_VREF_CALIBRATION_VREF_CALIBRATION_MASK, .index = REFS_CTRL_VREF_CALIBRATION_VREF_CALIBRATION_OFFSET })
+
+#ifdef __cplusplus
+}  // extern "C"
+#endif
+#endif  // _REFS_CTRL_REG_DEFS_
+// End generated register defines for REFs_ctrl

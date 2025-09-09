@@ -1,0 +1,42 @@
+CAPI=2:
+
+# Copyright 2025 EPFL contributors
+# Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+#
+# File: VCO_analog.core
+# Author: David Mallasen
+
+name: epfl:cheep:vco_analog:0.1.0
+description: HEEPidermis VCO analog model
+
+filesets:
+  rtl:
+    depend:
+    - epfl:cheep:vco_packages
+    file_type: systemVerilogSource
+
+  rtl-behavioral:
+    files:
+    - Verilog/VCO.sv
+    - Verilog/phase_lut.hex: { file_type: user, copyto: phase_lut.hex }  # Simply copy the file to the build folder
+    file_type: systemVerilogSource
+
+  rtl_ams:
+    files:
+    - spice/VCO_subsystem.sv
+    file_type: systemVerilogSource
+
+  verilator-waivers:
+    files:
+    - misc/VCO-waivers.vlt
+    file_type: vlt
+
+targets:
+  default: &default
+    filesets:
+    - rtl
+    - tool_verilator ? (verilator-waivers)
+    - use_vco_spice? (rtl_ams)
+    - "!use_vco_spice? (target_sim? (rtl-behavioral))"
+

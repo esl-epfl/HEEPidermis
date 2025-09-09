@@ -1,0 +1,46 @@
+// Copyright 2025 EPFL contributors
+// Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+//
+// File: REFs_ctrl.hjson
+// Author: David Mallasen
+// Description: HEEPidermis REFs controller registers
+
+{
+    name: "REFs_ctrl"
+    clock_primary: "clk_i"
+    reset_primary: "rst_ni"
+    bus_interfaces: [
+        {
+            protocol: "reg_iface"
+            direction: "device"
+        }
+    ]
+    regwidth: "32"
+    registers: [
+        { name:   "iref1_calibration"
+        desc:     "Calibration bits for the iREF 1"
+        swaccess: "rw"
+        hwaccess: "hro"
+        fields: [
+            { bits: "9:0"}
+            ]
+        }
+        { name:   "iref2_calibration"
+        desc:     "Calibration bits for the iREF 2"
+        swaccess: "rw"
+        hwaccess: "hro"
+        fields: [
+            { bits: "9:0"}
+            ]
+        }
+        { name:   "vref_calibration"
+        desc:     "Calibration bits for the vREF"
+        swaccess: "rw"
+        hwaccess: "hro"
+        fields: [
+            { bits: "4:0"}
+            ]
+        }
+   ]
+}

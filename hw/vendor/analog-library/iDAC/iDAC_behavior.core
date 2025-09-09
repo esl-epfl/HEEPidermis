@@ -1,0 +1,24 @@
+CAPI=2:
+
+# Copyright 2025 EPFL contributors
+# Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+#
+# File: iDAC_behavior.core
+# Author: David Mallasen
+
+name: epfl:cheep:idac_behavior:0.1.0
+description: HEEPidermis iDAC behavioral model
+
+filesets:
+  rtl:
+    depend:
+    - epfl:cheep:idac_packages
+    files:
+    - Verilog/iDAC.sv
+    file_type: systemVerilogSource
+
+targets:
+  default: &default
+    filesets:
+    - rtl

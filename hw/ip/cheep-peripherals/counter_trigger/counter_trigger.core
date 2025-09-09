@@ -1,0 +1,24 @@
+CAPI=2:
+
+# Copyright 2025 EPFL contributors
+# Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+#
+# File: couter_trigger.core
+# Author: David Mallasen
+
+name: epfl:cheep:counter_trigger:0.1.0
+description: HEEPidermis counter trigger
+
+filesets:
+  rtl:
+    depend:
+    - epfl:cheep:packages
+    files:
+    - counter_trigger.sv
+    file_type: systemVerilogSource
+
+targets:
+  default: &default
+    filesets:
+    - rtl

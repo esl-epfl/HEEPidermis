@@ -1,0 +1,34 @@
+CAPI=2:
+
+# Copyright 2025 EPFL contributors
+# Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+#
+# File: iDAC_analog.core
+# Author: David Mallasen
+
+name: epfl:cheep:idac_analog:0.1.0
+description: HEEPidermis iDAC analog model
+
+filesets:
+  rtl:
+    depend:
+    - epfl:cheep:idac_packages
+    file_type: systemVerilogSource
+
+  rtl_behavior:
+    files:
+    - Verilog/iDAC.sv
+    file_type: systemVerilogSource
+
+  rtl_ams:
+    files:
+    - spice/iDAC_subsystem.sv
+    file_type: systemVerilogSource
+
+targets:
+  default: &default
+    filesets:
+    - rtl
+    - use_idac_spice ? (rtl_ams)
+    - "!use_idac_spice? (target_sim? (rtl_behavior))"

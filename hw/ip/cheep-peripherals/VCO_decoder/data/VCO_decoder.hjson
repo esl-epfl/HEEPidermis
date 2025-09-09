@@ -1,0 +1,135 @@
+// Copyright 2025 EPFL contributors
+// Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+//
+// File: VCO_decoder.hjson
+// Author: David Mallasen
+// Description: HEEPidermis VCO decoder registers
+
+{
+    name: "VCO_decoder"
+    clock_primary: "clk_i"
+    reset_primary: "rst_ni"
+    bus_interfaces: [
+        {
+            protocol: "reg_iface"
+            direction: "device"
+        }
+    ]
+    regwidth: "32"
+    registers: [
+        { name:   "refresh_cycles"
+        desc:     "Every how many cycles should the VCO-ADC be refreshed"
+        swaccess: "rw"
+        hwaccess: "hro"
+        fields: [
+            { bits: "31:0" }
+        ]
+        }
+        { name:   "counter_limit"
+        desc:     "Limit of the VCO dynamic counter"
+        swaccess: "rw"
+        hwaccess: "hro"
+        fields: [
+            { bits: "31:0" }
+        ]
+        }
+        { name:   "manual_trigger"
+        desc:     "Trigger manually the refresh signal"
+        swaccess: "rw"
+        hwaccess: "hro"
+        fields: [
+            { bits: "0:0" }
+        ]
+        }
+        { name:   "enable"
+        desc:     "Enable signals for the VCOs and VCO decoder"
+        swaccess: "rw"
+        hwaccess: "hro"
+        fields: [
+            { bits: "0:0"
+              name: "p_enable"
+              desc: "Enable the VCOp"
+            }
+            { bits: "1:1"
+              name: "n_enable"
+              desc: "Enable the VCOn"
+            }
+        ]
+        }
+        { name:   "adc_p_fine_out"
+        desc:     "VCOp ADC fine output"
+        swaccess: "rw"
+        hwaccess: "hwo"
+        fields: [
+            { bits: "30:0" }
+        ]
+        }
+        { name:   "adc_n_fine_out"
+        desc:     "VCOn ADC fine output"
+        swaccess: "rw"
+        hwaccess: "hwo"
+        fields: [
+            { bits: "30:0" }
+        ]
+        }
+        { name:   "adc_p_coarse_out"
+        desc:     "VCOp ADC coarse output"
+        swaccess: "rw"
+        hwaccess: "hwo"
+        fields: [
+            { bits: "25:0" }
+        ]
+        }
+        { name:   "adc_n_coarse_out"
+        desc:     "VCOn ADC coarse output"
+        swaccess: "rw"
+        hwaccess: "hwo"
+        fields: [
+            { bits: "25:0" }
+        ]
+        }
+        { name:   "vco_decoder_cnt"
+        desc:     "VCO decoder count output"
+        swaccess: "rw"
+        hwaccess: "hwo"
+        fields: [
+            { bits: "31:0" }
+        ]
+        }
+        { name:   "manual_refresh_train0"
+        desc:     "Drivers the refresh_o signal"
+        swaccess: "rw"
+        hwaccess: "hro"
+        fields: [
+            { bits: "0"
+              name: "manual_refresh_train0"
+              desc: "Drivers the refresh_o signal"
+            }
+        ]
+        }
+        { name:   "manual_refresh_train1"
+        desc:     "Drivers the clk of the vco_computation units"
+        swaccess: "rw"
+        hwaccess: "hro"
+        fields: [
+            { bits: "0"
+              name: "manual_refresh_train1"
+              desc: "Drivers the clk of the vco_computation units"
+            }
+        ]
+        }
+        { name:   "manual_refresh_train2"
+        desc:     "Drivers the refresh_notif_o signal"
+        swaccess: "rw"
+        hwaccess: "hro"
+        fields: [
+            { bits: "0"
+              name: "manual_refresh_train2"
+              desc: "Drivers the refresh_notif_o signal"
+            }
+        ]
+        }
+
+   ]
+}

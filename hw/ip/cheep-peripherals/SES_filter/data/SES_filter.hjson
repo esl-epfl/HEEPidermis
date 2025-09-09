@@ -1,0 +1,103 @@
+// Copyright 2025 EPFL contributors
+// Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+//
+// File: SES_filter.hjson
+// Author: Jérémie Moullet
+// Description: HEEPidermis SES filter registers
+
+{
+    name: "SES_filter"
+    clock_primary: "clk_i"
+    reset_primary: "rst_ni"
+    bus_interfaces: [
+        {
+            protocol: "reg_iface"
+            direction: "device"
+        }
+    ]
+    regwidth: "32"
+    registers: [
+        { name:   "ses_control"
+        desc:     "control register of the SES filter"
+        swaccess: "rw"
+        hwaccess: "hro"
+        fields: [
+            { bits: "0:0" }
+        ]
+        }
+
+        { name:   "ses_status"
+        desc:     "status register of the SES filter"
+        swaccess: "ro"
+        hwaccess: "hwo"
+        fields: [
+            { bits: "1:0" }
+        ]
+        }
+
+        { name:   "ses_window_size"
+        desc:     "Size of the window (Ww) of the SES filter"
+        swaccess: "rw"
+        hwaccess: "hro"
+        fields: [
+            { bits: "4:0" }
+        ]
+        }
+
+        { name:   "ses_decim_factor"
+        desc:     "Decimation factor for the downsampling of the SES filter (decim_factor)"
+        swaccess: "rw"
+        hwaccess: "hro"
+        fields: [
+            { bits: "9:0" }
+        ]
+        }
+
+        { name:   "ses_sysclk_division"
+        desc:     "Decimation factor from the system clock to the SES filter clock"
+        swaccess: "rw"
+        hwaccess: "hro"
+        fields: [
+            { bits: "9:0" }
+        ]
+        }
+
+        //The maximal number of stage correspond to the size of the following bitfield.
+        { name:   "ses_activated_stages"
+        desc:     "Thermometric value of the activated stages (The 1s should be contiguous and right-aligned)"
+        swaccess: "rw"
+        hwaccess: "hro"
+        fields: [
+            { bits: "5:0" }
+        ]
+        }
+
+        // If the maximal number of stages should change, additional fields for the gain should be added, 
+        // and the c-code driver should be adapted. No other changers needed. (NO changes needed in SystemVerilog)
+        // All the stages should have the same bitwidth
+        { name:   "ses_gain_stage"
+        desc:     "Input gain of the different stages (WgX)"
+        swaccess: "rw"
+        hwaccess: "hro"
+        fields: [
+            { bits: "4:0"  , name: "gain_stg_0", desc: "Value of the input gain for the stage no 0" }
+            { bits: "9:5"  , name: "gain_stg_1", desc: "Value of the input gain for the stage no 1" }
+            { bits: "14:10", name: "gain_stg_2", desc: "Value of the input gain for the stage no 2" }
+            { bits: "19:15", name: "gain_stg_3", desc: "Value of the input gain for the stage no 3" }
+            { bits: "24:20", name: "gain_stg_4", desc: "Value of the input gain for the stage no 4" }
+            { bits: "29:25", name: "gain_stg_5", desc: "Value of the input gain for the stage no 5" }
+        ]
+        }
+
+        // Window : Filtered output
+        { window: {
+            name: "rx_data"
+            items: "1"
+            validbits: "32"
+            desc: "Filtered output"
+            swaccess: "ro"
+        }
+        }
+   ]
+}

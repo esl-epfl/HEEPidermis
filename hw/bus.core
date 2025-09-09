@@ -1,0 +1,82 @@
+CAPI=2:
+
+# Copyright 2022 EPFL and Politecnico di Torino.
+# Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+# SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+#
+# File: bus.core
+# Author: Michele Caon
+# Date: 07/06/2023
+# Description: cheep external bus
+
+name: epfl:cheep:bus:0.1.0
+description: cheep external bus
+
+filesets:
+  # RTL files
+  rtl:
+    depend:
+    - epfl:cheep:packages
+    files:
+    - ip/cheep-bus/ext_bus.sv
+    - ip/cheep-bus/ext_xbar.sv
+    - ip/cheep-bus/cheep_bus.sv
+    - ip/cheep-bus/periph_bus.sv
+    file_type: systemVerilogSource
+
+  # Vendored IPs
+  rtl-vendor:
+    depend:
+    - x-heep::packages
+    - openhwgroup.org:systems:core-v-mini-mcu # for bus primitives
+
+  # Verilator waiver file
+  verilator-waivers:
+    files:
+    - misc/bus-waivers.vlt
+    - misc/ext_bus-waivers.vlt
+    - misc/ext_xbar-waivers.vlt
+    file_type: vlt
+
+targets:
+  default: &default
+    filesets:
+    - target_sim ? (rtl-vendor)
+    - rtl
+    - tool_verilator ? (verilator-waivers)
+    toplevel: cheep_bus
+
+  # Format using Verible
+  format:
+    filesets:
+    - rtl
+    description: Format source files using verible-verilog-format
+    default_tool: veribleformat
+    tools:
+      veribleformat:
+        verible_format_args:
+        - '--assignment_statement_alignment=align'
+        - '--case_items_alignment=align'
+        - '--formal_parameters_indentation=indent'
+        - '--named_parameter_alignment=align'
+        - '--named_parameter_indentation=indent'
+        - '--named_port_alignment=align'
+        - '--named_port_indentation=indent'
+        - '--port_declarations_alignment=align'
+        - '--port_declarations_indentation=indent'
+        - '--assignment_statement_alignment=align'
+        - '--module_net_variable_alignment=align'
+        - '--inplace'
+
+  # Static analysis
+  lint:
+    <<: *default
+    description: Perform static analysis using Verible
+    default_tool: veriblelint
+    tools:
+      veriblelint:
+        ruleset: default
+        verible_lint_args:
+        - '--waiver_files=../../../hw/misc/verible-lint.waiver'
+        rules:
+        - 'line-length=length:120'

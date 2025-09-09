@@ -1,0 +1,13 @@
+// Copyright 2025 EPFL contributors
+// Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+//
+// File: iREF-waivers.vlt
+// Author: David Mallasen
+// Description: Verilator waivers for iREF
+
+`verilator_config
+lint_off -rule WIDTH -file "*Verilog/iREF.sv" -match "Operator * expects * bits on the *, but * generates * bits."
+lint_off -rule UNUSED -file "*Verilog/iREF.sv" -match "Bits of signal are not used: *"
+lint_off -rule BLKSEQ -file "*Verilog/iREF.sv" -match "*"
+lint_off -rule LATCH -file "*Verilog/iREF.sv" -match "*Latch inferred for signal*"

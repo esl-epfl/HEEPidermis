@@ -1,0 +1,16 @@
+diff --git a/hw/ip/dma/dma.core b/hw/ip/dma/dma.core
+index f0ef9d8..ac2def2 100644
+--- a/hw/ip/dma/dma.core
++++ b/hw/ip/dma/dma.core
+@@ -14,9 +14,9 @@ filesets:
+     files:
+     - rtl/dma_reg_pkg.sv
+     - rtl/dma_reg_top.sv
+-    - rtl/dma_units/dma_processing_unit.sv
++    - dma_zero_padding ? (rtl/dma_units/dma_processing_unit.sv)
+     - rtl/dma_units/dma_read_unit.sv
+-    - rtl/dma_units/dma_read_addr_unit.sv
++    - dma_addr_mode ? (rtl/dma_units/dma_read_addr_unit.sv)
+     - rtl/dma_units/dma_write_unit.sv
+     - rtl/dma_units/dma_buffer_unit/dma_buffer_fifos.sv
+     - rtl/dma_units/dma_buffer_unit/dma_buffer_control.sv

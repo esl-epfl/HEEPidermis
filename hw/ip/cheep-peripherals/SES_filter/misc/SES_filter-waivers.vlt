@@ -1,0 +1,16 @@
+// Copyright 2025 EPFL contributors
+// Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+//
+// File: SES_filter-waivers.vlt
+// Author: Jérémie Moullet
+// Description: Verilator waivers for SES filter
+
+`verilator_config
+// Automatically generated control registers
+lint_off -rule DECLFILENAME -file "*/SES_filter/rtl/ses_filter_reg_top.sv" -match "Filename 'ses_filter_reg_top' does not match MODULE name: 'ses_filter_reg_top_intf'"
+
+lint_off -rule WIDTH -file "*/SES_filter/rtl/ses_filter_reg_top.sv" -match "Operator ASSIGNW expects 5 bits on the Assign RHS, but Assign RHS's SEL generates 32 bits."
+
+lint_off -rule WIDTH -file "*/ses_filter_window.sv" -match "Operator ASSIGNW expects *"
+lint_off -rule UNUSED -file "*/ses_filter_window.sv" -match "Bits of signal are not *"

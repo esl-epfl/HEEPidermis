@@ -1,0 +1,79 @@
+// Copyright 2025 EPFL contributors
+// Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+//
+// File: dac_ctrl.hjson
+// Author: David Mallasen
+// Description: HEEPidermis iDAC controller registers
+
+{
+    name: "iDAC_ctrl"
+    clock_primary: "clk_i"
+    reset_primary: "rst_ni"
+    bus_interfaces: [
+        {
+            protocol: "reg_iface"
+            direction: "device"
+        }
+    ]
+    regwidth: "32"
+    registers: [
+        { name:   "refresh_cycles"
+        desc:     "Every how many cycles should the iDAC be refreshed"
+        swaccess: "rw"
+        hwaccess: "hro"
+        fields: [
+            { bits: "31:0" }
+        ]
+        }
+        { name:   "manual_trigger"
+        desc:     "Trigger manually the refresh signal"
+        swaccess: "rw"
+        hwaccess: "hro"
+        fields: [
+            { bits: "0:0" }
+        ]
+        }
+       { name:   "enable"
+        desc:     "Enable signals for the iDACs and the controller"
+        swaccess: "rw"
+        hwaccess: "hro"
+        fields: [
+            { bits: "0:0"
+              name: "idac1_enable"
+              desc: "Enable the iDAC 1"
+            }
+            { bits: "1:1"
+              name: "idac2_enable"
+              desc: "Enable the iDAC 2"
+            }
+        ]
+        }
+
+        { name:   "calibration_1"
+        desc:     "Calibration bits for the iDAC 1"
+        swaccess: "rw"
+        hwaccess: "hro"
+        fields: [
+            { bits: "4:0"}
+            ]
+        }
+        { name:   "calibration_2"
+        desc:     "Calibration bits for the iDAC 2"
+        swaccess: "rw"
+        hwaccess: "hro"
+        fields: [
+            { bits: "4:0"}
+            ]
+        }
+        { name:   "current"
+        desc:     "Value of the current"
+        swaccess: "rw"
+        hwaccess: "hro"
+        fields: [
+            { bits: "7:0", name: "current_1", desc: "Value of the current of iDAC 1" }
+            { bits: "15:8", name: "current_2", desc: "Value of the current of iDAC 2" }
+            ]
+        }
+   ]
+}

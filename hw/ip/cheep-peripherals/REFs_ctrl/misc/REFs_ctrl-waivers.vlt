@@ -1,0 +1,13 @@
+// Copyright 2025 EPFL contributors
+// Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+//
+// File: REFs_ctrl-waivers.sv
+// Author: David Mallasen
+// Description: Verilator waivers for REFs controller
+
+`verilator_config
+// Automatically generated control registers
+lint_off -rule DECLFILENAME -file "*/REFs_ctrl/rtl/refs_ctrl_reg_top.sv" -match "Filename 'refs_ctrl_reg_top' does not match MODULE name: 'refs_ctrl_reg_top_intf'"
+
+lint_off -rule WIDTH -file "*/REFs_ctrl/rtl/refs_ctrl_reg_top.sv" -match "Operator ASSIGNW expects * bits on the Assign RHS, but Assign RHS's SEL generates * bits."

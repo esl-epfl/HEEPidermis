@@ -1,0 +1,59 @@
+# Copyright 2023 ETH Zurich and University of Bologna.
+# Licensed under the Apache License, Version 2.0, see LICENSE for details.
+# SPDX-License-Identifier: Apache-2.0
+
+# Author: Nils Wistoff <nwistoff@iis.ee.ethz.ch>
+
+variables:
+  VSIM: questa-2022.3 vsim -64
+  VLIB: questa-2022.3 vlib
+  VMAP: questa-2022.3 vmap
+  VCOM: questa-2022.3 vcom -64
+  VLOG: questa-2022.3 vlog -64
+  VOPT: questa-2022.3 vopt -64
+
+stages:
+  - test
+
+.test-tpl:
+  stage: test
+  needs:
+  variables:
+    TOPLEVEL: ""
+    PARAM1: ""
+    PARAM2: ""
+  timeout: 10min
+  script:
+    - bender script vsim -t test > compile.tcl
+    - $VSIM -c -quiet -do 'source compile.tcl; quit'
+    - $VSIM -c $TOPLEVEL -do "run -all" $PARAM1 $PARAM2
+    - (! grep -n "Error:" transcript)
+
+tests:
+  extends: .test-tpl
+  parallel:
+    matrix:
+      - TOPLEVEL:
+          - addr_decode_tb
+          - cb_filter_tb
+          # - cdc_fifo_clearable_tb
+          - clk_int_div_tb
+          - clk_mux_glitch_free_tb
+          - id_queue_tb
+          - isochronous_crossing_tb
+          - popcount_tb
+          - rr_arb_tree_tb
+          - stream_omega_net_tb
+          - stream_register_tb
+          - stream_to_mem_tb
+          - stream_xbar_tb
+          - sub_per_hash_tb
+      - TOPLEVEL: graycode_tb
+        PARAM1: [-GN=1, -GN=2, -GN=3, -GN=4, -GN=8, -GN=16]
+      - TOPLEVEL: fifo_tb
+        PARAM1: [-GDEPTH=1, -GDEPTH=13, -GDEPTH=32 -GFALL_THROUGH=1]
+      # - TOPLEVEL: [cdc_2phase_tb, cdc_2phase_clearable_tb]
+      #   PARAM1: -GUNTIL=1000000
+      # - TOPLEVEL: cdc_fifo_tb
+      #   PARAM1: [-GDEPTH=1, -GDEPTH=2, -GDEPTH=3, -GDEPTH=4, -GDEPTH=5]
+      #   PARAM2: [-GGRAY=0, -GGRAY=1]

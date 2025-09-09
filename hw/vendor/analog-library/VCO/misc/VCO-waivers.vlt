@@ -1,0 +1,24 @@
+// Copyright 2025 EPFL contributors
+// Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+//
+// File: VCO-waivers.vlt
+// Author: David Mallasen
+// Description: Verilator waivers for VCO
+
+`verilator_config
+lint_off -rule WIDTH -file "*Verilog/VCO.sv" -match "Operator * expects * bits on the *, but * generates * bits."
+
+lint_off -rule UNUSED -file "*Verilog/VCO.sv" -match "Bits of signal are not used: *"
+
+lint_off -rule BLKSEQ -file "*Verilog/VCO.sv" -match "*"
+
+lint_off -rule UNDRIVEN -file "*Verilog/VCO.sv"
+
+lint_off -rule UNUSED -file "*Verilog/VCO.sv" -match "Parameter is not used: 'VcoBhvCoef*_Hz'*"
+
+lint_off -rule UNUSED -file "*Verilog/VCO.sv" -match "Signal is not used: 'VIN_int_uV'*"
+
+lint_off -rule UNUSED -file "*Verilog/VCO.sv" -match "Signal is not used: 'REFRESH'*"
+
+lint_off -rule UNUSED -file "*Verilog/VCO.sv" -match "Signal is not used: 'EN'*"

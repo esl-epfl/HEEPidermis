@@ -1,0 +1,54 @@
+# Logs and temporary files
+*~
+*.swp
+*.cdslck
+*.cdslck.*
+*.~lock.*
+layout.oa.*.oacache
+*.log
+build/
+*.so
+*.hex
+*.elf
+*.dis
+*.cache
+*.jou
+*.csv
+*.str
+
+#generated files
+tb/tb_util.svh
+hw/vendor/x-heep/sw/device/lib/crt/crt0.S
+hw/vendor/x-heep/hw/core-v-mini-mcu/core_v_mini_mcu.sv
+hw/vendor/x-heep/hw/core-v-mini-mcu/peripheral_subsystem.sv
+hw/vendor/x-heep/hw/core-v-mini-mcu/core_v_mini_mcu.sv
+hw/vendor/x-heep/hw/core-v-mini-mcu/peripheral_subsystem.sv
+sw/linker/link.ld
+sw/linker/link_flash_exec.ld
+sw/linker/link_flash_load.ld
+hw/vendor/x-heep/tb/ext_bus.sv
+environment.yml
+
+# Python outputs
+**/__pycache__
+
+# Questasim files
+transcipt
+*.wlf
+
+
+# User-specific files
+private/
+.vscode/
+.Xil/
+*.txt
+hw/vendor/x-heep/tb/ext_bus.sv
+
+
+# TODO_heepidermis : Find a proper way to include these test files
+!*SES*.txt
+
+# Files to keep
+!hw/vendor/analog-library/VCO/Verilog/phase_lut.hex
+
+

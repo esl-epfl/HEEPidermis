@@ -1,0 +1,14 @@
+// Copyright 2025 EPFL contributors
+// Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
+// SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
+//
+// File: aMUX-waivers.vlt
+// Author: David Mallasen
+// Description: Verilator waivers for aMUX
+
+`verilator_config
+lint_off -rule WIDTH -file "*Verilog/aMUX.sv" -match "Operator * expects * bits on the *, but * generates * bits."
+lint_off -rule UNUSED -file "*Verilog/aMUX.sv" 
+lint_off -rule UNDRIVEN -file "*Verilog/aMUX.sv" 
+lint_off -rule BLKSEQ -file "*Verilog/aMUX.sv" -match "*"
+lint_off -rule INFINITELOOP -file "*Verilog/aMUX.sv"

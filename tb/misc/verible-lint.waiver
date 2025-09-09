@@ -1,0 +1,3 @@
+# Testbench parameters
+waive --rule=plusarg-assignment --location=".*tb/tb_top.sv"
+waive --rule=typedef-enums --location=".*tb/tb_top.sv"
