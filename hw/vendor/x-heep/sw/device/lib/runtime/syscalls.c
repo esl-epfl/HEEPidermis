@@ -206,7 +206,32 @@ int _openat(int dirfd, const char *name, int flags, int mode)
 
 __attribute__((used)) int _read(int file, void *ptr, int len)
 {
-    return 0;
+    // We only support reading from STDIN (usually file descriptor 0)
+    // But for simplicity in many embedded systems, we treat all reads as UART reads.
+
+    soc_ctrl_t soc_ctrl;
+    soc_ctrl.base_addr = mmio_region_from_addr((uintptr_t)SOC_CTRL_START_ADDRESS);
+
+    uart_t uart;
+    uart.base_addr   = mmio_region_from_addr((uintptr_t)UART_START_ADDRESS);
+    uart.baudrate    = UART_BAUDRATE;
+    uart.clk_freq_hz = soc_ctrl_get_frequency(&soc_ctrl);
+
+    #ifdef UART_NCO
+    uart.nco         = UART_NCO;
+    #else
+    uart.nco         = ((uint64_t)uart.baudrate << (NCO_WIDTH + 4)) / uart.clk_freq_hz;
+    #endif
+
+    // Use your HAL to get characters
+    uint8_t *buffer = (uint8_t *)ptr;
+    for (int i = 0; i < len; i++) {
+        // uart_getchar is blocking (it waits for a character)
+        uart_getchar(&uart, &buffer[i]);
+    }
+
+    // Return the number of bytes actually read
+    return len;
 }
 
 int _stat(const char *file, struct stat *st)
@@ -292,9 +317,9 @@ int _brk(void *addr)
 {
     if (addr >= (void *)__heap_start && addr <= (void *)__heap_end) {
         brk = addr;
-        return 0; 
+        return 0;
     } else {
-        return -1; 
+        return -1;
     }
 }
 
@@ -303,13 +328,13 @@ void *_sbrk(ptrdiff_t incr)
     char *old_brk = brk;
 
     if (__heap_start == __heap_end) {
-        return NULL; 
+        return NULL;
     }
 
     if (brk + incr < __heap_end && brk + incr >= __heap_start) {
         brk += incr;
     } else {
-        return (void *)-1; 
+        return (void *)-1;
     }
     return old_brk;
 }

@@ -115,9 +115,21 @@ TEST_FLAGS=
 PARAMS = $(PROJECT)
 
 PLL_FREQ ?= 10000000
+
+# ----- UART CONFIGURATION ----- #
 # For this computation check hw/vendor/x-heep/sw/target/sim/x-heep.h
 UART_BAUD := $(shell echo "$(PLL_FREQ) / 390.625" | bc | xargs printf "%.0f")
+UART_TERMINAL ?= xterm
+UART_PORT = /dev/serial/by-id/usb-FTDI_Quad_RS232-HS-if02-port0
+PICO_FLAGS = -b $(UART_BAUD) --echo --imap lfcrlf --omap crcrlf --flow n
+XTERM_CMD = xterm -hold -e "picocom $(PICO_FLAGS) $(UART_PORT)"
+GNOME_CMD = gnome-terminal -- bash -c "picocom $(PICO_FLAGS) $(UART_PORT)"
 
+ifeq ($(UART_TERMINAL), gnome)
+    TERM_EXEC = $(GNOME_CMD)
+else
+    TERM_EXEC = $(XTERM_CMD)
+endif
 
 # ----- BUILD RULES ----- #
 
@@ -398,12 +410,11 @@ openocd:
 	(xterm -hold -e "openocd -f hw/vendor/x-heep/tb/core-v-mini-mcu-pynq-z2-esl-programmer.cfg; exec bash" & \
 	echo $$! > .openocd.pid )
 
-# Open uart
+# Open UART
 .PHONY: uart
 uart:
-	(xterm -hold -e "picocom -b $(UART_BAUD) -r -l --imap lfcrlf /dev/serial/by-id/usb-FTDI_Quad_RS232-HS-if02-port0" & \
-	echo $$! > .uart.pid )
-# (gnome-terminal -- bash -c "picocom -b $(UART_BAUD) -g uart.log -r -l --imap lfcrlf /dev/serial/by-id/usb-FTDI_Quad_RS232-HS-if02-port0" & \
+	@echo "Starting UART terminal using $(UART_TERMINAL)..."
+	($(TERM_EXEC) & echo $$! > .uart.pid)
 
 # Open openOCD and uart
 .PHONY: jtag_open
