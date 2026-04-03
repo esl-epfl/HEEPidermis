@@ -12,7 +12,6 @@
 #include "SES_filter.h"
 #include "pdm2pcm_regs.h"
 
-// 8 MHz needed to coordinate with DSM
 
 /*
 make board_freq PLL_FREQ=8000000
@@ -21,18 +20,29 @@ make jtag_build PROJECT=dsm/extdriven_exploration
 make jtag_run
 */
 
-#define SYS_FCLK_HZ         8000000
+// Uncomment to use SES filter. Comment to use CIC filter.
+#define SES
+// #define EAP
+
+#ifdef EAP
+  #define SYS_FCLK_HZ 8000000 // 8 MHz needed to coordinate with DSM
+  #define DSM_F_S_kHz 1000
+  #define DSM_CLK_DIV_CC 8
+#else
+// LFP mode
+  // #define SYS_FCLK_HZ 16000000 // watch out!
+  // #define DSM_F_S_kHz 50 //watch out!
+  // #define DSM_CLK_DIV_CC 320 // watch out!
+// EAP mode for testing
+  #define SYS_FCLK_HZ 32000000 // watch out!
+  #define DSM_F_S_kHz 1000 //watch out!
+  #define DSM_CLK_DIV_CC (SYS_FCLK_HZ/DSM_F_S_kHz*1000) // watch out!
+#endif
 
 #define DELAY_BETWEEN_RUNS_cc (SYS_FCLK_HZ*1)
-#define RUN_LENGHT_N 1024
-
-#define DSM_F_S_kHz (SYS_FCLK_HZ/8000)
-
-#define DSM_CLK_DIV_CC 8
+#define RUN_LENGHT_N 1025
 
 #define GPIO_LED 0
-
-#define SES
 
 #ifdef SES
   #define FILTER_NAME "SES"
@@ -40,7 +50,7 @@ make jtag_run
   #define FILTER_NAME "CIC"
 #endif
 
-#define HEADER(g, w, f, a) printf("\n\n%s\tfclk:%d Hz, Wg:%d,Ww:%d,DF:%d,AS:%d",FILTER_NAME, DSM_F_S_kHz,g,w,f,a );
+#define HEADER(g, w, f, a) printf("\n\n%s\tfclk:%d kHz, Wg:%d,Ww:%d,DF:%d,AS:%d",FILTER_NAME, DSM_F_S_kHz,g,w,f,a );
 
 
 int main(int argc, char *argv[])
@@ -60,16 +70,22 @@ int main(int argc, char *argv[])
     }
 
     #ifdef SES
-      uint8_t dfs[] = { 100 };                      // Decimation factor
-      uint8_t wgs[] = { 16 };                       // Gain of the first stage
-      uint8_t ass[] = { 1, 3, 7, 15, 31, 63 };      // Mask of activated stages
-      uint8_t wws[] = { 6 };                        // Window lenght (2^x) samples
+      uint32_t dfs[] = { 1, 16, 32 };  // Decimation factor
+      uint32_t wgs[] = { 8, 16 };             // Gain of the first stage
+      uint32_t ass[] = { 15, 31 };           // Mask of activated stages
+      uint32_t wws[] = { 3, 4, 5 };               // Window lenght (2^x) samples
       #else
-      uint8_t dfs[] = { 100 };                      // Decimation factor
-      uint8_t wgs[] = { 1 };                        // NOT USED
-      uint8_t ass[] = { 1, 3, 7, 15, 31, 63 };      // Mask of activated stages
-      uint8_t wws[] = { 6 };                        // Delay comb
+      uint32_t dfs[] = { 1, 2, 16, 32 };     // Decimation factor
+      uint32_t wgs[] = { DSM_CLK_DIV_CC };   // Clock division (virtual)
+      uint32_t ass[] = { 63 };               // Mask of activated stages
+      uint32_t wws[] = { 2, 3, 4,5,6 }; // Delay comb
     #endif
+
+    uint32_t sim_len_n = sizeof(wgs)*sizeof(ass)*sizeof(wws)*sizeof(dfs)/256;
+    uint32_t sim_run;
+    // stop the decimation filters
+    SES_set_control_reg(0);
+    mmio_region_write32(pdm2pcm_base_addr, PDM2PCM_CONTROL_REG_OFFSET, 0);
 
     SES_set_gain(1, 0);
     SES_set_gain(2, 0);
@@ -77,13 +93,14 @@ int main(int argc, char *argv[])
     SES_set_gain(4, 0);
     SES_set_gain(5, 0);
 
-    printf("\n\n==== Starting loop for %s ====\n\n", FILTER_NAME);
+    printf("\n\n==== Starting loop for %s (%d, %d, %d)====\n\n", FILTER_NAME, SYS_FCLK_HZ, DSM_CLK_DIV_CC, DSM_F_S_kHz);
 
-    for( uint8_t g=0; g<sizeof(wgs); g++ ){
-        for( uint8_t a=0; a<sizeof(ass); a++ ){
-            for( uint8_t w=0; w<sizeof(wws); w++ ){
-                for( uint8_t f=0; f<sizeof(dfs); f++ ){
+    for( uint8_t g=0; g<sizeof(wgs)/4; g++ ){
+        for( uint8_t a=0; a<sizeof(ass)/4; a++ ){
+            for( uint8_t w=0; w<sizeof(wws)/4; w++ ){
+                for( uint8_t f=0; f<sizeof(dfs)/4; f++ ){
 
+                    sim_run = 1+f + w*sizeof(dfs)/4 + a*sizeof(dfs)*sizeof(wws)/16 + g*sizeof(dfs)*sizeof(wws)*sizeof(ass)/64;
                     /* ====================================
                     CONFIGURE THE SES FILTER
                     ==================================== */
@@ -97,7 +114,7 @@ int main(int argc, char *argv[])
                       SES_set_window_size(wws[w]);              // Set window size
                     #else
                       mmio_region_write32(pdm2pcm_base_addr, PDM2PCM_CONTROL_REG_OFFSET, 0);                    // stop the decimation filter
-                      mmio_region_write32(pdm2pcm_base_addr, PDM2PCM_CLKDIVIDX_REG_OFFSET, DSM_CLK_DIV_CC);     // Set the decimator to output a clock at the DSM's sampling frequency
+                      mmio_region_write32(pdm2pcm_base_addr, PDM2PCM_CLKDIVIDX_REG_OFFSET, wgs[g]);                  // Set the decimator to output a clock at the DSM's sampling frequency
                       mmio_region_write32(pdm2pcm_base_addr, PDM2PCM_DECIMCIC_REG_OFFSET, dfs[f]);              // Set the decimation factor
                       mmio_region_write32(pdm2pcm_base_addr, PDM2PCM_CIC_ACTIVATED_STAGES_REG_OFFSET, ass[a]);  // Set the number of activated stages
                       mmio_region_write32(pdm2pcm_base_addr, PDM2PCM_CIC_DELAY_COMB_REG_OFFSET, wws[w]);        // Delay comb
@@ -146,8 +163,9 @@ int main(int argc, char *argv[])
 
                     HEADER(wgs[g], wws[w], dfs[f], ass[a]);
                     for( sample_idx =0; sample_idx < RUN_LENGHT_N; sample_idx++ ){
-                        printf("\n%d\t%d", sample_idx, output[sample_idx]);
+                      printf("\n%d\t%d", sample_idx, output[sample_idx]);
                     }
+                    printf("\n# %d/%d\n", sim_run, sim_len_n);
 
                     for (int i = 0 ; i < DELAY_BETWEEN_RUNS_cc ; i++) { asm volatile ("nop");}
 

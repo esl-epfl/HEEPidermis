@@ -15,10 +15,21 @@ import os
 
 def finalize_block(header, xs, ys, rawname=False, plot=False):
 
+      # Define the variable names you want to extract
+    variables = ['fclk', 'Wg', 'Ww', 'DF', 'AS']
+
+    # Create a dictionary to store the results
+    extracted_data = {}
+
+    for var in variables:
+        # This regex looks for the variable name followed by a colon and digits
+        match = re.search(fr"{var}:(\d+)", header)
+        if match:
+            extracted_data[var] = int(match.group(1))
+
+
     xs = np.arange(len(ys))
     ys = np.array(ys)
-
-    f_sig = 3e6/1024
 
     # take second half
     ys2 = ys[len(ys)//3:]
@@ -37,15 +48,13 @@ def finalize_block(header, xs, ys, rawname=False, plot=False):
             if len(zc) == 3:
                 break
 
-    samples_per_period = (zc[2] - zc[0])
-
     # sampling frequency
-    fs = f_sig * samples_per_period
-    xs = xs/ fs
+    fs_Hz = extracted_data['fclk']*1e3/extracted_data['DF']
+    xs = xs/ fs_Hz
 
     if plot:
         plt.figure(figsize=(7,2))
-        plt.title(header + f"  | {fs/1000:1.2f} {f_sig} kHz")
+        plt.title(header + f"  | {fs_Hz/1e3:1.2f} kHz")
         plt.plot(xs, ys, marker=".")
         plt.xlabel("x")
         plt.ylabel("y")
@@ -55,7 +64,7 @@ def finalize_block(header, xs, ys, rawname=False, plot=False):
     if rawname:
         fname = header
     else:
-        fname = "out_finer_42/"+re.sub(r"[^\w\-_.]", "_", header) + ".csv"
+        fname = "test_with_N_ABLE/"+re.sub(r"[^\w\-_.]", "_", header) + ".csv"
     np.savetxt(fname, np.column_stack((xs, ys)), delimiter=', ')
 
 #In[]
@@ -65,37 +74,50 @@ def finalize_block(header, xs, ys, rawname=False, plot=False):
 xs, ys = [], []
 header = None
 
-with open("../../../uart.log") as f:
+plot = False
+
+with open("../../../../uart.log") as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("SES") or line.startswith("CIC"):
+             header = line
+             break
+
     for line in f:
         line = line.strip()
         if not line:
             continue
 
-        if line.startswith("fclk:"):
-            finalize_block(header, xs, ys)
+        if line.startswith("SES") or line.startswith("CIC"):
+            finalize_block(header, xs, ys, plot=plot)
             header = line
             xs, ys = [], []
         else:
-            a, b = line.split()
-            xs.append(float(a))
-            ys.append(float(b))
+            try:
+              a, b = line.split()
+              xs.append(float(a))
+              ys.append(float(b))
+            except:
+                print(line)
 
-finalize_block(header, xs, ys )
+finalize_block(header, xs, ys,plot=plot )
 
 #In[]:
 # Correct wrong axis
 #############################################################
 
-import glob
+# import glob
 
-f_sig = 3e6 / 1024
+# f_sig = 3e6 / 1024
 
-for fname in glob.glob("out_coarse_144/*.csv"):
-    data = np.loadtxt(fname, delimiter=",")
-    xs = data[:, 0]          # sample index
-    ys = data[:, 1]
+# for fname in glob.glob("out_coarse_144/*.csv"):
+#     data = np.loadtxt(fname, delimiter=",")
+#     xs = data[:, 0]          # sample index
+#     ys = data[:, 1]
 
-    finalize_block( fname, xs, ys, True )
+#     finalize_block( fname, xs, ys, True )
 
 #In[]
 # Coarse exploration heatmaps

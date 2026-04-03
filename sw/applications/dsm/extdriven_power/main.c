@@ -1,0 +1,169 @@
+// Copyright EPFL contributors.
+// Licensed under the Apache License, Version 2.0, see LICENSE for details.
+// SPDX-License-Identifier: Apache-2.0
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdbool.h>
+#include "core_v_mini_mcu.h"
+#include "gpio.h"
+#include "x-heep.h"
+#include "soc_ctrl.h"
+#include "SES_filter.h"
+#include "pdm2pcm_regs.h"
+
+
+/*
+make board_freq PLL_FREQ=8000000
+make jtag_open UART_TERMINAL=gnome UART_BAUD=20480
+make jtag_build PROJECT=dsm/extdriven_exploration
+make jtag_run
+*/
+
+// Uncomment to use SES filter. Comment to use CIC filter.
+// #define SES
+
+// 8 MHz needed to coordinate with DSM
+#define SYS_FCLK_HZ 8000000
+
+#define DELAY_BETWEEN_RUNS_cc (SYS_FCLK_HZ*1)
+#define RUN_LENGHT_N 5000000
+
+#define DSM_F_S_kHz (SYS_FCLK_HZ/8000)
+
+#define DSM_CLK_DIV_CC 8
+
+#define GPIO_LED 0
+
+
+#ifdef SES
+  #define FILTER_NAME "SES"
+#else
+  #define FILTER_NAME "CIC"
+#endif
+
+#define HEADER(g, w, f, a) printf("\n\n%s\tfclk:%d kHz, Wg:%d,Ww:%d,DF:%d,AS:%d",FILTER_NAME, DSM_F_S_kHz,g,w,f,a );
+
+
+int main(int argc, char *argv[])
+{
+    // static uint32_t output [RUN_LENGHT_N];
+    uint32_t        sample_idx  = 0;
+    uint32_t        status, fed, read;
+    mmio_region_t   pdm2pcm_base_addr = mmio_region_from_addr((uintptr_t)CIC_START_ADDRESS);
+
+    /* ====================================
+    CONFIGURE THE GPIOs
+    ==================================== */
+    gpio_cfg_t pin_led = { .pin = GPIO_LED, .mode = GpioModeOutPushPull };
+    if (gpio_config (pin_led) != GpioOk) {
+        printf("GPIO initialization failed!\n");
+        return 1;
+    }
+
+    #ifdef SES
+      uint8_t dfs[] = { 1, 16, 100};  // Decimation factor
+      uint8_t wgs[] = { 8, 16 };             // Gain of the first stage
+      uint8_t ass[] = { 1, 15, 63 };           // Mask of activated stages
+      uint8_t wws[] = { 6 };               // Window lenght (2^x) samples
+      #else
+      uint8_t dfs[] = {  1, 16, 100 };     // Decimation factor
+      uint8_t wgs[] = { 1 };             // Clock division (virtual)
+      uint8_t ass[] = { 1, 15, 63 };               // Mask of activated stages
+      uint8_t wws[] = { 6 };                  // Delay comb
+    #endif
+
+    uint32_t sim_len_n = sizeof(wgs)*sizeof(ass)*sizeof(wws)*sizeof(dfs);
+    uint32_t sim_run;
+    // stop the decimation filters
+    SES_set_control_reg(0);
+    mmio_region_write32(pdm2pcm_base_addr, PDM2PCM_CONTROL_REG_OFFSET, 0);
+
+    SES_set_gain(1, 0);
+    SES_set_gain(2, 0);
+    SES_set_gain(3, 0);
+    SES_set_gain(4, 0);
+    SES_set_gain(5, 0);
+
+    printf("\n\n==== Starting loop for %s ====\n\n", FILTER_NAME);
+
+    for( uint8_t g=0; g<sizeof(wgs); g++ ){
+        for( uint8_t a=0; a<sizeof(ass); a++ ){
+            for( uint8_t w=0; w<sizeof(wws); w++ ){
+                for( uint8_t f=0; f<sizeof(dfs); f++ ){
+
+                    sim_run = 1+f + w*sizeof(dfs) + a*sizeof(dfs)*sizeof(wws) + g*sizeof(dfs)*sizeof(wws)*sizeof(wgs);
+                    /* ====================================
+                    CONFIGURE THE SES FILTER
+                    ==================================== */
+
+                    #ifdef SES
+                      SES_set_control_reg(0);                   // stop the decimation filter
+                      SES_set_sysclk_division(DSM_CLK_DIV_CC);  // Set the decimator to output a clock at the DSM's sampling frequency
+                      SES_set_decim_factor(dfs[f]);             // Set the decimation factor
+                      SES_set_activated_stages(ass[a]);         // Set the number of activated stages
+                      SES_set_gain(0, wgs[g]);                  // Set gain of the first stage
+                      SES_set_window_size(wws[w]);              // Set window size
+                    #else
+                      mmio_region_write32(pdm2pcm_base_addr, PDM2PCM_CONTROL_REG_OFFSET, 0);                    // stop the decimation filter
+                      mmio_region_write32(pdm2pcm_base_addr, PDM2PCM_CLKDIVIDX_REG_OFFSET, wgs[g]);                  // Set the decimator to output a clock at the DSM's sampling frequency
+                      mmio_region_write32(pdm2pcm_base_addr, PDM2PCM_DECIMCIC_REG_OFFSET, dfs[f]);              // Set the decimation factor
+                      mmio_region_write32(pdm2pcm_base_addr, PDM2PCM_CIC_ACTIVATED_STAGES_REG_OFFSET, ass[a]);  // Set the number of activated stages
+                      mmio_region_write32(pdm2pcm_base_addr, PDM2PCM_CIC_DELAY_COMB_REG_OFFSET, wws[w]);        // Delay comb
+                    #endif
+
+                    // Indicate the start of a recording using a GPIO
+                    gpio_write(GPIO_LED, 1);
+
+                    // START the decimation filter
+                    #ifdef SES
+                      SES_set_control_reg(1); // START the decimation filter
+                      do{ status = SES_get_status(); } while (status != 0b11); // Wait for the filter to be ready
+                    #else
+                      mmio_region_write32(pdm2pcm_base_addr, PDM2PCM_CONTROL_REG_OFFSET, 1);
+                      do{ status = mmio_region_read32(pdm2pcm_base_addr, PDM2PCM_STATUS_REG_OFFSET); } while ( status & 1 ); // Not empty
+                    #endif
+
+                    /* ====================================
+                    ACQUIRE DATA
+                    ==================================== */
+
+                    sample_idx = 0;
+                    while(1){
+                      #ifdef SES
+                        if( SES_get_status() == 3 ){
+                            // output[sample_idx] = SES_get_filtered_output();
+                            if(sample_idx++ == RUN_LENGHT_N){
+                                SES_set_control_reg(0);
+                                break;
+                            }
+                        }
+                      #else
+                        status = mmio_region_read32(pdm2pcm_base_addr, PDM2PCM_STATUS_REG_OFFSET);
+                        if (!(status & 1)) {
+                            // output[sample_idx] = mmio_region_read32(pdm2pcm_base_addr, PDM2PCM_RXDATA_REG_OFFSET);
+                            if(sample_idx++ == RUN_LENGHT_N){
+                              mmio_region_write32(pdm2pcm_base_addr, PDM2PCM_CONTROL_REG_OFFSET, 0);
+                              break;
+                            }
+                        }
+                      #endif
+                    }
+
+                    // Indicate the end of a recording using a GPIO
+                    gpio_write(GPIO_LED, 0);
+
+                    HEADER(wgs[g], wws[w], dfs[f], ass[a]);
+
+                    for (int i = 0 ; i < DELAY_BETWEEN_RUNS_cc ; i++) { asm volatile ("nop");}
+
+                }
+            }
+        }
+    }
+
+    printf("\n\n==== Loop finished ====\n\n");
+
+
+    return EXIT_SUCCESS;
+}
