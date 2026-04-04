@@ -1,4 +1,5 @@
 #In[]:
+%matplotlib inline
 
 import os
 import re
@@ -7,16 +8,20 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from scipy.interpolate import interp1d
 
-filter = "CIC"
-# fsin = 2929.6875
+filter = "SES"
+fclk = "fclk_8MHz/"
+fsin = 2929.6875
 # fsin=976.5625
-fsin=146.484375
-outpath = f"./{int(fsin):g}Hz/fclk_8MHz/{filter}"
+# fsin=146.484375
+# for SES, 2929, 8MHz use time_scale = -1
+time_scale = 1
+outpath = f"./{int(fsin):g}Hz/{fclk}{filter}"
 
 if fsin ==  146.484375:
   fsin = 146.484375 if filter=="SES" else 146.484375*1.5 # CIC filter needed *1.5 for DF=2, and *2 for DF=1
 
 def process_files(outpath):
+    global time_scale
     path = Path(outpath)
     # Grab all .csv files starting with SES
     files = sorted(list(path.glob(f"{filter}*.csv")))
@@ -34,162 +39,195 @@ def process_files(outpath):
 
         if match:
             meta = {
-                'f_clk_kHz': int(match.group(1)),
+                'f_clk_Hz': int(match.group(1))*1e3,
                 'wg': int(match.group(2)),
                 'ww': int(match.group(3)),
                 'df': int(match.group(4)),
                 'as': int(match.group(5)),
                 'path': file_path
             }
+            data = np.loadtxt(file_path, delimiter='\t')
 
-            # 2. Load Data
-            # Assumes Column 0: Time (s), Column 1: Amplitude (int)
-            data = np.loadtxt(file_path, delimiter='\t') # or ',' based on your previous save
+            #FOR SOME REASON THE DF=1 IS DOING DF=2!!
+            if time_scale == -1:
+                time_scale = 2 if meta['df'] == 1 else 1
+
+            meta['fs_sps'] = (meta['f_clk_Hz']/meta['df'])/time_scale
             time_s = data[:, 0]
-            data_int = data[:, 1]
+            meta['time'] = time_s*time_scale
 
-            meta['time'] = time_s
+            data_int = data[:, 1]
             meta['signal'] = data_int
             parsed_data.append(meta)
 
+            meta['fsin_Hz'] = fsin
+
     return parsed_data
-
-
 
 all_results = process_files(outpath)
 
+
 #In[]:
+# Define auxiliary functions
 
-def compute_nrmse_db(results, f_sin_hz=3000, osr=128, plot=False):
-    """
-    Computes NRMSE in dB relative to an ideal sine.
-    """
-    signal = results['signal']
-    time = results['time']
+def result_crop_signal(result):
+    og_signal  = result['signal']
+    og_time    = result['time']
 
-    # 1. Take central 90%
-    n = len(signal)
-    start_idx = int(n * 0.05)
-    end_idx = int(n * 0.95)
-    t_90 = time[start_idx:end_idx]
-    s_90 = signal[start_idx:end_idx]
+    n               = len(og_signal)
+    start_idx       = int(n * 0.05)
+    end_idx         = int(n * 0.95)
+    cropped_signal  = og_signal[start_idx:end_idx]
+    cropped_time    = og_time[start_idx:end_idx] - og_time[start_idx]
 
-    # 2. Normalize to [0, 1] with mean 0.5
-    s_min, s_max = np.min(s_90), np.max(s_90)
-    s_norm = (s_90 - s_min) / (s_max - s_min)
-    # Ensure mean is exactly 0.5 (optional shift if signal isn't perfectly symmetric)
-    s_norm = s_norm - np.mean(s_norm) + 0.5
+    result['cropped_signal']   = cropped_signal
+    result['cropped_time']     = cropped_time
+    return
 
-    # 3. Find sub-sample 0.5 crossings using interpolation
-    # Find rising crossing (first time it goes from <0.5 to >0.5)
-    rising_indices = np.where((s_norm[:-1] < 0.5) & (s_norm[1:] >= 0.5))[0]
-    falling_indices = np.where((s_norm[:-1] > 0.5) & (s_norm[1:] <= 0.5))[0]
+def result_fit_sin(result):
 
-    if len(rising_indices) == 0 or len(falling_indices) == 0:
-      results['nrmse_db'] = 0
-      return 0
+    t       = result['cropped_time']
+    y       = result['cropped_signal']
+    fsin    = result['fsin_Hz']
 
-    first_idx = rising_indices[0]
-    last_idx = falling_indices[-1]
+    # 1. Create the known basis functions
+    omega = 2 * np.pi * fsin
+    sin_wave = np.sin(omega * t)
+    cos_wave = np.cos(omega * t)
+    ones = np.ones_like(t)
 
-    def get_crossing_time(idx):
-        # Linear interpolation: t = t1 + (0.5 - y1) * (t2 - t1) / (y2 - y1)
-        t1, t2 = t_90[idx], t_90[idx+1]
-        y1, y2 = s_norm[idx], s_norm[idx+1]
-        return t1 + (0.5 - y1) * (t2 - t1) / (y2 - y1)
+    # 2. Build the X matrix for linear regression
+    # X shape will be (N, 3)
+    X = np.column_stack([sin_wave, cos_wave, ones])
 
-    t_start = get_crossing_time(first_idx)
-    t_end = get_crossing_time(last_idx)
-    duration = t_end - t_start
+    # 3. Solve the linear least squares problem (Y = X * Beta)
+    # Beta contains [c1, c2, c3]
+    Beta, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
+    c1, c2, c3 = Beta
 
-    # 4. Generate Target Sine and New Time Scale
-    fs_target = f_sin_hz
-    t_new = np.arange(0, duration, 1/fs_target)
+    # 4. Convert back to Amplitude, Phase, and Offset
+    amplitude = np.sqrt(c1**2 + c2**2)
+    phase = np.arctan2(c2, c1)
+    offset = c3
 
-    # Target sine: starts at 0.5 rising, mean 0.5, amp 0.5
-    sine_target = 0.5 + 0.5 * np.sin(2 * np.pi * f_sin_hz * t_new)
+    # Generate the aligned best-fit curve to compute your point-to-point error
+    best_fit_y = amplitude * np.sin(omega * t + phase) + offset
 
-    # 5. Interpolate Original Signal onto t_new
-    # We shift t_90 so that t_start is 0 for alignment
-    interp_func = interp1d(t_90 - t_start, s_norm, kind='cubic', fill_value="extrapolate")
-    s_resampled = interp_func(t_new)
+    result['cropped_fitted_sin'] = best_fit_y
 
-
-
-    # 6. Compute NRMSE
-    rmse = np.sqrt(np.mean((s_resampled - sine_target)**2))
-    # NRMSE = RMSE / Range (Range is 1.0 because of our normalization)
-    nrmse = rmse / 1.0
-
+def nrmse_db(sig, ref):
+    rmse    = np.sqrt(np.mean((sig - ref)**2))
+    ampl    = (max(ref)-min(ref))
+    nrmse   = rmse/ampl
     nrmse_db = 20 * np.log10(nrmse)
-
-    results['nrmse_db'] = nrmse_db
-    results['cropped_data'] = s_resampled
-    results['cropped_time'] = t_new
-    results['cropped_ref'] = sine_target
-
-    if plot:
-      plt.figure(figsize=(5,2.5))
-      plt.step(t_new, sine_target, c='g')
-      plt.step(t_new, s_resampled, c='r')
-      plt.title(f"Ww:{results['ww']} | Wg:{results['wg']} | AS: {results['as']} |DF: {results['df']} | NRMSE: {results['nrmse_db']:1.1f}")
-      plt.show()
-
     return nrmse_db
 
+def result_compute_nrmse_db( result ):
+    sig = result["cropped_signal"]
+    ref = result["cropped_fitted_sin"]
+
+    result["nrmse_db"] = nrmse_db(sig, ref)
+    return
+
+def result_compute_nrmse_window_db(result, window_frac=0.1, step_frac=0.01):
+    sig = result["cropped_signal"]
+    ref = result["cropped_fitted_sin"]
+    length_n = len(sig)
+    window_size = int(length_n * window_frac)
+    step_size = int(length_n * step_frac)
+
+    result['nrmse_window_db'] = []
+    for start in range(0, length_n - window_size + 1, step_size):
+        end = start + window_size
+        sig_window = sig[start:end]
+        ref_window = ref[start:end]
+        result['nrmse_window_db'].append(nrmse_db(sig_window, ref_window))
+
+    result['best_nrmse_db'] = min(result['nrmse_window_db'])
+    result_compute_nrmse_db(result)
+    return
+
 #In[]:
-%matplotlib inline
+# Crop and compute NRMSE
 
-best_dB_idx = 0
+plt.rcParams.update({'font.size': 9, 'font.family': 'serif'})
 
-for idx, results in enumerate(all_results):
-  db_val = compute_nrmse_db(results, f_sin_hz=fsin, plot=True)
-  if results['nrmse_db'] < all_results[best_dB_idx]['nrmse_db']:
-      best_dB_idx = idx
+best_results = []
 
-best_result = all_results[best_dB_idx]
+plot = 0
 
-plt.figure(figsize=(5,2.5))
-plt.step(best_result['cropped_time'], best_result['cropped_ref'], c='g')
-plt.step(best_result['cropped_time'], best_result['cropped_data'], c='r')
-plt.title(f"Ww:{best_result['ww']} | Wg:{best_result['wg']} | DF{best_result['df']} | NRMSE:{best_result['nrmse_db']:1.1f}")
-plt.show()
+for result in all_results:
+    result_crop_signal(result)
+    result_fit_sin(result)
+    result_compute_nrmse_window_db(result)
 
-plt.figure(figsize=(5,2.5))
-length_n = len(best_result['time'])
-start_after_some_time = int(0.1*length_n)
-plt.step(best_result['time'][start_after_some_time:], best_result['signal'][start_after_some_time:], c='g')
+    if result['best_nrmse_db'] < -30:
+        best_results.append(result)
+        if plot:
+            fig, axs = plt.subplots(2,1, figsize=(6,3))
+            axs[0].set_title(f"AS:{result['df']} | DF {result['df']} | wg {result['wg']} | ww {result['ww']} | avg/best NRMSE: {result['nrmse_db']:1.0f}/{result['best_nrmse_db']:1.0f} dB" )
+            axs[0].plot(result["cropped_time"], result['cropped_fitted_sin'], c='g', linewidth=2)
+            axs[0].plot(result["cropped_time"], result["cropped_signal"], c='r')
+            axs[1].plot(range(len(result['nrmse_window_db'])),result['nrmse_window_db'],'-k')
+            plt.show()
 
-import matplotlib.ticker as ticker
-ax = plt.gca()
-bit_width = 16 # Or use your 'ww' variable here
-def to_binary(x, pos):
-    return format(int(x), f'0{bit_width}b')
-ax.yaxis.set_major_formatter(ticker.FuncFormatter(to_binary))
-ax.yaxis.set_major_locator(ticker.MaxNLocator(integer=True))
 
-plt.title(f"Raw signal extracted")
-plt.show()
-
+for result in all_results:
+    result['complexity'] = (1/result['df']) * result['wg'] * np.log2(result['as'] + 1)
 
 #In[]:
 # Plot all results
 import pandas as pd
 
 
-df = pd.DataFrame(all_results)
-
-# 1. Calculate the Complexity Metric
-# Using log2(as + 1) to handle the bit-depth contribution of 'as'
-df['complexity'] = (1/df['df']) * df['wg'] #* np.log2(df['as'] + 1)
+df = pd.DataFrame(best_results)
 
 import plotly.express as px
 pd.options.plotting.backend = "plotly"
 
 df.plot.scatter(
     x="complexity",
-    y="nrmse_db",
-    color="ww",
+    y="best_nrmse_db",
+    color="as",
+    symbol='df',
     title="NRMSE vs Complexity",
-    hover_data=["f_clk_kHz", "wg", "as", "df"]
+    hover_data=["wg", "as", "df", 'ww']
 )
+
+print(len(best_results))
+
+
+#In[]:
+# Plot for paper
+
+result = best_results[0]
+
+fig, ax = plt.subplots(figsize=(5,3))
+
+ax.set_title(f"{filter} filter, NRMSE for a ~FS sine of {fsin/1e3:1.1f} kHz ")
+colors = { 63:"red", 31:"green", 15:"blue"}
+for AS in [63, 31, 15]:
+    try:
+        nrmse_windows = [ result['nrmse_window_db'] for result in best_results if result['as'] == AS]
+        complexities  = [ result['complexity'] for result in best_results if result['as'] == AS]
+        stages        = [ result['as'] for result in best_results if result['as'] == AS]
+
+        box = ax.boxplot(nrmse_windows, positions=complexities+np.random.random(len(complexities))*0.1*np.array(complexities), widths=0.025*np.array(complexities), patch_artist=True,
+                        showmeans=False, showfliers=False,
+                        medianprops={"color": colors[AS], "linewidth": 1},
+                        boxprops={"facecolor": colors[AS], "edgecolor": colors[AS],
+                                "linewidth": 0.5, "alpha": 0.2},
+                        whiskerprops={"color": colors[AS], "linewidth": 0.5},
+                        capprops={"color": colors[AS], "linewidth": 0.5})
+    except:
+        pass
+
+plt.grid(axis='y')
+plt.xlim(0.1,10)
+plt.ylim(-80, -20)
+plt.xscale('log')
+plt.ylabel("NRMSE (dB)")
+plt.xlabel("Complexity=fs x wg x as")
+plt.show()
+
+
