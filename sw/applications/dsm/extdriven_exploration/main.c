@@ -158,17 +158,18 @@ int main(int argc, char *argv[])
                       #endif
                     }
 
-                    // Indicate the end of a recording using a GPIO
-                    gpio_write(GPIO_LED, 0);
+                    if(0){
+                        // Indicate the end of a recording using a GPIO
+                        gpio_write(GPIO_LED, 0);
 
-                    HEADER(wgs[g], wws[w], dfs[f], ass[a]);
-                    for( sample_idx =0; sample_idx < RUN_LENGHT_N; sample_idx++ ){
-                      printf("\n%d\t%d", sample_idx, output[sample_idx]);
+                        HEADER(wgs[g], wws[w], dfs[f], ass[a]);
+                        for( sample_idx =0; sample_idx < RUN_LENGHT_N; sample_idx++ ){
+                        printf("\n%d\t%d", sample_idx, output[sample_idx]);
+                        }
+                        printf("\n# %d/%d\n", sim_run, sim_len_n);
+
+                        for (int i = 0 ; i < DELAY_BETWEEN_RUNS_cc ; i++) { asm volatile ("nop");}
                     }
-                    printf("\n# %d/%d\n", sim_run, sim_len_n);
-
-                    for (int i = 0 ; i < DELAY_BETWEEN_RUNS_cc ; i++) { asm volatile ("nop");}
-
                 }
             }
         }

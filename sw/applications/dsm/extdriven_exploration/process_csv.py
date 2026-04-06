@@ -8,11 +8,11 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from scipy.interpolate import interp1d
 
-filter = "SES"
-fclk = "fclk_8MHz/"
-fsin = 2929.6875
+filter = "CIC"
+fclk = "fclk_16MHz/"
+fsin=146.484375
 # fsin=976.5625
-# fsin=146.484375
+# fsin = 2929.6875
 # for SES, 2929, 8MHz use time_scale = -1
 time_scale = 1
 outpath = f"./{int(fsin):g}Hz/{fclk}{filter}"
@@ -165,15 +165,53 @@ for result in all_results:
         best_results.append(result)
         if plot:
             fig, axs = plt.subplots(2,1, figsize=(6,3))
-            axs[0].set_title(f"AS:{result['df']} | DF {result['df']} | wg {result['wg']} | ww {result['ww']} | avg/best NRMSE: {result['nrmse_db']:1.0f}/{result['best_nrmse_db']:1.0f} dB" )
-            axs[0].plot(result["cropped_time"], result['cropped_fitted_sin'], c='g', linewidth=2)
-            axs[0].plot(result["cropped_time"], result["cropped_signal"], c='r')
-            axs[1].plot(range(len(result['nrmse_window_db'])),result['nrmse_window_db'],'-k')
+            axs[0].set_title(f"AS:{result['as']} | DF {result['df']} | wg {result['wg']} | ww {result['ww']} | avg/best NRMSE: {result['nrmse_db']:1.0f}/{result['best_nrmse_db']:1.0f} dB" )
+            axs[0].step(result["cropped_time"], result['cropped_fitted_sin'], c='g', linewidth=2)
+            axs[0].step(result["cropped_time"], result["cropped_signal"], c='r')
+            axs[1].step(range(len(result['nrmse_window_db'])),result['nrmse_window_db'],'-k')
             plt.show()
 
+        # print(f"AS:{result['as']} | DF {result['df']} | wg {result['wg']} | ww {result['ww']} | avg/best NRMSE: {result['nrmse_db']:1.0f}/{result['best_nrmse_db']:1.0f} dB")
+        data_range = max(result["cropped_signal"])-min(result["cropped_signal"])
+        range_b = np.ceil(np.log2(data_range))
+        avg = np.mean(result["cropped_signal"])
+        gain_b = np.ceil(np.log2(avg))
+        lsb = min(abs(np.diff(np.array(result["cropped_signal"]))[np.diff(np.array(result["cropped_signal"]))!=0]))
+
+        # print(f"Range: {data_range} ({range_b} b) | avg: {int(avg)} ({gain_b} b) | lsb: {lsb}")
+
+        print(f"{result['wg']}\t{result['ww']}\t{result['as']}\t{data_range}\t{int(avg)}\t{lsb}\t{result['df']}\t{result['nrmse_db']}\t{result['best_nrmse_db']}")
 
 for result in all_results:
-    result['complexity'] = (1/result['df']) * result['wg'] * np.log2(result['as'] + 1)
+    if filter == "CIC":
+        area_per_intg       = 461
+        area_per_comb       = 4848
+        ff_area_comb        = 3500
+        other_area_comb     = area_per_comb - ff_area_comb
+        area_per_delay      = ff_area_comb/16
+        delays              = result['ww']
+        eff_area_per_comb   = other_area_comb + delays*area_per_delay
+        print(eff_area_per_comb, delays)
+        freq_intg_MHz       = result['f_clk_Hz']/1e6
+        freq_comb_MHz       = freq_intg_MHz/result['df']
+        bitwidth            = 24
+        datarate            = bitwidth*freq_intg_MHz/result['df']
+        cost_intg           = area_per_intg*freq_intg_MHz
+        cost_comb           = eff_area_per_comb*freq_comb_MHz
+        stages              = np.log2(result['as'] + 1)
+        total_cost          = stages*(cost_intg+cost_comb)*datarate
+        print(f"total cost: {total_cost:1.2e}")
+    if filter == "SES":
+        area_per_stage      = 1300
+        freq_stage_MHz      = result['f_clk_Hz']/1e6
+        cost_stage          = area_per_stage*freq_stage_MHz
+        bitwidth            = 24
+        datarate            = bitwidth*freq_stage_MHz/result['df']
+        stages              = np.log2(result['as'] + 1)
+        total_cost          = stages*(cost_stage)*datarate
+        print(f"total cost: {total_cost:1.2e}")
+
+    result['complexity'] = total_cost
 
 #In[]:
 # Plot all results
@@ -182,29 +220,36 @@ import pandas as pd
 
 df = pd.DataFrame(best_results)
 
+print(len(df))
+
 import plotly.express as px
 pd.options.plotting.backend = "plotly"
 
-df.plot.scatter(
+fig = df.plot.scatter(
     x="complexity",
-    y="best_nrmse_db",
+    y="nrmse_db",
     color="as",
     symbol='df',
     title="NRMSE vs Complexity",
     hover_data=["wg", "as", "df", 'ww']
 )
+fig.show()
 
 print(len(best_results))
 
 
 #In[]:
 # Plot for paper
+from matplotlib.ticker import FuncFormatter
 
 result = best_results[0]
 
-fig, ax = plt.subplots(figsize=(5,3))
+if fclk == "fclk_16MHz/":
+    fig, ax = plt.subplots(figsize=(5,3))
+else:
+    fig, ax = plt.subplots(figsize=(3,3))
 
-ax.set_title(f"{filter} filter, NRMSE for a ~FS sine of {fsin/1e3:1.1f} kHz ")
+# ax.set_title(f"{filter} filter, NRMSE for a ~FS sine of {fsin/1e3:1.1f} kHz ")
 colors = { 63:"red", 31:"green", 15:"blue"}
 for AS in [63, 31, 15]:
     try:
@@ -212,7 +257,7 @@ for AS in [63, 31, 15]:
         complexities  = [ result['complexity'] for result in best_results if result['as'] == AS]
         stages        = [ result['as'] for result in best_results if result['as'] == AS]
 
-        box = ax.boxplot(nrmse_windows, positions=complexities+np.random.random(len(complexities))*0.1*np.array(complexities), widths=0.025*np.array(complexities), patch_artist=True,
+        box = ax.boxplot(nrmse_windows, positions=complexities+np.random.random(len(complexities))*0.1*np.array(complexities), widths=0.1*np.array(complexities), patch_artist=True,
                         showmeans=False, showfliers=False,
                         medianprops={"color": colors[AS], "linewidth": 1},
                         boxprops={"facecolor": colors[AS], "edgecolor": colors[AS],
@@ -223,11 +268,27 @@ for AS in [63, 31, 15]:
         pass
 
 plt.grid(axis='y')
-plt.xlim(0.1,10)
+# plt.xlim(0.1,10)
+
+plt.xlim(9e2,2e4)
 plt.ylim(-80, -20)
 plt.xscale('log')
-plt.ylabel("NRMSE (dB)")
-plt.xlabel("Complexity=fs x wg x as")
+
+formatter_u = FuncFormatter(lambda x, pos: f"{x:1.0e}")
+ax.xaxis.set_major_formatter(formatter_u)
+
+
+if fclk == "fclk_16MHz/":
+    plt.ylabel("NRMSE (dB)")
+    plt.xlim(5,5e2)
+else:
+    ax.set_yticklabels([])
+
+# plt.xlabel(r"Complexity=$f_{s} \times$ bitwidth $\times$ stages")
+plt.xlabel("Complexity")
+plt.tight_layout()
+plt.savefig(f"./figs/NRMSE_vs_complexity_{filter}_{int(fsin):g}Hz_{fclk[:-1]}.png", dpi=400)
 plt.show()
+
 
 
