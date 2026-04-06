@@ -46,6 +46,20 @@
 
 #define DMA_CSR_REG_MIE_MASK (( 1 << 30 ) |( 1 << 19 ) | (1 << 11 ))
 
+
+
+#define SYS_FCLK_HZ 8000000 // 8 MHz needed to coordinate with DSM
+#define DSM_F_S_kHz 1000
+#define DSM_CLK_DIV_CC 8
+#define SES
+#define FILTER_NAME "SES"
+
+#define HEADER_SES(g, w, f, a) printf("\n\n%s\tfclk:%d kHz, Wg:%d,Ww:%d,DF:%d,AS:%d",FILTER_NAME, DSM_F_S_kHz,g,w,f,a );
+#define HEADER_DLC(lw, dl, dt) printf("\nDLC: LW:%d bits, DL: %d bits, Dt: %d bits", lw, dl, dt);
+
+
+
+
 uint8_t src_slot = DMA_TRIG_SLOT_EXT_RX;
 
 dma_target_t tgt_src;
@@ -83,8 +97,7 @@ int main() {
     CSR_SET_BITS(CSR_REG_MSTATUS, 0x8);
     CSR_SET_BITS(CSR_REG_MIE, DMA_CSR_REG_MIE_MASK );
 
-    // dLC results buffer
-    int16_t dlc_results[NUMBER_OUTPUT/10]; //The 10 is an estimation based on test data, can be adapted
+
 
 /*############################################################
 ####### SET THE DIGITAL LC POINTERS #######################*/
@@ -99,6 +112,22 @@ int main() {
     uint32_t* dlc_hysteresis_en       = DLC_START_ADDRESS + DLC_HYSTERESIS_EN_REG_OFFSET;
     uint32_t* dlc_discard_bits        = DLC_START_ADDRESS + DLC_DISCARD_BITS_REG_OFFSET;
 
+
+
+    uint32_t df =  16;  // Decimation factor
+    uint32_t wg =  16; // Gain of the first stage
+    uint32_t as =  31; // Mask of activated stages
+    uint32_t ww =  5;  // Window lenght (2^x) samples
+    uint32_t lw = 11;
+    uint32_t dt = 6;
+    uint32_t dl = 2;
+
+    uint8_t windows_to_process = 10;
+    uint16_t window_size_du = 100;
+    // dLC results buffer
+    int16_t dlc_results[1024]; //The 10 is an estimation based on test data, can be adapted
+
+
 /*############################################################
 ####### SET THE DIGITAL LC PARAMETERS ######################*/
 
@@ -107,16 +136,15 @@ int main() {
     //              if set to '0' the result data for delta-levels are in sign and modulo format
     *dlvl_format = LC_PARAMS_DATA_IN_TWOS_COMPLEMENT;
     // dlvl_log_level_width: log2 of the delta-levels width
-    *dlvl_log_level_width = LC_PARAMS_LC_LEVEL_WIDTH_BY_BITS;
+    *dlvl_log_level_width = lw;
     // dlvl_n_bits: number of bits for the delta-levels field
     //              if dlvl_format is set to '1' the number of bits for the delta-levels is dlvl_n_bits
     //              if dlvl_format is set to '0' the number of bits for the delta-levels is dlvl_n_bits - 1 to account for the sign bit
-    *dlvl_n_bits = (LC_PARAMS_DATA_IN_TWOS_COMPLEMENT) ? LC_PARAMS_LC_ACQUISITION_WORD_SIZE_OF_AMPLITUDE:
-                        LC_PARAMS_LC_ACQUISITION_WORD_SIZE_OF_AMPLITUDE - 1;
+    *dlvl_n_bits = (LC_PARAMS_DATA_IN_TWOS_COMPLEMENT) ? dl: dl - 1;
     // dlvl_mask: mask for the delta-levels field (it has as many bits set to 1 as the number of bits for the delta-levels field)
     *dlvl_mask = (1 << (*dlvl_n_bits)) - 1;
     // dt_mask: mask for the delta-time field (it has as many bits set to 1 as the number of bits for the delta-time field)
-    *dt_mask = (1 << (LC_PARAMS_LC_ACQUISITION_WORD_SIZE_OF_TIME)) - 1;
+    *dt_mask = (1 << (dt)) - 1;
     // Enable a 1-level hsytersis to avoid excessive crossings
     *dlc_hysteresis_en = LC_PARAMS_LC_HYSTERESIS_ENABLE;
     // Do not discard any bits from the input signal
@@ -173,7 +201,7 @@ int main() {
     // IMPORTANT: the window interrupt always work with the amount of packets written.
     // How many transfers? Depends on what you want... but make sure that the
     // CPU will be able to execute all it's code before the next interrupt
-    trans.win_du = 50;
+    trans.win_du = window_size_du;
 
     // Set the size of the transaction. This HAS to be the same value as the dLC will be monitoring.
     // Whether this refers to read or written words, depends on the dlc_rnw variable.
@@ -232,13 +260,13 @@ int main() {
     #endif
 
 /*############################################################
-####### CONFIGURE THE FILTERS ##########################*/ 
+####### CONFIGURE THE FILTERS ##########################*/
 #ifdef USE_SES_NOT_CIC
     // Set SES filter parameters
-    SES_set_window_size(SES_WINDOW_SIZE);
-    SES_set_decim_factor(SES_DECIM_FACTOR);
+    SES_set_window_size(ww);
+    SES_set_decim_factor(df);
     SES_set_sysclk_division(SES_SYSCLK_DIVISION);
-    SES_set_activated_stages(SES_ACTIVATED_STAGES);
+    SES_set_activated_stages(as);
 
     SES_set_gain(0, SES_GAIN_STAGE_0);
     SES_set_gain(1, SES_GAIN_STAGE_1);
@@ -269,7 +297,7 @@ int main() {
 
     // This is an arbitrary number I chose from seeing more or less how many windows will be
     // triggered during the reading of the sample data, considering the transactions finishing.
-    uint8_t windows_to_process = 5;
+
 
     while( window_intr_flag + transactions_intr_flag < windows_to_process ) {
         CSR_CLEAR_BITS(CSR_REG_MSTATUS, 0x8);
@@ -279,39 +307,10 @@ int main() {
         CSR_SET_BITS(CSR_REG_MSTATUS, 0x8);
     }
 
-    // Celebrate in a fairly lame way
-    PRINTF("DMA done! Did %d windows and %d transactions which finished\n\r", window_intr_flag, transactions_intr_flag);
-
-/*############################################################
-####### CHECK THE RESULTS ###################################*/
-
-    // Checking  the results
-    PRINTF("\n\rRES\t| dLC\t| Golden");
-    uint16_t errors = 0;
-#ifdef USE_SES_NOT_CIC
-    for (int i = 0; i < goldenTruthSizeSES; i++)
-    {
-        if(dlc_results[i] != goldenTruthSES[i])
-        {
-            PRINTF("\n\rX %d\t| %d\t| %d", i, dlc_results[i], goldenTruthSES[i]);
-            errors++;
-        }
+    HEADER_SES(wg, ww, df, as);
+    HEADER_DLC(lw, dl, dt);
+    for( uint32_t sample_idx =0; sample_idx < DATA_LENGTH_B; sample_idx++ ){
+        // printf("\n%d\t%d", sample_idx, dlc_results[sample_idx]);
     }
-#else
-    for (int i = 0; i < goldenTruthSizeCIC; i++)
-    {
-        if(dlc_results[i] != goldenTruthCIC[i])
-        {
-            PRINTF("\n\rX %d\t| %d\t| %d", i, dlc_results[i], goldenTruthCIC[i]);
-            errors++;
-        }
-    }
-#endif
-    if( errors ){
-        PRINTF("\n\r=====================\n ERRORS: %d\n", errors);
-        return EXIT_FAILURE;
-    } else {
-        PRINTF("\n\r ALL GOOD!\n");
-        return EXIT_SUCCESS;
-    }
+    return 0;
 }

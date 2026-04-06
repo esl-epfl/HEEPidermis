@@ -62,7 +62,7 @@ for file in files:
             print(name)
 
 # Ensure we found the ideal
-dsm_ideal = next(r for r in all_results if r.get("is_dsm") and "raw bitstream" in r["name"])
+dsm_ideal = [r for r in all_results if r.get("is_dsm") and "raw bitstream" in r["name"]][-1]
 
 
 #In[]:
@@ -259,7 +259,7 @@ target = [r for r in all_results if not r.get("is_dsm") and r["wg"] == wg and r[
 
 offset = 0
 axs[0].text(450, -150,f"$W_g$={wg}, $W_w$={ww}, stages={np.log2(n+1):g}",bbox=dict(facecolor='white', edgecolor='none', alpha=1, pad=0))
-axs[0].semilogx(dsm_ideal["freq_hz"], dsm_ideal["ampl_db"] + offset, color='red', label="Input", linewidth=2)
+axs[0].semilogx(dsm_ideal["freq_hz"], dsm_ideal["ampl_db"] + offset, color='red', label="Input", linewidth=2.5)
 axs[0].semilogx(target["freq_hz"], target['ampl_db'], color='k', label="Output")
 # axs[0].set_ylabel('Amplitude (dB)')
 axs[0].grid(True, which="both")
