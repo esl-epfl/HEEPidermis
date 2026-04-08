@@ -21,6 +21,7 @@
 #include "hart.h"
 #include "timer_sdk.h"
 #include "fast_intr_ctrl.h"
+#include "gpio.h"
 
 #include "SES_filter_regs.h"
 #include "SES_filter.h"
@@ -39,9 +40,9 @@
 #endif
 
 #ifdef FULL_TEST
-    #define DATA_LENGTH_B   NUMBER_OUTPUT
+    #define DATA_LENGTH_HW   1024
 #else
-    #define DATA_LENGTH_B   256
+    #define DATA_LENGTH_HW   256
 #endif
 
 #define DMA_CSR_REG_MIE_MASK (( 1 << 30 ) |( 1 << 19 ) | (1 << 11 ))
@@ -55,7 +56,7 @@
 #define FILTER_NAME "SES"
 
 #define HEADER_SES(g, w, f, a) printf("\n\n%s\tfclk:%d kHz, Wg:%d,Ww:%d,DF:%d,AS:%d",FILTER_NAME, DSM_F_S_kHz,g,w,f,a );
-#define HEADER_DLC(lw, dl, dt) printf("\nDLC: LW:%d bits, DL: %d bits, Dt: %d bits", lw, dl, dt);
+#define HEADER_DLC(lw, dl, dt, h) printf("\nDLC: LW:%d bits, DL: %d bits, Dt: %d bits %s", lw, dl, dt, h ? "hyst": "");
 
 
 
@@ -65,6 +66,8 @@ uint8_t src_slot = DMA_TRIG_SLOT_EXT_RX;
 dma_target_t tgt_src;
 dma_target_t tgt_dst;
 dma_trans_t trans;
+
+uint32_t sample_idx;
 
 volatile int32_t window_intr_flag = 0;
 volatile int32_t transactions_intr_flag = 0;
@@ -97,7 +100,11 @@ int main() {
     CSR_SET_BITS(CSR_REG_MSTATUS, 0x8);
     CSR_SET_BITS(CSR_REG_MIE, DMA_CSR_REG_MIE_MASK );
 
-
+    gpio_cfg_t pin_led = { .pin = 0, .mode = GpioModeOutPushPull };
+    if (gpio_config (pin_led) != GpioOk) {
+        printf("GPIO initialization failed!\n");
+        return 1;
+    }
 
 /*############################################################
 ####### SET THE DIGITAL LC POINTERS #######################*/
@@ -118,15 +125,23 @@ int main() {
     uint32_t wg =  16; // Gain of the first stage
     uint32_t as =  31; // Mask of activated stages
     uint32_t ww =  5;  // Window lenght (2^x) samples
-    uint32_t lw = 11;
+    uint32_t lw = 10;
     uint32_t dt = 6;
     uint32_t dl = 2;
 
-    uint8_t windows_to_process = 10;
-    uint16_t window_size_du = 100;
+    uint16_t windows_to_process = 4000;
+    uint16_t window_size_du = 1000;
     // dLC results buffer
-    int16_t dlc_results[1024]; //The 10 is an estimation based on test data, can be adapted
+    static int16_t dlc_results[DATA_LENGTH_HW]; //The 10 is an estimation based on test data, can be adapted
 
+
+    gpio_write(0, 1);
+
+    for( uint32_t sample_idx =0; sample_idx < DATA_LENGTH_HW; sample_idx++ ){
+        dlc_results[sample_idx] = 0;
+    }
+
+    HEADER_SES(wg, ww, df, as);
 
 /*############################################################
 ####### SET THE DIGITAL LC PARAMETERS ######################*/
@@ -146,9 +161,9 @@ int main() {
     // dt_mask: mask for the delta-time field (it has as many bits set to 1 as the number of bits for the delta-time field)
     *dt_mask = (1 << (dt)) - 1;
     // Enable a 1-level hsytersis to avoid excessive crossings
-    *dlc_hysteresis_en = LC_PARAMS_LC_HYSTERESIS_ENABLE;
+    *dlc_hysteresis_en = 1;
     // Do not discard any bits from the input signal
-    *dlc_discard_bits = LC_PARAMS_LC_DISCARD_BITS;
+    *dlc_discard_bits = 0;
 
     PRINTF("Set the dLC to: \n\r2sComp:\t%d\n\rLVLw:\t%d bits\n\r",*dlvl_format, *dlvl_log_level_width );
 
@@ -195,7 +210,7 @@ int main() {
     // The dLC will the one monitoring the end of the transactions.
     // We want to restart the DMA transaction every time the DMA has read the whole buffer, so that it can send it again
     // Until we have processed enough data. We will split the whole data buffer in 4
-    *dlc_size = (DATA_LENGTH_B/DMA_DATA_TYPE_2_SIZE(DMA_DATA_TYPE_WORD)) / 4;
+    *dlc_size = 2048; //(DATA_LENGTH_HW/DMA_DATA_TYPE_2_SIZE(DMA_DATA_TYPE_WORD));
 
     // Request an interrupt when the DMA reaches a certain amount of transfers
     // IMPORTANT: the window interrupt always work with the amount of packets written.
@@ -214,7 +229,7 @@ int main() {
 
     // The DMA will restart the same transaction again once it finishes.
     // It will finish when the dLC tells it to do so, because it has already written dlc_size packets.
-    trans.mode = DMA_TRANS_MODE_CIRCULAR;
+    trans.mode = DMA_TRANS_MODE_SINGLE;
 
     // Specify that we will use the HW FIFO mode: all data read will be forwarded to the
     // stream peripheral that is connected to the hw fifo.
@@ -252,13 +267,6 @@ int main() {
     }
     PRINTF("Launched DMA\n\r");
 
-    #if !TARGET_SIM
-    // Enable the timer interrupts to go to sleep between packets.
-    enable_timer_interrupt();
-    // Wait for a while just for the lols
-    timer_wait_us(1000000);
-    #endif
-
 /*############################################################
 ####### CONFIGURE THE FILTERS ##########################*/
 #ifdef USE_SES_NOT_CIC
@@ -268,12 +276,12 @@ int main() {
     SES_set_sysclk_division(SES_SYSCLK_DIVISION);
     SES_set_activated_stages(as);
 
-    SES_set_gain(0, SES_GAIN_STAGE_0);
-    SES_set_gain(1, SES_GAIN_STAGE_1);
-    SES_set_gain(2, SES_GAIN_STAGE_2);
-    SES_set_gain(3, SES_GAIN_STAGE_3);
-    SES_set_gain(4, SES_GAIN_STAGE_4);
-    SES_set_gain(5, SES_GAIN_STAGE_5);
+    SES_set_gain(0, wg);
+    SES_set_gain(1, 0);
+    SES_set_gain(2, 0);
+    SES_set_gain(3, 0);
+    SES_set_gain(4, 0);
+    SES_set_gain(5, 0);
 
     // Start the SES filter
     SES_set_control_reg(true);
@@ -297,20 +305,38 @@ int main() {
 
     // This is an arbitrary number I chose from seeing more or less how many windows will be
     // triggered during the reading of the sample data, considering the transactions finishing.
-
-
-    while( window_intr_flag + transactions_intr_flag < windows_to_process ) {
-        CSR_CLEAR_BITS(CSR_REG_MSTATUS, 0x8);
-        if ( window_intr_flag + transactions_intr_flag < windows_to_process  ) {
-                wait_for_interrupt();
-        }
-        CSR_SET_BITS(CSR_REG_MSTATUS, 0x8);
+    sample_idx = 0;
+    if(1){
+        // while( window_intr_flag + transactions_intr_flag < windows_to_process ) {
+                CSR_CLEAR_BITS(CSR_REG_MSTATUS, 0x8);
+            if ( window_intr_flag + transactions_intr_flag < windows_to_process  ) {
+                    wait_for_interrupt();
+            }
+            CSR_SET_BITS(CSR_REG_MSTATUS, 0x8);
+        // }
+    }else{
+        printf("SES mode on!");
+        for (int i = 0 ; i < 10000 ; i++) { asm volatile ("nop");}
+        // while(1){
+        //     if( SES_get_status() == 3 ){
+        //         dlc_results[sample_idx] = SES_get_filtered_output();
+        //         if(sample_idx++ == DATA_LENGTH_HW){
+        //             SES_set_control_reg(0);
+        //             break;
+        //         }
+        //     }
+        // }
     }
 
-    HEADER_SES(wg, ww, df, as);
-    HEADER_DLC(lw, dl, dt);
-    for( uint32_t sample_idx =0; sample_idx < DATA_LENGTH_B; sample_idx++ ){
-        // printf("\n%d\t%d", sample_idx, dlc_results[sample_idx]);
+    gpio_write(0, 1);
+
+    HEADER_DLC(lw, dl, dt, *dlc_hysteresis_en);
+    for( sample_idx =0; sample_idx < DATA_LENGTH_HW; sample_idx++ ){
+        printf("\n%d\t%d\t%s %s", sample_idx, dlc_results[sample_idx],dlc_results[sample_idx]&512?"v":"^", dlc_results[sample_idx]&2?"v":"^");
     }
+
+
+    printf("# done!");
+    while(1);
     return 0;
 }

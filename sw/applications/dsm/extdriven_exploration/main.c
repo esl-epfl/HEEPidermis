@@ -22,7 +22,7 @@ make jtag_run
 
 // Uncomment to use SES filter. Comment to use CIC filter.
 #define SES
-// #define EAP
+#define EAP
 
 #ifdef EAP
   #define SYS_FCLK_HZ 8000000 // 8 MHz needed to coordinate with DSM
@@ -70,10 +70,14 @@ int main(int argc, char *argv[])
     }
 
     #ifdef SES
-      uint32_t dfs[] = { 1, 16, 32 };  // Decimation factor
-      uint32_t wgs[] = { 8, 16 };             // Gain of the first stage
-      uint32_t ass[] = { 15, 31 };           // Mask of activated stages
-      uint32_t wws[] = { 3, 4, 5 };               // Window lenght (2^x) samples
+    //   uint32_t dfs[] = { 1, 16, 32 };       // Decimation factor
+    //   uint32_t wgs[] = { 8, 16 };            // Gain of the first stage
+    //   uint32_t ass[] = { 15, 31 };           // Mask of activated stages
+    //   uint32_t wws[] = { 3, 4, 5 };          // Window lenght (2^x) samples
+      uint32_t dfs[] = { 16};       // Decimation factor
+      uint32_t wgs[] = { 16 };            // Gain of the first stage
+      uint32_t ass[] = { 15 };           // Mask of activated stages
+      uint32_t wws[] = { 5 };          // Window lenght (2^x) samples
       #else
       uint32_t dfs[] = { 1, 2, 16, 32 };     // Decimation factor
       uint32_t wgs[] = { DSM_CLK_DIV_CC };   // Clock division (virtual)
@@ -94,6 +98,8 @@ int main(int argc, char *argv[])
     SES_set_gain(5, 0);
 
     printf("\n\n==== Starting loop for %s (%d, %d, %d)====\n\n", FILTER_NAME, SYS_FCLK_HZ, DSM_CLK_DIV_CC, DSM_F_S_kHz);
+
+    printf("\n>>%d",sim_len_n);
 
     for( uint8_t g=0; g<sizeof(wgs)/4; g++ ){
         for( uint8_t a=0; a<sizeof(ass)/4; a++ ){
@@ -158,7 +164,7 @@ int main(int argc, char *argv[])
                       #endif
                     }
 
-                    if(0){
+                    if(1){
                         // Indicate the end of a recording using a GPIO
                         gpio_write(GPIO_LED, 0);
 

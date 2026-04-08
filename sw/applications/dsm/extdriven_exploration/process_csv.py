@@ -8,14 +8,15 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from scipy.interpolate import interp1d
 
-filter = "CIC"
-fclk = "fclk_16MHz/"
-fsin=146.484375
+filter = "SES"
+fclk = "fclk_8MHz/"
+# fsin=146.484375
 # fsin=976.5625
-# fsin = 2929.6875
+fsin = 2929.6875
 # for SES, 2929, 8MHz use time_scale = -1
 time_scale = 1
 outpath = f"./{int(fsin):g}Hz/{fclk}{filter}"
+outpath = "tests_NABLE_20_49_01_06_04_26/"
 
 if fsin ==  146.484375:
   fsin = 146.484375 if filter=="SES" else 146.484375*1.5 # CIC filter needed *1.5 for DF=2, and *2 for DF=1
@@ -154,7 +155,7 @@ plt.rcParams.update({'font.size': 9, 'font.family': 'serif'})
 
 best_results = []
 
-plot = 0
+plot = 1
 
 for result in all_results:
     result_crop_signal(result)
