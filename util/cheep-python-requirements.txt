@@ -4,4 +4,6 @@ hjson==3.0.2
 # Cheep-specific modules
 numpy==1.22.0
 pandas==2.0.3
+ipywidgets
+matplotlib
 # Remember to leave an empty line at the end
