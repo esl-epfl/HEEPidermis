@@ -6,4 +6,5 @@ numpy==1.22.0
 pandas==2.0.3
 ipywidgets
 matplotlib
+scipy
 # Remember to leave an empty line at the end
