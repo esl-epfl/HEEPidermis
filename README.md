@@ -54,6 +54,18 @@ For all HEEPidermis-specific documentation, please refer to the documentation be
   - [iDAC precursor](https://ieeexplore.ieee.org/document/11044212)
   - [VCO Design](https://arxiv.org/abs/2509.06698)
 
+## Evaluating trade-offs in GSR recording
+
+HEEPidermis is a complex SoC, and acquiring GSR keepeing a proper range, sensitivity, dynamic range, resolution and power can be very tricky! To aid in the process of choosing the right parameters we have modeled the performance and consumption of our front-end and integrated it into a visual model with which you can play.
+
+<p align="center"><img src="./docs/img/plotter.png" width="80%" style="display:inline-block;">
+</p>
+
+You can use the plotter in two different ways:
+
+1. **Forward control**: You choose the operating variables (injected current and sampling frequency) and study the obtained sensitivity for a given baseline value of conductivity (G)
+2. **Target**: You select a target sensitivty and power consumption and let the tool find the optimal configuration.
+
 ## Prerequisites
 
 Since this project is based on _X-HEEP_, it has the same prerequisites.
