@@ -79,84 +79,86 @@ fs_Hz = 1e6
 
 plt.rcParams.update({'font.size': 9, 'font.family': 'serif'})
 
-idx = 0
-for target in all_results:
-    try:
-        wg = target['wg']
-        ww = target['ww']
-        n = target['as']
-        df = target['df']
-    except:
-        print(f"skipping {target['name']}")
-        continue
+if 0:
 
-    small_axis = 1
-    if small_axis:
-        xp = dsm_ideal['freq_hz']
-        fp = dsm_ideal["ampl_db"]
-        x = target['freq_hz']
-        y = target["ampl_db"]
+    idx = 0
+    for target in all_results:
+        try:
+            wg = target['wg']
+            ww = target['ww']
+            n = target['as']
+            df = target['df']
+        except:
+            print(f"skipping {target['name']}")
+            continue
 
-        ampl_interp = np.interp(x=x, xp=xp, fp=fp )
-        H_meas_db = 0.5*(y-ampl_interp)
-    else:
-        x = dsm_ideal['freq_hz']
-        y = dsm_ideal["ampl_db"]
-        xp = target['freq_hz']
-        fp = target["ampl_db"]
+        small_axis = 1
+        if small_axis:
+            xp = dsm_ideal['freq_hz']
+            fp = dsm_ideal["ampl_db"]
+            x = target['freq_hz']
+            y = target["ampl_db"]
 
-        ampl_interp = np.interp(x=x, xp=xp, fp=fp )
-        H_meas_db = 0.5*(ampl_interp-y)
+            ampl_interp = np.interp(x=x, xp=xp, fp=fp )
+            H_meas_db = 0.5*(y-ampl_interp)
+        else:
+            x = dsm_ideal['freq_hz']
+            y = dsm_ideal["ampl_db"]
+            xp = target['freq_hz']
+            fp = target["ampl_db"]
 
-    # remove the tone
-    f_closest = min(abs(np.array(x)-fsin))
-    f_tone_idx = int(np.argmin(abs(np.array(x)-fsin)))
-    crop_range = int(8)
+            ampl_interp = np.interp(x=x, xp=xp, fp=fp )
+            H_meas_db = 0.5*(ampl_interp-y)
 
-    f_meas_hz = np.concatenate((x[0:f_tone_idx-crop_range], x[f_tone_idx+crop_range:]))
-    H_meas_db = np.concatenate((H_meas_db[0:f_tone_idx-crop_range], H_meas_db[f_tone_idx+crop_range:]))
+        # remove the tone
+        f_closest = min(abs(np.array(x)-fsin))
+        f_tone_idx = int(np.argmin(abs(np.array(x)-fsin)))
+        crop_range = int(8)
+
+        f_meas_hz = np.concatenate((x[0:f_tone_idx-crop_range], x[f_tone_idx+crop_range:]))
+        H_meas_db = np.concatenate((H_meas_db[0:f_tone_idx-crop_range], H_meas_db[f_tone_idx+crop_range:]))
 
 
-    def get_H_z_theoretical(wg, ww, N, fs=1e6):
-        # first stage (with gain)
-        b1 = [0, 2**(wg - ww)]
-        a1 = [1, -(1 - 2**(-ww))]
+        def get_H_z_theoretical(wg, ww, N, fs=1e6):
+            # first stage (with gain)
+            b1 = [0, 2**(wg - ww)]
+            a1 = [1, -(1 - 2**(-ww))]
 
-        # remaining stages (no gain)
-        b2 = [0, 1]
-        a2 = [1, -(1 - 2**(-ww))]
+            # remaining stages (no gain)
+            b2 = [0, 1]
+            a2 = [1, -(1 - 2**(-ww))]
 
-        w, h1 = signal.freqz(b1, a1, worN=8000)
-        _, h2 = signal.freqz(b2, a2, worN=8000)
+            w, h1 = signal.freqz(b1, a1, worN=8000)
+            _, h2 = signal.freqz(b2, a2, worN=8000)
 
-        # cascade
-        h_total = h1 * (h2 ** (N - 1))
+            # cascade
+            h_total = h1 * (h2 ** (N - 1))
 
-        freq_hz = w * fs / (2*np.pi)
-        return freq_hz, 20*np.log10(np.abs(h_total) + 1e-12)
+            freq_hz = w * fs / (2*np.pi)
+            return freq_hz, 20*np.log10(np.abs(h_total) + 1e-12)
 
-    freq_hz, H_theo_db = get_H_z_theoretical(wg, ww-1, N=np.log2(n+1), fs=fs_Hz)
-    H_theo_db -= H_theo_db[0]
-    H_meas_db -= np.mean(H_meas_db[6:30])
+        freq_hz, H_theo_db = get_H_z_theoretical(wg, ww-1, N=np.log2(n+1), fs=fs_Hz)
+        H_theo_db -= H_theo_db[0]
+        H_meas_db -= np.mean(H_meas_db[6:30])
 
-    fc_theoretical = -fs_Hz/(2*np.pi)*np.log(1-2**(-ww))
+        fc_theoretical = -fs_Hz/(2*np.pi)*np.log(1-2**(-ww))
 
-    fig, axs = plt.subplots(figsize=(4.5,2))
+        fig, axs = plt.subplots(figsize=(4.5,2))
 
-    axs.plot(f_meas_hz, H_meas_db,color='gray', label="Measured")
-    axs.plot(freq_hz, H_theo_db,  '--', color='k', label="Theoretical")
-    axs.axvline(fc_theoretical,linestyle=':', linewidth=1.5, color='k')
-    axs.axhline(-3,linestyle=':', linewidth=1.5, color='k', label="Cutoff")
-    axs.grid(which='both')
-    axs.set_ylabel("Amplitude (dB)")
-    axs.set_ylim(-50, 30)
-    axs.set_title(f"$W_g$={wg}, $W_w$={ww}, stages={np.log2(n+1):g}, DF: {df}")
-    axs.legend(loc='lower left')
-    plt.xscale("log")
-    plt.xlim(50, 50e3)
-    plt.xlabel("Frequency (Hz)")
-    plt.tight_layout()
-    plt.show()
+        axs.plot(f_meas_hz, H_meas_db,color='gray', label="Measured")
+        axs.plot(freq_hz, H_theo_db,  '--', color='k', label="Theoretical")
+        axs.axvline(fc_theoretical,linestyle=':', linewidth=1.5, color='k')
+        axs.axhline(-3,linestyle=':', linewidth=1.5, color='k', label="Cutoff")
+        axs.grid(which='both')
+        axs.set_ylabel("Amplitude (dB)")
+        axs.set_ylim(-50, 30)
+        axs.set_title(f"$W_g$={wg}, $W_w$={ww}, stages={np.log2(n+1):g}, DF: {df}")
+        axs.legend(loc='lower left')
+        plt.xscale("log")
+        plt.xlim(50, 50e3)
+        plt.xlabel("Frequency (Hz)")
+        plt.tight_layout()
+        plt.show()
 
 
 
@@ -413,4 +415,179 @@ axs[1].set_xlim(xlim_0,xlim_1)
 
 plt.tight_layout()
 plt.savefig('figs/psd_analysis.png', dpi=400)
+
+
+#In[]:
+# Compare against CIC
+
+
+def H_z_SES(wg, ww, N, fs=1e6):
+    # first stage (with gain)
+    b1 = [0, 2**(wg - ww)]
+    a1 = [1, -(1 - 2**(-ww))]
+
+    # remaining stages (no gain)
+    b2 = [0, 1]
+    a2 = [1, -(1 - 2**(-ww))]
+
+    w, h1 = signal.freqz(b1, a1, worN=8000)
+    _, h2 = signal.freqz(b2, a2, worN=8000)
+
+    # cascade
+    h_total = h1 * (h2 ** (N - 1))
+
+    freq_hz = w * fs / (2*np.pi)
+    return freq_hz, 20*np.log10(np.abs(h_total) + 1e-12)
+
+
+def H_z_SES2(wg, ww0, ww1, N, fs=1e6):
+    # first stage (with gain)
+    b1 = [0, 2**(wg - ww0)]
+    a1 = [1, -(1 - 2**(-ww0))]
+
+    # remaining stages (no gain)
+    b2 = [0, 1]
+    a2 = [1, -(1 - 2**(-ww1))]
+
+    w, h1 = signal.freqz(b1, a1, worN=8000)
+    _, h2 = signal.freqz(b2, a2, worN=8000)
+
+    # cascade
+    h_total = h1 * (h2 ** (N - 1))
+
+    freq_hz = w * fs / (2*np.pi)
+    return freq_hz, 20*np.log10(np.abs(h_total) + 1e-12)
+
+def H_z_CIC(N, D, R, fs=1e6):
+    # The delay of the comb section is M = R * D
+    M = int(R * D)
+
+    # Numerator: 1 - z^(-M)
+    # This creates an array [1, 0, 0, ..., -1] of length M+1
+    b = np.zeros(M + 1)
+    b[0] = 1
+    b[-1] = -1
+
+    # Denominator: 1 - z^(-1)
+    a = [1, -1]
+
+    # Calculate frequency response for the single stage
+    w, h = signal.freqz(b, a, worN=8000)
+
+    # Cascade the stages by raising the response to the power N
+    h_total = h**N
+
+    # Convert to Hz and dB
+    freq_hz = w * fs / (2 * np.pi)
+    # Adding 1e-12 prevents log10(0) errors at the zeros of the filter
+    magnitude_db = 20 * np.log10(np.abs(h_total) + 1e-12)
+
+    return freq_hz, magnitude_db
+
+
+# def H_z_CIC(D, N, fs=1e6):
+#     # single CIC stage: (1 - z^-D) / (1 - z^-1)
+#     b = np.zeros(D + 1)
+#     b[0] = 1
+#     b[-1] = -1
+#     a = [1, -1]
+
+#     w, h = signal.freqz(b, a, worN=8000)
+
+#     # cascade N identical stages
+#     h_total = h ** N
+
+#     freq_hz = w * fs / (2*np.pi)
+#     return freq_hz, 20*np.log10(np.abs(h_total) + 1e-12)
+
+%matplotlib widget
+
+# SES params
+ses_wg = 16
+ses_ww = 4
+ses_n  = 6
+ses_df = 25
+
+ses_cost = ses_n**2
+
+# CIC params
+cic_df = 50
+cic_d  = 1
+cic_n  = 6
+cic_cost = (cic_n + (1+cic_d)*cic_n/cic_df) * ((2+cic_d)*cic_n)
+
+
+fnyq_Hz = 10e3
+fs_Hz   = fnyq_Hz*100 #  1e6
+
+
+plt.rcParams.update({'font.size': 9, 'font.family': 'serif'})
+fig, axs = plt.subplots(figsize=(6,3), sharex=True)
+
+ses_Hz, ses_dB = H_z_SES2(wg=ses_wg, ww0=ses_ww, ww1=ses_ww, N=ses_n, fs=fs_Hz)
+ses_dB -= ses_dB[1]
+
+alias_f = (fs_Hz / ses_df) - fnyq_Hz/2
+alias_start_n = np.argmin(abs(ses_Hz - alias_f))
+alias_start_dB  = ses_dB[alias_start_n]
+alias_start_Hz  = ses_Hz[alias_start_n]
+axs.scatter(alias_start_Hz, alias_start_dB, color='blue', marker='*', s=50, label=f"{alias_start_dB:1.1f} dB")
+axs.axhline(alias_start_dB,linestyle='--', linewidth=1, color='b')
+axs.plot(ses_Hz, ses_dB,  '--', color='b', label=f"SES: {ses_cost:1.0f}")
+axs.axvline(fs_Hz/ses_df,linestyle=':', linewidth=1.5, color='blue')
+
+
+cic_Hz, cic_dB = H_z_CIC(D=cic_d, N=cic_n, R=cic_df, fs=fs_Hz)
+cic_dB -= cic_dB[1]
+
+alias_f = (fs_Hz / cic_df) - fnyq_Hz/2
+alias_start_n = np.argmin(abs(cic_Hz - alias_f))
+alias_start_dB  = cic_dB[alias_start_n]
+alias_start_Hz  = cic_Hz[alias_start_n]
+axs.scatter(alias_start_Hz, alias_start_dB, color='red', marker='*', s=50, label=f"{alias_start_dB:1.1f} dB")
+axs.axhline(alias_start_dB,linestyle='--', linewidth=1, color='r')
+axs.plot(cic_Hz, cic_dB,  '--', color='r', label=f"CIC: {cic_cost:1.0f} ({cic_cost/ses_cost:1.1f}x)")
+axs.axvline(fs_Hz/cic_df,linestyle=':', linewidth=1.5, color='red')
+
+
+
+
+
+
+
+axs.axvline(fnyq_Hz/2,linestyle=':', linewidth=1.5, color='green')
+axs.axhline(-3,linestyle=':', linewidth=.5, color='k')
+
+
+
+
+# for k in range(1, int(cic_df/2)+1):
+#         fc = (k * fs_Hz / cic_df)
+#         width = (fnyq_Hz)
+#         plt.axvspan(fc - width/2, fc + width/2, color='red', alpha=0.07,
+#                     label='Alias CIC' if k==1 else "")
+
+# for k in range(1, int(ses_df/2)+1):
+#         fc = (k * fs_Hz / ses_df)
+#         width = (fnyq_Hz)
+#         plt.axvspan(fc - width/2, fc + width/2, color='blue', alpha=0.07,
+#                     label='Alias SES' if k==1 else "")
+
+
+
+
+
+
+axs.set_ylabel("Amplitude (dB)")
+# axs.set_ylim(-50,32)
+axs.grid(which='both', alpha=0.5)
+axs.legend(loc='lower left', fontsize=8, borderaxespad=0.1)
+plt.xscale("log")
+# plt.xlim(200, 50e3)
+plt.xlabel("Frequency (Hz)")
+plt.ylim(-150,20)
+plt.xlim(fnyq_Hz/100,fnyq_Hz*100)
+
+plt.tight_layout()
+plt.show()
 
