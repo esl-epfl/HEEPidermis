@@ -126,6 +126,7 @@ int main() {
     uint32_t as =  31; // Mask of activated stages
     uint32_t ww =  5;  // Window lenght (2^x) samples
     uint32_t lw = 10;
+    uint32_t discard_bits = 1;
     uint32_t dt = 6;
     uint32_t dl = 2;
 
@@ -163,7 +164,7 @@ int main() {
     // Enable a 1-level hsytersis to avoid excessive crossings
     *dlc_hysteresis_en = 1;
     // Do not discard any bits from the input signal
-    *dlc_discard_bits = 0;
+    *dlc_discard_bits = discard_bits;
 
     PRINTF("Set the dLC to: \n\r2sComp:\t%d\n\rLVLw:\t%d bits\n\r",*dlvl_format, *dlvl_log_level_width );
 
