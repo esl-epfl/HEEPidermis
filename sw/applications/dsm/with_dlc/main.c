@@ -127,6 +127,7 @@ int main() {
     uint32_t ww =  5;  // Window lenght (2^x) samples
     uint32_t lw = 10;
     uint32_t discard_bits = 1;
+    uint32_t hyst = 0;
     uint32_t dt = 6;
     uint32_t dl = 2;
 
@@ -162,7 +163,7 @@ int main() {
     // dt_mask: mask for the delta-time field (it has as many bits set to 1 as the number of bits for the delta-time field)
     *dt_mask = (1 << (dt)) - 1;
     // Enable a 1-level hsytersis to avoid excessive crossings
-    *dlc_hysteresis_en = 1;
+    *dlc_hysteresis_en = hyst;
     // Do not discard any bits from the input signal
     *dlc_discard_bits = discard_bits;
 
@@ -333,7 +334,8 @@ int main() {
 
     HEADER_DLC(lw, dl, dt, *dlc_hysteresis_en);
     for( sample_idx =0; sample_idx < DATA_LENGTH_HW; sample_idx++ ){
-        printf("\n%d\t%d\t%s %s", sample_idx, dlc_results[sample_idx],dlc_results[sample_idx]&512?"v":"^", dlc_results[sample_idx]&2?"v":"^");
+        // printf("\n%d\t%d\t%s %s", sample_idx, dlc_results[sample_idx],dlc_results[sample_idx]&512?"v":"^", dlc_results[sample_idx]&2?"v":"^");
+        printf("\n%d\t%d", sample_idx, dlc_results[sample_idx]);
     }
 
 
