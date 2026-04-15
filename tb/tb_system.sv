@@ -71,7 +71,7 @@ module tb_system #(
 
   // UART DPI emulator
   uartdpi #(
-      .BAUD('d256000),
+      .BAUD(CLK_FREQ * 1000 / 20),  // close to maximum baud rate (/16)
       .FREQ(CLK_FREQ * 1000),  // Hz
       .NAME("uart")
   ) u_uartdpi (
