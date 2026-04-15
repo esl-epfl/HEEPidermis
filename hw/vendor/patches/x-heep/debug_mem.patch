@@ -1,0 +1,17 @@
+diff --git a/hw/vendor/pulp_platform_tech_cells_generic/src/rtl/tc_sram.sv b/hw/vendor/pulp_platform_tech_cells_generic/src/rtl/tc_sram.sv
+index 98298d6..1ad78d9 100644
+--- a/hw/vendor/pulp_platform_tech_cells_generic/src/rtl/tc_sram.sv
++++ b/hw/vendor/pulp_platform_tech_cells_generic/src/rtl/tc_sram.sv
+@@ -79,6 +79,12 @@ module tc_sram #(
+ 
+   // memory array
+   data_t sram [NumWords-1:0];
++
++  /* verilator lint_off UNUSED */
++  logic [DataWidth-1:0] debug_section;
++  assign debug_section = sram[NumWords-1];
++  /* verilator lint_on UNUSED */
++
+   // hold the read address when no read access is made
+   addr_t [NumPorts-1:0] r_addr_q;
+ 

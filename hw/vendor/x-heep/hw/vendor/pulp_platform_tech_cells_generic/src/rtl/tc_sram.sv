@@ -79,6 +79,12 @@ module tc_sram #(
 
   // memory array
   data_t sram [NumWords-1:0];
+
+  /* verilator lint_off UNUSED */
+  logic [DataWidth-1:0] debug_section;
+  assign debug_section = sram[NumWords-1];
+  /* verilator lint_on UNUSED */
+
   // hold the read address when no read access is made
   addr_t [NumPorts-1:0] r_addr_q;
 
