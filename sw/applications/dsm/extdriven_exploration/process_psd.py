@@ -440,20 +440,25 @@ def H_z_SES(wg, ww, N, fs=1e6):
     return freq_hz, 20*np.log10(np.abs(h_total) + 1e-12)
 
 
-def H_z_SES2(wg, ww0, ww1, N, fs=1e6):
+def H_z_SES2(wg, ww0, wwi, fs=1e6):
     # first stage (with gain)
     b1 = [0, 2**(wg - ww0)]
     a1 = [1, -(1 - 2**(-ww0))]
 
-    # remaining stages (no gain)
-    b2 = [0, 1]
-    a2 = [1, -(1 - 2**(-ww1))]
-
     w, h1 = signal.freqz(b1, a1, worN=8000)
-    _, h2 = signal.freqz(b2, a2, worN=8000)
+    his = []
+    for ww in wwi:
+        # remaining stages (no gain)
+        b2 = [0, 1]
+        a2 = [1, -(1 - 2**(-ww))]
+
+        _, hi = signal.freqz(b2, a2, worN=8000)
+        his.append(hi)
 
     # cascade
-    h_total = h1 * (h2 ** (N - 1))
+    h_total = h1
+    for hi in his:
+        h_total *= hi
 
     freq_hz = w * fs / (2*np.pi)
     return freq_hz, 20*np.log10(np.abs(h_total) + 1e-12)
@@ -502,63 +507,100 @@ def H_z_CIC(N, D, R, fs=1e6):
 
 %matplotlib widget
 
-# SES params
-ses_wg = 16
-ses_ww = 4
-ses_n  = 6
-ses_df = 25
+compare_cost    = 1
+compare_droop   = 0
+compare_atte    = 0
 
-ses_cost = ses_n**2
+if compare_cost:
+    # SES params
+    ses_wg = 16
+    ses_n1 = 6
+    ses_n2 = 0
+    ses_ww = 4
+    ses_df = 25
+    # CIC params
+    cic_df = 50
+    cic_d  = 1
+    cic_n  = 6
 
-# CIC params
-cic_df = 50
-cic_d  = 1
-cic_n  = 6
-cic_cost = (cic_n + (1+cic_d)*cic_n/cic_df) * ((2+cic_d)*cic_n)
+if compare_droop:
+    # SES params
+    ses_wg = 16
+    ses_n1 = 5
+    ses_n2 = 20
+    ses_ww = 4
+    ses_df = 25
+    # CIC params
+    cic_df = 50
+    cic_d  = 1
+    cic_n  = 9
 
+if compare_atte:
+    # SES params
+    ses_wg = 16
+    ses_n1 = 5
+    ses_n2 = 11
+    ses_ww = 4
+    ses_df = 25
+    # CIC params
+    cic_df = 50
+    cic_d  = 1
+    cic_n  = 6
 
-fnyq_Hz = 10e3
+ses_ww1 = np.ones(ses_n1)*ses_ww
+ses_ww2 = np.ones(ses_n2)*ses_ww-2
+ses_cost = (ses_n1+ses_n2)**2
+cic_n_area = cic_n*1.56 # Area/stage difference wrt SES (D=1), Words=24 bits
+cic_cost = (cic_n_area + (1+cic_d)*cic_n_area/cic_df) * ((2+cic_d)*cic_n_area)
+
+fbw_Hz = 5e3
+fnyq_Hz = fbw_Hz*2
 fs_Hz   = fnyq_Hz*100 #  1e6
 
 
 plt.rcParams.update({'font.size': 9, 'font.family': 'serif'})
-fig, axs = plt.subplots(figsize=(6,3), sharex=True)
+fig, axs = plt.subplots(figsize=(4.5,3), sharex=True)
 
-ses_Hz, ses_dB = H_z_SES2(wg=ses_wg, ww0=ses_ww, ww1=ses_ww, N=ses_n, fs=fs_Hz)
+ses_Hz, ses_dB = H_z_SES2(wg=ses_wg, ww0=ses_ww1[0], wwi=np.concatenate((ses_ww1[1:],ses_ww2)), fs=fs_Hz)
 ses_dB -= ses_dB[1]
 
 alias_f = (fs_Hz / ses_df) - fnyq_Hz/2
 alias_start_n = np.argmin(abs(ses_Hz - alias_f))
 alias_start_dB  = ses_dB[alias_start_n]
 alias_start_Hz  = ses_Hz[alias_start_n]
-axs.scatter(alias_start_Hz, alias_start_dB, color='blue', marker='*', s=50, label=f"{alias_start_dB:1.1f} dB")
-axs.axhline(alias_start_dB,linestyle='--', linewidth=1, color='b')
-axs.plot(ses_Hz, ses_dB,  '--', color='b', label=f"SES: {ses_cost:1.0f}")
-axs.axvline(fs_Hz/ses_df,linestyle=':', linewidth=1.5, color='blue')
+
+droop_f = fbw_Hz
+droop_n = np.argmin(abs(ses_Hz - droop_f))
+droop_dB  = ses_dB[droop_n]
+
+axs.plot(ses_Hz/fbw_Hz, ses_dB,  '--', color='b', label=f"SES")
+axs.axhline(droop_dB,linestyle=':', linewidth=1, color='b', label=f"droop: {droop_dB:1.1f} dB")
+axs.axhline(alias_start_dB,linestyle='--', linewidth=1, color='b', label=f"Att: {alias_start_dB:1.1f} dB")
+axs.scatter(alias_start_Hz/fbw_Hz, alias_start_dB, color='blue', marker='o', s=50)
+axs.axvline(fs_Hz/fbw_Hz/ses_df,linestyle='-.', linewidth=1.5, color='blue', alpha=0.3)
 
 
 cic_Hz, cic_dB = H_z_CIC(D=cic_d, N=cic_n, R=cic_df, fs=fs_Hz)
 cic_dB -= cic_dB[1]
 
+droop_f = fbw_Hz
+droop_n = np.argmin(abs(cic_Hz - droop_f))
+droop_dB  = cic_dB[droop_n]
+droop_Hz  = cic_Hz[droop_n]
+
 alias_f = (fs_Hz / cic_df) - fnyq_Hz/2
 alias_start_n = np.argmin(abs(cic_Hz - alias_f))
 alias_start_dB  = cic_dB[alias_start_n]
 alias_start_Hz  = cic_Hz[alias_start_n]
-axs.scatter(alias_start_Hz, alias_start_dB, color='red', marker='*', s=50, label=f"{alias_start_dB:1.1f} dB")
-axs.axhline(alias_start_dB,linestyle='--', linewidth=1, color='r')
-axs.plot(cic_Hz, cic_dB,  '--', color='r', label=f"CIC: {cic_cost:1.0f} ({cic_cost/ses_cost:1.1f}x)")
-axs.axvline(fs_Hz/cic_df,linestyle=':', linewidth=1.5, color='red')
+axs.plot(cic_Hz/fbw_Hz, cic_dB,  '--', color='r', label=f"CIC (cost {cic_cost/ses_cost:1.1f}×)")
+axs.axhline(droop_dB,linestyle=':', linewidth=1, color='r', label=f"droop: {droop_dB:1.1f} dB")
+axs.axhline(alias_start_dB,linestyle='--', linewidth=1, color='r', label=f"Att: {alias_start_dB:1.1f} dB")
+axs.scatter(alias_start_Hz/fbw_Hz, alias_start_dB, color='red', marker='o', s=50)
+axs.axvline(fs_Hz/fbw_Hz/cic_df,linestyle='-.', linewidth=1.5, color='red', alpha=0.3)
 
 
-
-
-
-
-
-axs.axvline(fnyq_Hz/2,linestyle=':', linewidth=1.5, color='green')
-axs.axhline(-3,linestyle=':', linewidth=.5, color='k')
-
-
+axs.axvline(1,linestyle=':', linewidth=1.5, color='black', label=r'$\text{f}_\text{BW}$')
+axs.axvline(0,linestyle='-.', linewidth=1.5, color='black', alpha=0.3, label=r'$\text{f}_\text{s}$')
 
 
 # for k in range(1, int(cic_df/2)+1):
@@ -581,13 +623,14 @@ axs.axhline(-3,linestyle=':', linewidth=.5, color='k')
 axs.set_ylabel("Amplitude (dB)")
 # axs.set_ylim(-50,32)
 axs.grid(which='both', alpha=0.5)
-axs.legend(loc='lower left', fontsize=8, borderaxespad=0.1)
+axs.legend(loc='lower left', fontsize=8, borderaxespad=1, framealpha=1)
 plt.xscale("log")
 # plt.xlim(200, 50e3)
 plt.xlabel("Frequency (Hz)")
 plt.ylim(-150,20)
-plt.xlim(fnyq_Hz/100,fnyq_Hz*100)
+plt.xlim(1e-1,1e1)
 
 plt.tight_layout()
+plt.savefig("./figs/SES_vs_CIC_H(z).png", dpi=400)
 plt.show()
 
