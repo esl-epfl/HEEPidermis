@@ -29,11 +29,13 @@
 #define PRE_RESET_CYCLES 200
 #define RESET_CYCLES 200
 #define POST_RESET_CYCLES 50
-#define MAX_SIM_CYCLES 2e6
+#define MAX_SIM_CYCLES 100e6
 #define BOOT_SEL 0 // 0: JTAG boot
 #define EXEC_FROM_FLASH 0 // 0: do not execute from flash
 #define RUN_CYCLES 5000
 #define TB_HIER_NAME "TOP.tb_system"
+
+#define REF_CLK_HALF_PERIOD_NS 50
 
 // Data types
 // ----------
@@ -301,16 +303,13 @@ void rstDut(Vtb_system *dut, uint8_t gen_waves, VerilatedFstC *trace) {
 void runCycles(unsigned int ncycles, Vtb_system *dut, uint8_t gen_waves, VerilatedFstC *trace) {
     VerilatedContext *cntx = dut->contextp();
     for (unsigned int i = 0; i < (2*ncycles); i++) {
-        // Generate clock
         clkGen(dut);
-
-        // Evaluate the DUT
         dut->eval();
 
-        // Save waveforms
         if (gen_waves) trace->dump(cntx->time());
         if (dut->ref_clk_i == 1) sim_cycles++;
-        cntx->timeInc(1);
+
+        cntx->timeInc(REF_CLK_HALF_PERIOD_NS);
     }
 }
 

@@ -85,7 +85,6 @@ module analog_subsystem #(
       .VIN_int_uV(VCOp_VIN_int_uV),
       .EN(vcop_enable_i),
       .REFRESH(vco_refresh_i),
-      .VN0(),
       .COARSE_OUT(vcop_coarse_o),
       .FINE_OUT(vcop_fine_o)
   );
@@ -94,7 +93,6 @@ module analog_subsystem #(
       .VIN_int_uV(VCOn_VIN_int_uV),
       .EN(vcon_enable_i),
       .REFRESH(vco_refresh_i),
-      .VN0(),
       .COARSE_OUT(vcon_coarse_o),
       .FINE_OUT(vcon_fine_o)
   );

@@ -1,15 +1,15 @@
 [*]
 [*] GTKWave Analyzer v3.3.104 (w)1999-2020 BSI
-[*] Wed Apr 15 14:17:44 2026
+[*] Wed Apr 22 20:28:54 2026
 [*]
 [dumpfile] "/home/juan/Desktop/ESL/HEEPidermis/open_repo/build/epfl_cheep_cheep_0.3.0/sim-verilator/logs/waves.fst"
-[dumpfile_mtime] "Wed Apr 15 14:15:23 2026"
-[dumpfile_size] 527279
+[dumpfile_mtime] "Wed Apr 22 20:26:08 2026"
+[dumpfile_size] 5648813
 [savefile] "/home/juan/Desktop/ESL/HEEPidermis/open_repo/util/heepidermis_wave_viewer.gtkw"
-[timestart] 4012
-[size] 2560 1403
+[timestart] 0
+[size] 1920 1011
 [pos] 0 0
-*-3.872867 4100 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
+*-20.684652 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
 [treeopen] TOP.
 [treeopen] TOP.tb_system.
 [treeopen] TOP.tb_system.u_cheep_top.
@@ -32,7 +32,7 @@
 [sst_width] 365
 [signals_width] 340
 [sst_expanded] 1
-[sst_vpaned_height] 806
+[sst_vpaned_height] 685
 @c00820
 [color] 3
 +{DEBUG (ASCII)} TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.memory_subsystem_i.ram1_i.tc_ram_i.debug_section[31:0]
@@ -194,7 +194,7 @@ TOP.tb_system.u_cheep_top.u_analog_subsystem.VCOp_VIN_int_uV
 -
 -
 -
-@8421
+@8420
 [color] 2
 TOP.tb_system.u_cheep_top.u_analog_subsystem.u_VCOp.f_osc_Hz
 @20000
@@ -233,5 +233,7 @@ TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.cpu_subsystem_i.gen_cv32e20.cv32e20_
 @28
 [color] 4
 TOP.tb_system.u_cheep_top.uart_tx_o
+@29
+TOP.tb_system.u_cheep_top.clk_i
 [pattern_trace] 1
 [pattern_trace] 0

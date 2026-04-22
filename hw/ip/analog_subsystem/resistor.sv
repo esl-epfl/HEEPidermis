@@ -11,7 +11,7 @@
 
 module resistor #(
     string FILE_NAME      = "../../../hw/ip/analog_subsystem/conductance.txt",
-    real   CHANGE_RATE_HZ = 1_000_000,
+    real   CHANGE_RATE_HZ = 200_00,
     int    line_start     = 500_000,
     int    line_end       = 600_000
 ) (

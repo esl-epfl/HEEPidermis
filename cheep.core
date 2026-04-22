@@ -313,6 +313,7 @@ targets:
         - '--trace-max-array 128'
         - '--x-assign unique'
         - '--x-initial unique'
+        - '--timescale-override 1ns/1ns'
         #- '--threads 2' # only use with Verilator v5.XXX
         - '--exe'
         - 'cheep_tb.cpp'
