@@ -421,26 +421,7 @@ plt.savefig('figs/psd_analysis.png', dpi=400)
 # Compare against CIC
 
 
-def H_z_SES(wg, ww, N, fs=1e6):
-    # first stage (with gain)
-    b1 = [0, 2**(wg - ww)]
-    a1 = [1, -(1 - 2**(-ww))]
-
-    # remaining stages (no gain)
-    b2 = [0, 1]
-    a2 = [1, -(1 - 2**(-ww))]
-
-    w, h1 = signal.freqz(b1, a1, worN=8000)
-    _, h2 = signal.freqz(b2, a2, worN=8000)
-
-    # cascade
-    h_total = h1 * (h2 ** (N - 1))
-
-    freq_hz = w * fs / (2*np.pi)
-    return freq_hz, 20*np.log10(np.abs(h_total) + 1e-12)
-
-
-def H_z_SES2(wg, ww0, wwi, fs=1e6):
+def H_z_SES(wg, ww0, wwi, fs=1e6):
     # first stage (with gain)
     b1 = [0, 2**(wg - ww0)]
     a1 = [1, -(1 - 2**(-ww0))]
@@ -490,26 +471,11 @@ def H_z_CIC(N, D, R, fs=1e6):
     return freq_hz, magnitude_db
 
 
-# def H_z_CIC(D, N, fs=1e6):
-#     # single CIC stage: (1 - z^-D) / (1 - z^-1)
-#     b = np.zeros(D + 1)
-#     b[0] = 1
-#     b[-1] = -1
-#     a = [1, -1]
-
-#     w, h = signal.freqz(b, a, worN=8000)
-
-#     # cascade N identical stages
-#     h_total = h ** N
-
-#     freq_hz = w * fs / (2*np.pi)
-#     return freq_hz, 20*np.log10(np.abs(h_total) + 1e-12)
-
 %matplotlib widget
 
-compare_cost    = 1
+compare_cost    = 0
 compare_droop   = 0
-compare_atte    = 0
+compare_atte    = 1
 
 if compare_cost:
     # SES params
@@ -561,7 +527,7 @@ fs_Hz   = fnyq_Hz*100 #  1e6
 plt.rcParams.update({'font.size': 9, 'font.family': 'serif'})
 fig, axs = plt.subplots(figsize=(4.5,3), sharex=True)
 
-ses_Hz, ses_dB = H_z_SES2(wg=ses_wg, ww0=ses_ww1[0], wwi=np.concatenate((ses_ww1[1:],ses_ww2)), fs=fs_Hz)
+ses_Hz, ses_dB = H_z_SES(wg=ses_wg, ww0=ses_ww1[0], wwi=np.concatenate((ses_ww1[1:],ses_ww2)), fs=fs_Hz)
 ses_dB -= ses_dB[1]
 
 alias_f = (fs_Hz / ses_df) - fnyq_Hz/2
@@ -620,17 +586,17 @@ axs.axvline(0,linestyle='-.', linewidth=1.5, color='black', alpha=0.3, label=r'$
 
 
 
-axs.set_ylabel("Amplitude (dB)")
+axs.set_ylabel("Normalized gain (dB)")
 # axs.set_ylim(-50,32)
 axs.grid(which='both', alpha=0.5)
 axs.legend(loc='lower left', fontsize=8, borderaxespad=1, framealpha=1)
 plt.xscale("log")
 # plt.xlim(200, 50e3)
-plt.xlabel("Frequency (Hz)")
+plt.xlabel(r"Frequency (Normalized to $f_\text{BW}$)")
 plt.ylim(-150,20)
 plt.xlim(1e-1,1e1)
 
 plt.tight_layout()
-plt.savefig("./figs/SES_vs_CIC_H(z).png", dpi=400)
+plt.savefig(f"./figs/SES_vs_CIC_H(z)_{'cost' if compare_cost else 'droop' if compare_droop else 'att'}.png", dpi=400)
 plt.show()
 
