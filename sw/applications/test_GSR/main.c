@@ -138,7 +138,7 @@ int main() {
 
     iDACs_enable(true, false);
     iDAC1_calibrate(IDAC_DEFAULT_CAL);
-    idac_val = 4;
+    idac_val = 50;
     iin_nA = update_dac1(idac_val);
 
     PRINTF("=== Test VCO overflow ===\n");
