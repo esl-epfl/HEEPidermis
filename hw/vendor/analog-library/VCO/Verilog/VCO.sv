@@ -69,19 +69,24 @@ module VCO #(
 
     function automatic int transfer_uV_to_Hz(input logic [31:0] vin_uV);
         longint x_uV;
-        longint t1, t2, t3;
+        longint acc;
         longint f_hz_raw;
+
+        // x in uV = x in mV * 1000
+        x_uV = longint'(vin_uV);
 
         if (vin_uV < 350_000) return 1;
 
-        x_uV = longint'(vin_uV);
-        // t1 = (65 * x) / 1e7
-        t1 = (65 * x_uV) / 10_000_000;
-        // t2 = (-5350 + t1) * x / 1e7
-        t2 = ((-5_350 + t1) * x_uV) / 10_000_000;
-        // t3 = (1_650_000 + t2) * x / 1e6
-        t3 = ((1_650_000 + t2) * x_uV) / 1_000_000;
-        f_hz_raw = -180_000 + t3;
+        acc = 643;                      // 0.00643 * 1e5
+        acc = (acc * x_uV) / 1000;      // multiply by x_mV
+        acc = acc - 519_000;            // -5.19 * 1e5
+
+        acc = (acc * x_uV) / 1000;      // multiply by x_mV
+        acc = acc + 156_000_000;        // 1560 * 1e5
+
+        acc = (acc * x_uV) / 1000;      // multiply by x_mV
+
+        f_hz_raw = (acc / 100_000) - 165_000;
 
 
 
