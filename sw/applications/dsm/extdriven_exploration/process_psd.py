@@ -475,19 +475,33 @@ def H_z_CIC(N, D, R, fs=1e6):
 
 compare_cost    = 0
 compare_droop   = 0
-compare_atte    = 1
+compare_atte    = 0
+compare_test    = 1
 
 if compare_cost:
     # SES params
     ses_wg = 16
-    ses_n1 = 6
+    ses_n1 = 9
     ses_n2 = 0
     ses_ww = 4
     ses_df = 25
     # CIC params
     cic_df = 50
     cic_d  = 1
-    cic_n  = 6
+    cic_n  = 9
+
+
+if compare_cost:
+    # SES params
+    ses_wg = 16
+    ses_n1 = 9
+    ses_n2 = 0
+    ses_ww = 4
+    ses_df = 25
+    # CIC params
+    cic_df = 50
+    cic_d  = 1
+    cic_n  = 9
 
 if compare_droop:
     # SES params
@@ -569,17 +583,18 @@ axs.axvline(1,linestyle=':', linewidth=1.5, color='black', label=r'$\text{f}_\te
 axs.axvline(0,linestyle='-.', linewidth=1.5, color='black', alpha=0.3, label=r'$\text{f}_\text{s}$')
 
 
-# for k in range(1, int(cic_df/2)+1):
-#         fc = (k * fs_Hz / cic_df)
-#         width = (fnyq_Hz)
-#         plt.axvspan(fc - width/2, fc + width/2, color='red', alpha=0.07,
-#                     label='Alias CIC' if k==1 else "")
+for k in range(1, int(cic_df/2)+1):
 
-# for k in range(1, int(ses_df/2)+1):
-#         fc = (k * fs_Hz / ses_df)
-#         width = (fnyq_Hz)
-#         plt.axvspan(fc - width/2, fc + width/2, color='blue', alpha=0.07,
-#                     label='Alias SES' if k==1 else "")
+        fc = (k * fs_Hz /fbw_Hz/ cic_df)
+        width = (fnyq_Hz/fbw_Hz)
+        plt.axvspan(fc - width/2, fc + width/2, color='red', alpha=0.07,
+                    label='Alias CIC' if k==1 else "")
+
+for k in range(1, int(ses_df/2)+1):
+        fc = (k * fs_Hz /fbw_Hz/ ses_df)
+        width = (fnyq_Hz/fbw_Hz)
+        plt.axvspan(fc - width/2, fc + width/2, color='blue', alpha=0.07,
+                    label='Alias SES' if k==1 else "")
 
 
 
@@ -597,6 +612,6 @@ plt.ylim(-150,20)
 plt.xlim(1e-1,1e1)
 
 plt.tight_layout()
-plt.savefig(f"./figs/SES_vs_CIC_H(z)_{'cost' if compare_cost else 'droop' if compare_droop else 'att'}.png", dpi=400)
+plt.savefig(f"./figs/SES_vs_CIC_H(z)_{'cost' if compare_cost else 'droop' if compare_droop else 'att' if compare_atte else "test"}.png", dpi=400)
 plt.show()
 
