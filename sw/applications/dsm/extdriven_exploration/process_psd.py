@@ -478,11 +478,11 @@ compare_droop   = 0
 compare_atte    = 0
 compare_test    = 1
 
-if compare_cost:
+if compare_test:
     # SES params
     ses_wg = 16
-    ses_n1 = 9
-    ses_n2 = 0
+    ses_n1 = 1
+    ses_n2 = 20
     ses_ww = 4
     ses_df = 25
     # CIC params
@@ -528,7 +528,7 @@ if compare_atte:
     cic_n  = 6
 
 ses_ww1 = np.ones(ses_n1)*ses_ww
-ses_ww2 = np.ones(ses_n2)*ses_ww-2
+ses_ww2 = np.ones(ses_n2)*ses_ww-1
 ses_cost = (ses_n1+ses_n2)**2
 cic_n_area = cic_n*1.56 # Area/stage difference wrt SES (D=1), Words=24 bits
 cic_cost = (cic_n_area + (1+cic_d)*cic_n_area/cic_df) * ((2+cic_d)*cic_n_area)
@@ -612,6 +612,6 @@ plt.ylim(-150,20)
 plt.xlim(1e-1,1e1)
 
 plt.tight_layout()
-plt.savefig(f"./figs/SES_vs_CIC_H(z)_{'cost' if compare_cost else 'droop' if compare_droop else 'att' if compare_atte else "test"}.png", dpi=400)
+plt.savefig(f"./figs/SES_vs_CIC_H(z)_{'cost' if compare_cost else 'droop' if compare_droop else 'att' if compare_atte else 'test'}.png", dpi=400)
 plt.show()
 
