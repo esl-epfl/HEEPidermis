@@ -71,6 +71,24 @@ To view the interactive plotter on your browser (forward mode only) run:
 make plotter
 ```
 
+
+## Making a GSR recording
+
+We make GSR recordings by biasing the skin to the LDO's output at 0.8 V and using a second electrode to train current from the skin using the iDAC. The VCO measures that same node and the CPU computes the drop (knowing the LDO's output).
+
+Because the computation is far from trivial we have added [a GSR SDK](./sw/external/lib/sdk/GSR) that takes care of managing peripherals and parameters to do the correct conversion to skin's conductance in nS. You can run the example application:
+
+```
+make app PROJECT=test_reconstruction BOOT_MODE=force
+make verilator-run BOOT_MODE=force # Takes long, be patient :P (or cancel anytime with Ctrl+C and go ahead with the next step)
+make verilator-waves
+```
+
+You will be able to see the input resistance (in Ω) and at the top (in yellow) the computed conductance (in nS). This simulation uses the behavioral models of the front-end, including an approximation of the VCO's measured phase noise.
+
+<p align="center"><img src="./docs/img/test_reconstruct.png" width="100%" style="display:inline-block;">
+</p>
+
 ## Prerequisites
 
 Since this project is based on _X-HEEP_, it has the same prerequisites.
