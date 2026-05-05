@@ -1,3 +1,9 @@
+// Copyright 2026 Universidad Politecnica de Madrid
+// SPDX-License-Identifier: Apache-2.0
+//
+// Author: Blanca Calvo <blanca.calvo@alumnos.upm.es>
+// Description: Algorithm to decompose tonic and phasic components of GSR signals
+
 #ifndef DESCOMPV5_H
 #define DESCOMPV5_H
 

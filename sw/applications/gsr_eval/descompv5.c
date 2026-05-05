@@ -1,3 +1,9 @@
+// Copyright 2026 Universidad Politecnica de Madrid
+// SPDX-License-Identifier: Apache-2.0
+//
+// Author: Blanca Calvo <blanca.calvo@alumnos.upm.es>
+// Description: Algorithm to decompose tonic and phasic components of GSR signals
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
@@ -7,15 +13,15 @@
 #endif
 #include "descompv5.h"
 
-#define LAMBDA 1 
+#define LAMBDA 1
 int shift_mul5(int A_Q, int B_Q) {
-    int prod = A_Q * B_Q; 
+    int prod = A_Q * B_Q;
     return (prod >> Q_SCALE);
 }
 
 int shift_div5(int num, int den) {
     if (den == 0) return 0;
-    
+
     // Encontrar la potencia de 2 más cercana (p2)
     int k = 0;
     int p2 = 1;
@@ -25,16 +31,16 @@ int shift_div5(int num, int den) {
         k++;
     }
 
-    int R = den - p2; 
+    int R = den - p2;
 
     int num_escalado_Q = num << Q_SCALE;
     int resultado_base_Q = num_escalado_Q >> k; // Q14
-    
-    int R_temp_Q = R << Q_SCALE; 
-    int R_over_p2_Q = R_temp_Q >> k; 
+
+    int R_temp_Q = R << Q_SCALE;
+    int R_over_p2_Q = R_temp_Q >> k;
 
     int termino_correccion_Q = shift_mul5(R_over_p2_Q, resultado_base_Q);
-    
+
     int resultado_final_Q = resultado_base_Q - termino_correccion_Q;
 
     return resultado_final_Q;
@@ -42,8 +48,8 @@ int shift_div5(int num, int den) {
 
 // Matriz Triangular Superior U
 int EDA_U_diag0[signal_length];
-int EDA_U_diag1[signal_length - 1]; 
-int EDA_U_diag2[signal_length - 2]; 
+int EDA_U_diag1[signal_length - 1];
+int EDA_U_diag2[signal_length - 2];
 
 // Multiplicadores de la Matriz Inferior L
 int EDA_L_mult_1[signal_length - 1]; // Diagonal -1
@@ -127,8 +133,8 @@ void EDA_AdjustMasterMatrix(int n_target, const int mU0[], const int mU1[], cons
     tmp_U1[i_n2] = -shift_mul5(lambda_sq, 2 * ONE_Q);
     int A_N2_N2 = ONE_Q + shift_mul5(lambda_sq, 5 * ONE_Q);
     tmp_U0[i_n2] = A_N2_N2 - shift_mul5(tmp_L1[i_n2-1], tmp_U1[i_n2-1]) - shift_mul5(tmp_L2[i_n2-2], tmp_U2[i_n2-2]);
-    
-    int A_N1_N2 = -shift_mul5(lambda_sq, 2 * ONE_Q); 
+
+    int A_N1_N2 = -shift_mul5(lambda_sq, 2 * ONE_Q);
     tmp_L1[i_n2] = shift_div5(A_N1_N2, tmp_U0[i_n2]);
     int A_N1_N1 = ONE_Q + lambda_sq;
     tmp_U0[i_n1] = A_N1_N1 - shift_mul5(tmp_L1[i_n2], tmp_U1[i_n2]) - shift_mul5(tmp_L2[i_n1-2], tmp_U2[i_n1-2]);
@@ -155,7 +161,7 @@ void back_substitution_v5(int N, int b[], int x[], int u0[], int u1[], int u2[])
     x[N - 2] = shift_div5(numerador, u0[N - 2]);
 
     for (int i = N - 3; i >= 0; i--) {
-    int sum = 0; 
+    int sum = 0;
 
     sum += shift_mul5(u1[i] , x[i + 1]);
     sum += shift_mul5(u2[i] , x[i + 2]);
@@ -166,15 +172,15 @@ void back_substitution_v5(int N, int b[], int x[], int u0[], int u1[], int u2[])
 
 
 void solve_v5(int N, int Xeda[], int Xtonica[], int Xfasica[], int u0[], int u1[], int u2[], int l1[], int l2[]) {
-    int b_temp[N]; 
-    
+    int b_temp[N];
+
     for (int i = 0; i < N; i++) {
         b_temp[i] = Xeda[i];
     }
 
     forward_elimination_v5(N, b_temp, l1, l2);
 
-    back_substitution_v5(N, b_temp, Xtonica, u0, u1, u2); 
+    back_substitution_v5(N, b_temp, Xtonica, u0, u1, u2);
 
     for (int i = 0; i < N; i++) {
         Xfasica[i] = Xeda[i] - Xtonica[i];
