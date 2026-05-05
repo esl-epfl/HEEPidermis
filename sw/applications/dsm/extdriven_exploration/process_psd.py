@@ -529,9 +529,9 @@ if compare_atte:
 
 ses_ww1 = np.ones(ses_n1)*ses_ww
 ses_ww2 = np.ones(ses_n2)*ses_ww-1
-ses_cost = (ses_n1+ses_n2)**2
+ses_cost = (100/ses_df)*(ses_n1+ses_n2)**2
 cic_n_area = cic_n*1.56 # Area/stage difference wrt SES (D=1), Words=24 bits
-cic_cost = (cic_n_area + (1+cic_d)*cic_n_area/cic_df) * ((2+cic_d)*cic_n_area)
+cic_cost = (100/cic_df)*(cic_n_area + (1+cic_d)*cic_n_area/cic_df) * ((2+cic_d)*cic_n_area)
 
 fbw_Hz = 5e3
 fnyq_Hz = fbw_Hz*2
@@ -615,3 +615,210 @@ plt.tight_layout()
 plt.savefig(f"./figs/SES_vs_CIC_H(z)_{'cost' if compare_cost else 'droop' if compare_droop else 'att' if compare_atte else 'test'}.png", dpi=400)
 plt.show()
 
+
+
+#In[]:
+%matplotlib inline
+
+def get_params( i ):
+    if i==0:
+        # SES params
+        ses_wg = 16
+        ses_n1 = 9
+        ses_n2 = 0
+        ses_ww = 4
+        ses_df = 25
+        # CIC params
+        cic_df = 50
+        cic_d  = 1
+        cic_n  = 9
+
+    if i==1:
+        # SES params
+        ses_wg = 16
+        ses_n1 = 7
+        ses_n2 = 11
+        ses_ww = 4
+        ses_df = 25
+        # CIC params
+        cic_df = 50
+        cic_d  = 1
+        cic_n  = 9
+
+    if i==2:
+        # SES params
+        ses_wg = 16
+        ses_n1 = 1
+        ses_n2 = 15
+        ses_ww = 4
+        ses_df = 25
+        # CIC params
+        cic_df = 50
+        cic_d  = 1
+        cic_n  = 9
+
+    return ses_wg, ses_n1, ses_n2,ses_ww,  ses_df, cic_df, cic_d, cic_n
+
+
+
+def aliasing_integral(freq_Hz, gain_dB, df, fs_Hz, fnyq_Hz, fbw_Hz, n_points=2000):
+    gain_lin2 = 10**(gain_dB / 10)  # |H|^2
+
+    total = 0.0
+    for k in range(1, int(df/2) + 1):
+        fc = k * fs_Hz / df
+        f0 = fc - fnyq_Hz/2
+        f1 = fc + fnyq_Hz/2
+
+        f_grid = np.linspace(f0, f1, n_points)
+        h_grid = np.interp(f_grid, freq_Hz, gain_lin2)
+
+        total += np.trapz(h_grid, f_grid)
+
+    return total / fbw_Hz
+
+
+
+
+
+
+from matplotlib.offsetbox import AnchoredText
+
+plt.rcParams.update({'font.size': 9, 'font.family': 'serif'})
+fig, axs = plt.subplots(1,3, figsize=(10,2), sharey=True)
+
+for i, ax in enumerate(axs):
+    fbw_Hz = 5e3
+    fnyq_Hz = fbw_Hz*2
+    fs_Hz   = fnyq_Hz*100 #  1e6
+
+
+    (ses_wg, ses_n1, ses_n2,ses_ww,  ses_df, cic_df, cic_d, cic_n) = get_params(i)
+
+    ses_ww1 = np.ones(ses_n1)*ses_ww
+    ses_ww2 = np.ones(ses_n2)*ses_ww-1
+    ses_cost = (100/ses_df)*(ses_n1+ses_n2)**2
+
+
+
+
+    cic_n_area = cic_n*1.56 # Area/stage difference wrt SES (D=1), Words=24 bits
+    cic_cost = (100/cic_df)*(cic_n_area + (1+cic_d)*cic_n_area/cic_df) * ((2+cic_d)*cic_n_area)
+
+    cic_Hz, cic_dB = H_z_CIC(D=cic_d, N=cic_n, R=cic_df, fs=fs_Hz)
+    cic_dB -= cic_dB[1]
+
+    droop_f = fbw_Hz
+    droop_n = np.argmin(abs(cic_Hz - droop_f))
+    cic_droop_dB  = cic_dB[droop_n]
+    droop_Hz  = cic_Hz[droop_n]
+
+    cic_aliasing = aliasing_integral(
+                    cic_Hz, cic_dB,
+                    df=cic_df,
+                    fs_Hz=fs_Hz,
+                    fnyq_Hz=fnyq_Hz,
+                    fbw_Hz=fbw_Hz,
+                    n_points=100
+                )
+
+    alias_f = (fs_Hz / cic_df) - fnyq_Hz/2
+    alias_start_n = np.argmin(abs(cic_Hz - alias_f))
+    cic_alias_start_dB  = cic_dB[alias_start_n]
+    alias_start_Hz  = cic_Hz[alias_start_n]
+    ax.plot(cic_Hz/fbw_Hz, cic_dB,  color='r', label=f"CIC")
+    ax.axhline(cic_droop_dB,linestyle=':', linewidth=1, color='r')
+    ax.axhline(cic_alias_start_dB,linestyle='--', linewidth=1, color='r')
+    ax.scatter(alias_start_Hz/fbw_Hz, cic_alias_start_dB, color='red', marker='o', s=25)
+    ax.axvline(fs_Hz/fbw_Hz/cic_df,linestyle='-.', linewidth=1.5, color='red', alpha=0.3)
+
+
+    ses_Hz, ses_dB = H_z_SES(wg=ses_wg, ww0=ses_ww1[0], wwi=np.concatenate((ses_ww1[1:],ses_ww2)), fs=fs_Hz)
+    ses_dB -= ses_dB[1]
+
+    alias_f = (fs_Hz / ses_df) - fnyq_Hz/2
+    alias_start_n = np.argmin(abs(ses_Hz - alias_f))
+    ses_alias_start_dB  = ses_dB[alias_start_n]
+    alias_start_Hz  = ses_Hz[alias_start_n]
+
+    droop_f = fbw_Hz
+    droop_n = np.argmin(abs(ses_Hz - droop_f))
+    ses_droop_dB  = ses_dB[droop_n]
+
+    ses_aliasing = aliasing_integral(
+                ses_Hz, ses_dB,
+                df=ses_df,
+                fs_Hz=fs_Hz,
+                fnyq_Hz=fnyq_Hz,
+                fbw_Hz=fbw_Hz,
+                n_points=100
+            )
+
+    ax.plot(ses_Hz/fbw_Hz, ses_dB,  color='g', label=f"SES")
+    ax.axhline(ses_droop_dB,linestyle=':', linewidth=1, color='g')
+    ax.axhline(ses_alias_start_dB,linestyle='--', linewidth=1, color='g')
+    ax.scatter(alias_start_Hz/fbw_Hz, ses_alias_start_dB, color='g', marker='o', s=25)
+    ax.axvline(fs_Hz/fbw_Hz/ses_df,linestyle='-.', linewidth=1.5, color='g', alpha=0.3)
+
+
+    for k in range(1, int(cic_df/2)+1):
+
+            fc = (k * fs_Hz /fbw_Hz/ cic_df)
+            width = (fnyq_Hz/fbw_Hz)
+            ax.axvspan(fc - width/2, fc + width/2, color='red', alpha=0.07)
+
+    for k in range(1, int(ses_df/2)+1):
+            fc = (k * fs_Hz /fbw_Hz/ ses_df)
+            width = (fnyq_Hz/fbw_Hz)
+            ax.axvspan(fc - width/2, fc + width/2, color='g', alpha=0.07)
+
+
+
+    ax.axvline(10,linestyle=':', linewidth=1, color='black', label="Droop")
+    ax.axvline(10,linestyle='--', linewidth=1, color='black', label="Attenuation")
+    ax.axvline(1,linestyle=':', linewidth=1.5, color='black', label=r'$\text{f}_\text{BW}$')
+    ax.axvline(0,linestyle='-.', linewidth=1.5, color='black', alpha=0.3, label=r'$\text{f}_\text{s}$')
+    ax.axvspan(10, 10, color='gray', alpha=0.3,label='Alias band')
+
+
+
+    box = AnchoredText(
+        f"Cost:     ×{ses_cost/cic_cost:1.1f}\n"
+        # f"Att:      {cic_alias_start_dB-ses_alias_start_dB:+2.1f} dB\n"
+        f"Alias:   {10*np.log10(ses_aliasing / cic_aliasing):+1.0f} dB\n"
+        f"Droop:  {cic_droop_dB-ses_droop_dB:+1.1f} dB",
+        loc="lower left",
+        prop=dict(size=8),
+        frameon=True,
+        borderpad=0.5,
+        pad=0.3,
+    )
+
+    box.patch.set_alpha(1)
+    box.patch.set_boxstyle("round,pad=0.3")
+
+    ax.add_artist(box)
+
+
+    # ax.set_ylim(-50,32)
+    ax.grid(which='both', alpha=0.5)
+    ax.set_xscale("log")
+    # ax.set_xlim(200, 50e3)
+    ax.set_ylim(-200,20)
+    ax.set_xlim(1e-1,1e1)
+
+axs[-1].legend(
+    loc="center left",
+    bbox_to_anchor=(1.02, 0.5),
+    fontsize=8,
+    borderaxespad=0,
+    frameon=False
+)
+
+axs[1].set_xlabel(r"Frequency (Normalized to $f_\text{BW}$)")
+plt.tight_layout(rect=[0.01, 0, 1, 1])
+# ax.legend(loc='lower left', fontsize=8, borderaxespad=1, framealpha=1)
+axs[0].set_ylabel("Normalized gain (dB)")
+# plt.tight_layout()
+plt.savefig(f"./figs/SES_vs_CIC_H(z)_comparison.png", dpi=400)
+plt.show()
