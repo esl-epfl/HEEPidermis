@@ -3,6 +3,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
 
+from scipy import signal
+
 %matplotlib widget
 
 
@@ -10,7 +12,7 @@ import numpy as np
 fs = 1e6
 df = 16
 lw = 11
-file_path = 'dLC/test20.csv'
+file_path = 'dLC/test18.csv'
 
 # 2. Read the file
 # We read the first two lines separately as headers
@@ -131,3 +133,119 @@ plt.figure(figsize=(5, 5))
 
 # plt.plot(t_list, Ab_list, 'o', markersize=3, color='#2ca02c', alpha=0.5)
 plt.show()
+
+
+#In[]:
+
+def nrmse_db(sig, ref):
+    rmse    = np.sqrt(np.mean((sig - ref)**2))
+    ampl    = (max(ref)-min(ref))
+    nrmse   = rmse/ampl
+    nrmse_db = 20 * np.log10(nrmse)
+    return nrmse_db
+
+def result_compute_nrmse_db( result ):
+    sig = result["cropped_signal"]
+    ref = result["cropped_fitted_sin"]
+
+    result["nrmse_db"] = nrmse_db(sig, ref)
+    return
+
+def result_compute_nrmse_window_db(result, window_frac=0.1, step_frac=0.01):
+    sig = result["cropped_signal"]
+    ref = result["cropped_fitted_sin"]
+    length_n = len(sig)
+    window_size = int(length_n * window_frac)
+    step_size = int(length_n * step_frac)
+
+    result['nrmse_window_db'] = []
+    for start in range(0, length_n - window_size + 1, step_size):
+        end = start + window_size
+        sig_window = sig[start:end]
+        ref_window = ref[start:end]
+        result['nrmse_window_db'].append(nrmse_db(sig_window, ref_window))
+
+    result['best_nrmse_db'] = min(result['nrmse_window_db'])
+    result_compute_nrmse_db(result)
+    return
+
+def result_crop_signal(result):
+    og_signal  = result['signal']
+    og_time    = result['time']
+
+    n               = len(og_signal)
+    start_idx       = int(n * 0.05)
+    end_idx         = int(n * 0.95)
+    cropped_signal  = og_signal[start_idx:end_idx]
+    cropped_time    = og_time[start_idx:end_idx] - og_time[start_idx]
+
+    result['cropped_signal']   = cropped_signal
+    result['cropped_time']     = cropped_time
+    return
+
+def result_fit_sin(result):
+
+    t       = result['cropped_time']
+    y       = result['cropped_signal']
+    fsin    = result['fsin_Hz']
+
+    # 1. Create the known basis functions
+    omega = 2 * np.pi * fsin
+    sin_wave = np.sin(omega * t)
+    cos_wave = np.cos(omega * t)
+    ones = np.ones_like(t)
+
+    # 2. Build the X matrix for linear regression
+    # X shape will be (N, 3)
+    X = np.column_stack([sin_wave, cos_wave, ones])
+
+    # 3. Solve the linear least squares problem (Y = X * Beta)
+    # Beta contains [c1, c2, c3]
+    Beta, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
+    c1, c2, c3 = Beta
+
+    # 4. Convert back to Amplitude, Phase, and Offset
+    amplitude = np.sqrt(c1**2 + c2**2)
+    phase = np.arctan2(c2, c1)
+    offset = c3
+
+    # Generate the aligned best-fit curve to compute your point-to-point error
+    best_fit_y = amplitude * np.sin(omega * t + phase) + offset
+
+    result['cropped_fitted_sin'] = best_fit_y
+
+result = {
+    "time" : t_list,
+    "signal": lc_rec_norm,
+    "fsin_Hz": 2929.6875
+}
+
+all_results = [result]
+
+
+plot = True
+best_results = []
+
+for result in all_results:
+    result_crop_signal(result)
+    result_fit_sin(result)
+    result_compute_nrmse_window_db(result)
+
+    if result['best_nrmse_db'] < -10:
+        best_results.append(result)
+        if plot:
+            fig, axs = plt.subplots(2,1, figsize=(6,3), sharex=True)
+            axs[0].set_title(f"avg/best NRMSE: {result['nrmse_db']:1.0f}/{result['best_nrmse_db']:1.0f} dB" )
+            axs[0].step(result["cropped_time"], result['cropped_fitted_sin'], c='g', linewidth=2)
+            axs[0].step(result["cropped_time"], result["cropped_signal"], c='r')
+            axs[1].step(result["cropped_time"][:-11],result['nrmse_window_db'],'-k')
+            plt.show()
+
+        # print(f"AS:{result['as']} | DF {result['df']} | wg {result['wg']} | ww {result['ww']} | avg/best NRMSE: {result['nrmse_db']:1.0f}/{result['best_nrmse_db']:1.0f} dB")
+        data_range = max(result["cropped_signal"])-min(result["cropped_signal"])
+        range_b = np.ceil(np.log2(data_range))
+        avg = np.mean(result["cropped_signal"])
+        gain_b = np.ceil(np.log2(avg))
+        lsb = min(abs(np.diff(np.array(result["cropped_signal"]))[np.diff(np.array(result["cropped_signal"]))!=0]))
+
+

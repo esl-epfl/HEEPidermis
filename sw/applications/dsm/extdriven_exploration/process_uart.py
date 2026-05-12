@@ -1,7 +1,7 @@
 #In[]:
 # Init
 
-%matplotlib inline
+%matplotlib widget
 import numpy as np
 import matplotlib.pyplot as plt
 import re
@@ -40,7 +40,7 @@ def finalize_block(header, xs, ys, rawname=False, plot=False, outpath="./"):
     if plot:
         plt.figure(figsize=(7,2))
         plt.title(header + f"  | {fs_Hz/1e3:1.2f} kHz")
-        plt.plot(xs, ys, marker=".")
+        plt.plot(xs[100:], ys[100:], marker=".")
         plt.xlabel("x")
         plt.ylabel("y")
         plt.show()
@@ -56,7 +56,7 @@ def finalize_block(header, xs, ys, rawname=False, plot=False, outpath="./"):
 xs, ys = [], []
 header = None
 
-plot = False
+plot = True
 
 from datetime import datetime
 timestamp = datetime.now().strftime("%H_%M_%S_%d_%m_%y")

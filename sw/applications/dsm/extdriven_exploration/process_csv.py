@@ -8,9 +8,13 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 from scipy.interpolate import interp1d
 
+nrmse_threshold = -30
+
 filter = "SES"
 fclk = "fclk_16MHz/"
-fsin=146.484375
+# fsin= 11781.75
+fsin= 5859.375
+# fsin=146.484375
 # fsin=976.5625
 # fsin = 2929.6875
 # for SES, 2929, 8MHz use time_scale = -1
@@ -76,8 +80,8 @@ def result_crop_signal(result):
     og_time    = result['time']
 
     n               = len(og_signal)
-    start_idx       = int(n * 0.05)
-    end_idx         = int(n * 0.95)
+    start_idx       = int(n * 0.1)
+    end_idx         = int(n * 0.9)
     cropped_signal  = og_signal[start_idx:end_idx]
     cropped_time    = og_time[start_idx:end_idx] - og_time[start_idx]
 
@@ -85,36 +89,109 @@ def result_crop_signal(result):
     result['cropped_time']     = cropped_time
     return
 
-def result_fit_sin(result):
+# def result_fit_sin(result):
 
-    t       = result['cropped_time']
-    y       = result['cropped_signal']
-    fsin    = result['fsin_Hz']
+#     t       = result['cropped_time']
+#     y       = result['cropped_signal']
+#     fsin    = result['fsin_Hz']
 
-    # 1. Create the known basis functions
-    omega = 2 * np.pi * fsin
-    sin_wave = np.sin(omega * t)
-    cos_wave = np.cos(omega * t)
-    ones = np.ones_like(t)
+#     # 1. Create the known basis functions
+#     omega = 2 * np.pi * fsin
+#     sin_wave = np.sin(omega * t)
+#     cos_wave = np.cos(omega * t)
+#     ones = np.ones_like(t)
 
-    # 2. Build the X matrix for linear regression
-    # X shape will be (N, 3)
-    X = np.column_stack([sin_wave, cos_wave, ones])
+#     # 2. Build the X matrix for linear regression
+#     # X shape will be (N, 3)
+#     X = np.column_stack([sin_wave, cos_wave, ones])
 
-    # 3. Solve the linear least squares problem (Y = X * Beta)
-    # Beta contains [c1, c2, c3]
-    Beta, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
-    c1, c2, c3 = Beta
+#     # 3. Solve the linear least squares problem (Y = X * Beta)
+#     # Beta contains [c1, c2, c3]
+#     Beta, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
+#     c1, c2, c3 = Beta
 
-    # 4. Convert back to Amplitude, Phase, and Offset
+#     # 4. Convert back to Amplitude, Phase, and Offset
+#     amplitude = np.sqrt(c1**2 + c2**2)
+#     phase = np.arctan2(c2, c1)
+#     offset = c3
+
+#     # Generate the aligned best-fit curve to compute your point-to-point error
+#     best_fit_y = amplitude * np.sin(omega * t + phase) + offset
+
+#     result['cropped_fitted_sin'] = best_fit_y
+
+from scipy.optimize import minimize_scalar
+
+def result_fit_sin(result, sigma_clip=4.0, n_iter=5):
+    y = np.asarray(result['cropped_signal'], dtype=float)
+
+    m = np.isfinite(y)
+    y = y[m]
+
+    n = np.arange(len(y), dtype=float)
+
+    # FFT frequency guess in cycles/sample
+    yy = y - np.median(y)
+    Y = np.abs(np.fft.rfft(yy * np.hanning(len(yy))))
+    freqs = np.fft.rfftfreq(len(yy), d=1.0)
+
+    k = np.argmax(Y[1:]) + 1
+    f0 = freqs[k]   # cycles/sample
+
+    mask = np.ones_like(y, dtype=bool)
+
+    def fit_at_freq(f, mask):
+        w = 2 * np.pi * f
+        X = np.column_stack([
+            np.sin(w * n),
+            np.cos(w * n),
+            np.ones_like(n)
+        ])
+
+        beta = np.linalg.lstsq(X[mask], y[mask], rcond=None)[0]
+        yfit = X @ beta
+        err = y - yfit
+        return beta, yfit, err
+
+    for _ in range(n_iter):
+        def cost(f):
+            _, _, err = fit_at_freq(f, mask)
+            return np.mean(err[mask] ** 2)
+
+        opt = minimize_scalar(
+            cost,
+            bounds=(0.8 * f0, 1.2 * f0),
+            method="bounded"
+        )
+
+        f = opt.x
+        beta, yfit, err = fit_at_freq(f, mask)
+
+        med = np.median(err[mask])
+        mad = np.median(np.abs(err[mask] - med))
+        sigma = 1.4826 * mad
+
+        if sigma == 0:
+            break
+
+        mask = np.abs(err - med) < sigma_clip * sigma
+
+    c1, c2, offset = beta
+
     amplitude = np.sqrt(c1**2 + c2**2)
     phase = np.arctan2(c2, c1)
-    offset = c3
 
-    # Generate the aligned best-fit curve to compute your point-to-point error
-    best_fit_y = amplitude * np.sin(omega * t + phase) + offset
+    result['cropped_fitted_sin'] = yfit
+    result['fit_amplitude'] = amplitude
+    result['fit_phase_rad'] = phase
+    result['fit_offset'] = offset
+    result['fit_freq_cycles_per_sample'] = f
+    result['fit_samples_per_period'] = 1.0 / f
+    result['fit_rmse'] = np.sqrt(np.mean(err[mask] ** 2))
+    result['fit_rejected_samples'] = np.sum(~mask)
+    result['fit_inlier_mask'] = mask
 
-    result['cropped_fitted_sin'] = best_fit_y
+    return result
 
 def nrmse_db(sig, ref):
     rmse    = np.sqrt(np.mean((sig - ref)**2))
@@ -130,7 +207,7 @@ def result_compute_nrmse_db( result ):
     result["nrmse_db"] = nrmse_db(sig, ref)
     return
 
-def result_compute_nrmse_window_db(result, window_frac=0.1, step_frac=0.01):
+def result_compute_nrmse_window_db(result, window_frac=0.01, step_frac=0.01):
     sig = result["cropped_signal"]
     ref = result["cropped_fitted_sin"]
     length_n = len(sig)
@@ -155,14 +232,19 @@ plt.rcParams.update({'font.size': 9, 'font.family': 'serif'})
 
 best_results = []
 
-plot = 1
+plot = 0
+
+def moving_average(x, w=8):
+    return np.convolve(x, np.ones(w)/w, mode='same')
 
 for result in all_results:
     result_crop_signal(result)
     result_fit_sin(result)
     result_compute_nrmse_window_db(result)
 
-    if result['best_nrmse_db'] < -10:
+
+
+    if result['best_nrmse_db'] < nrmse_threshold:
         best_results.append(result)
         if plot:
             fig, axs = plt.subplots(2,1, figsize=(6,3))
@@ -181,7 +263,30 @@ for result in all_results:
 
         # print(f"Range: {data_range} ({range_b} b) | avg: {int(avg)} ({gain_b} b) | lsb: {lsb}")
 
-        print(f"{result['wg']}\t{result['ww']}\t{result['as']}\t{data_range}\t{int(avg)}\t{lsb}\t{result['df']}\t{result['nrmse_db']}\t{result['best_nrmse_db']}")
+        # print(f"{result['wg']}\t{result['ww']}\t{result['as']}\t{data_range}\t{int(avg)}\t{lsb}\t{result['df']}\t{result['nrmse_db']}\t{result['best_nrmse_db']}")
+
+plt.figure(figsize=(5,3))
+for result in all_results:
+
+    if result['best_nrmse_db'] < nrmse_threshold:
+        c, b = np.histogram(result['nrmse_window_db'], bins=100)
+        b = b[1:]
+        c = moving_average(c, w=32)
+        c /= np.sum(c)
+        plt.plot(b, c)
+
+        print(f"{filter}\t{fsin/1e3:1.1f}\t{result['wg']}\t{result['ww']}\t{result['df']}\t{np.log2(result['as']+1)-1}\t{np.mean(result['nrmse_window_db']):1.1f}\t{result['best_nrmse_db']:1.1f}")
+
+plt.title(f"Distribution of NRMSE of best configs ({filter}, {fsin/1e3:1.1f}kHz)")
+plt.xlabel("NRMSE (dB)")
+plt.ylabel("Probability")
+plt.show()
+
+
+
+
+
+
 
 for result in all_results:
     if filter == "CIC":
@@ -192,7 +297,6 @@ for result in all_results:
         area_per_delay      = ff_area_comb/16
         delays              = result['ww']
         eff_area_per_comb   = other_area_comb + delays*area_per_delay
-        print(eff_area_per_comb, delays)
         freq_intg_MHz       = result['f_clk_Hz']/1e6
         freq_comb_MHz       = freq_intg_MHz/result['df']
         bitwidth            = 24
@@ -201,7 +305,7 @@ for result in all_results:
         cost_comb           = eff_area_per_comb*freq_comb_MHz
         stages              = np.log2(result['as'] + 1)
         total_cost          = stages*(cost_intg+cost_comb)*datarate
-        print(f"total cost: {total_cost:1.2e}")
+        # print(f"total cost: {total_cost:1.2e}")
     if filter == "SES":
         area_per_stage      = 1300
         freq_stage_MHz      = result['f_clk_Hz']/1e6
@@ -210,7 +314,7 @@ for result in all_results:
         datarate            = bitwidth*freq_stage_MHz/result['df']
         stages              = np.log2(result['as'] + 1)
         total_cost          = stages*(cost_stage)*datarate
-        print(f"total cost: {total_cost:1.2e}")
+        # print(f"total cost: {total_cost:1.2e}")
 
     result['complexity'] = total_cost
 

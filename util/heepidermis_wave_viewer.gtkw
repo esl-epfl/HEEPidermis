@@ -1,15 +1,15 @@
 [*]
 [*] GTKWave Analyzer v3.3.104 (w)1999-2020 BSI
-[*] Mon Apr  6 15:04:15 2026
+[*] Wed May  6 10:34:58 2026
 [*]
 [dumpfile] "/home/juan/Desktop/ESL/HEEPidermis/open_repo/build/epfl_cheep_cheep_0.3.0/sim-verilator/logs/waves.fst"
-[dumpfile_mtime] "Mon Apr  6 14:58:09 2026"
-[dumpfile_size] 2329388
+[dumpfile_mtime] "Wed May  6 10:05:25 2026"
+[dumpfile_size] 595333
 [savefile] "/home/juan/Desktop/ESL/HEEPidermis/open_repo/util/heepidermis_wave_viewer.gtkw"
-[timestart] 0
-[size] 2560 1403
+[timestart] 261695
+[size] 1920 1011
 [pos] 0 0
-*-13.810707 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
+*-9.873133 262300 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
 [treeopen] TOP.
 [treeopen] TOP.tb_system.
 [treeopen] TOP.tb_system.u_cheep_top.
@@ -17,16 +17,16 @@
 [treeopen] TOP.tb_system.u_cheep_top.u_analog_subsystem.u_VCOp.
 [treeopen] TOP.tb_system.u_cheep_top.u_cheep_peripherals.
 [treeopen] TOP.tb_system.u_cheep_top.u_cheep_peripherals.u_dsm_decimation.
-[treeopen] TOP.tb_system.u_cheep_top.u_cheep_peripherals.u_dsm_decimation.u_ses_filter.
+[treeopen] TOP.tb_system.u_cheep_top.u_cheep_peripherals.u_dsm_decimation.u_pdm2pcm_cic.
+[treeopen] TOP.tb_system.u_cheep_top.u_cheep_peripherals.u_dsm_decimation.u_pdm2pcm_cic.pdm_core_i.
 [treeopen] TOP.tb_system.u_cheep_top.u_cheep_peripherals.u_dsm_decimation.u_ses_filter.pdm2pcm_fifo_i.
-[treeopen] TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.ao_peripheral_subsystem_i.
 [treeopen] TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.ao_peripheral_subsystem_i.dma_subsystem_i.
 [treeopen] TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.ao_peripheral_subsystem_i.dma_subsystem_i.dma_i_gen[0].
-[treeopen] TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.cpu_subsystem_i.
+[treeopen] TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.ao_peripheral_subsystem_i.dma_subsystem_i.dma_i_gen[0].dma_i.
 [treeopen] TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.cpu_subsystem_i.gen_cv32e20.
+[treeopen] TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.cpu_subsystem_i.gen_cv32e20.cv32e20_i.
 [treeopen] TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.memory_subsystem_i.
-[treeopen] TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.memory_subsystem_i.gen_sram[1].
-[treeopen] TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.memory_subsystem_i.ram1_i.
+[treeopen] TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.memory_subsystem_i.ram0_i.
 [treeopen] TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.memory_subsystem_i.ram1_i.tc_ram_i.
 [treeopen] TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.memory_subsystem_i.ram1_i.tc_ram_i.gen_read_lat.
 [treeopen] TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.memory_subsystem_i.ram1_i.tc_ram_i.gen_read_lat.unnamedblk3.
@@ -34,24 +34,24 @@
 [sst_width] 392
 [signals_width] 340
 [sst_expanded] 1
-[sst_vpaned_height] 518
-@8420
+[sst_vpaned_height] 313
+@8421
 [color] 1
 TOP.tb_system.u_cheep_top.u_analog_subsystem.iDAC2_IOUT_int_nA
 [color] 1
 TOP.tb_system.u_cheep_top.u_analog_subsystem.iDAC1_IOUT_int_nA
-@8010024
+@8010025
 TOP.tb_system.u_cheep_top.u_analog_subsystem.rskin.r_ohm
-@20000
+@20001
 -
 -
 -
 -
 -
-@c08420
+@c08421
 [color] 2
 TOP.tb_system.u_cheep_top.u_analog_subsystem.VCOp_VIN_int_uV
-@28
+@29
 [color] 2
 (0)TOP.tb_system.u_cheep_top.u_analog_subsystem.VCOp_VIN_int_uV
 [color] 2
@@ -116,62 +116,93 @@ TOP.tb_system.u_cheep_top.u_analog_subsystem.VCOp_VIN_int_uV
 (30)TOP.tb_system.u_cheep_top.u_analog_subsystem.VCOp_VIN_int_uV
 [color] 2
 (31)TOP.tb_system.u_cheep_top.u_analog_subsystem.VCOp_VIN_int_uV
-@1401200
+@1401201
 -group_end
-@20000
+@20001
 -
 -
 -
 -
-@8420
+@8421
 [color] 2
 TOP.tb_system.u_cheep_top.u_analog_subsystem.u_VCOp.f_osc_Hz
-@20000
+@20001
 -
 -
 -
 -
-@24
+@25
 [color] 3
 TOP.tb_system.u_cheep_top.u_cheep_peripherals.u_vco_decoder.p_coarse_i[25:0]
-@28
+@29
 TOP.tb_system.u_cheep_top.u_cheep_peripherals.u_dsm_decimation.u_ses_filter.dsm_i
 TOP.tb_system.u_cheep_top.u_cheep_peripherals.u_dsm_decimation.u_ses_filter.SES_dataValid
-@8022
+@8023
 TOP.tb_system.u_cheep_top.u_cheep_peripherals.u_dsm_decimation.u_ses_filter.pdm2pcm_fifo_i.i_dst.async_data_i(0)[23:0]
-@20000
+@20001
 -
-@8022
+@8023
 TOP.tb_system.u_cheep_top.u_cheep_peripherals.u_dsm_decimation.u_ses_filter.pdm2pcm_fifo_i.i_dst.dst_data_o[23:0]
-@20000
+@20001
 -
 -
 -
 -
+@29
+[color] 2
+TOP.tb_system.pdm2pcm_dummy_i.clk_i
+[color] 2
+TOP.tb_system.pdm2pcm_dummy_i.pdm_clk_i
+[color] 2
+TOP.tb_system.pdm2pcm_dummy_i.pdm_data_o
+TOP.tb_system.u_cheep_top.u_cheep_peripherals.u_dsm_decimation.clk_i
+@25
+TOP.tb_system.u_cheep_top.u_cheep_peripherals.u_dsm_decimation.u_pdm2pcm_cic.par_clkdiv_idx[15:0]
+TOP.tb_system.u_cheep_top.u_cheep_peripherals.u_dsm_decimation.u_pdm2pcm_cic.reduced_par_clkdiv_idx[14:0]
+@29
+TOP.tb_system.u_cheep_top.u_cheep_peripherals.u_dsm_decimation.u_pdm2pcm_cic.pdm_core_i.div_clk_i
+TOP.tb_system.u_cheep_top.u_cheep_peripherals.u_dsm_decimation.dsm_clk_o
+@25
+TOP.tb_system.u_cheep_top.u_cheep_peripherals.u_dsm_decimation.u_pdm2pcm_cic.pdm_core_i.decimator_before_hb1.par_decimation_index[3:0]
+TOP.tb_system.u_cheep_top.u_cheep_peripherals.u_dsm_decimation.u_pdm2pcm_cic.pdm_core_i.decimator_before_hb1.reg_counter[3:0]
+@29
+TOP.tb_system.u_cheep_top.u_cheep_peripherals.u_dsm_decimation.dsm_in_i
+TOP.tb_system.u_cheep_top.u_cheep_peripherals.u_dsm_decimation.refresh_notif_o
+TOP.tb_system.u_cheep_top.u_cheep_peripherals.u_dsm_decimation.u_pdm2pcm_cic.pdm_core_i.combs_en
+@25
+TOP.tb_system.u_cheep_top.u_cheep_peripherals.u_dsm_decimation.u_pdm2pcm_cic.pdm_core_i.pcm_o[23:0]
+@29
+TOP.tb_system.u_cheep_top.u_cheep_peripherals.u_dsm_decimation.CIC_dataValid
+@20001
 -
-@28
+@29
 [color] 6
 TOP.tb_system.u_cheep_top.u_cheep_peripherals.dlc_i.dlc_dir_o
 [color] 6
 TOP.tb_system.u_cheep_top.u_cheep_peripherals.dlc_i.dlc_xing_o
 [color] 6
 TOP.tb_system.u_cheep_top.u_cheep_peripherals.dlc_i.dlc_done_o
-@22
+@23
 [color] 5
 TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.ao_peripheral_subsystem_i.dma_subsystem_i.dma_i_gen[0].dma_i.data_out_wdata[31:0]
-@28
+@29
 TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.ao_peripheral_subsystem_i.dma_subsystem_i.dma_done_o[1:0]
 TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.ao_peripheral_subsystem_i.dma_subsystem_i.dma_trans_done[1:0]
 TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.ao_peripheral_subsystem_i.dma_subsystem_i.dma_window_done[1:0]
 TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.ao_peripheral_subsystem_i.dma_subsystem_i.dma_window_intr_o
-@22
+TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.cpu_subsystem_i.gen_cv32e20.cv32e20_i.instr_req_o
+@23
 [color] 4
 TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.cpu_subsystem_i.gen_cv32e20.cv32e20_i.instr_rdata_i[31:0]
-@28
+@29
 [color] 4
 TOP.tb_system.u_cheep_top.uart_tx_o
-@8420
+@8421
 [color] 6
 TOP.tb_system.u_cheep_top.u_cheep_peripherals.dlc_i.hw_r_fifo_data_out[31:0]
+@23
+TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.memory_subsystem_i.ram1_i.wdata_i[31:0]
+@29
+TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.memory_subsystem_i.ram1_i.we_i
 [pattern_trace] 1
 [pattern_trace] 0

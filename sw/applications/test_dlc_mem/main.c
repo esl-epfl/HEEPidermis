@@ -26,6 +26,8 @@
 
 #define PRINTF_ENABLE 0
 
+#define DLC_ENABLED 1
+
 #if PRINTF_ENABLE
     #define PRINTF(fmt, ...)    printf(fmt, ## __VA_ARGS__)
 #else
@@ -100,6 +102,10 @@ int main() {
     uint32_t* dlc_hysteresis_en       = DLC_START_ADDRESS + DLC_HYSTERESIS_EN_REG_OFFSET;
     uint32_t* dlc_discard_bits        = DLC_START_ADDRESS + DLC_DISCARD_BITS_REG_OFFSET;
 
+    uint32_t* dlc_bypass              = DLC_START_ADDRESS + DLC_BYPASS_REG_OFFSET;
+
+    *dlc_bypass = 0;
+
 /*############################################################
 ####### SET THE DIGITAL LC PARAMETERS ######################*/
 
@@ -119,7 +125,7 @@ int main() {
     // dt_mask: mask for the delta-time field (it has as many bits set to 1 as the number of bits for the delta-time field)
     *dt_mask = (1 << (LC_PARAMS_LC_ACQUISITION_WORD_SIZE_OF_TIME)) - 1;
     // Enable a 1-level hsytersis to avoid excessive crossings
-    *dlc_hysteresis_en = 1;
+    *dlc_hysteresis_en = 0;
     // Do not discard any bits from the input signal
     *dlc_discard_bits = 0;
 
@@ -165,21 +171,29 @@ int main() {
     // Until we have processed enough data
     // We will split the whole data buffer in 4
     *dlc_size = (DATA_LENGTH_B/DMA_DATA_TYPE_2_SIZE(DMA_DATA_TYPE_WORD));
+    // *dlc_size = sizeof(dlc_results);
 
+    #if DLC_ENABLED
     // Request an interrupt when the DMA reaches a certain amount of transfers
     // IMPORTANT: the window interrupt always work with the amount of packets written.
     // How many transfers? Depends on what you want... but make sure that the
     // CPU will be able to execute all it's code before the next interrupt
-    trans.win_du = 50;
+        trans.win_du = 0;
+        // Set the size of the transaction. This HAS to be the same value as the dLC will be monitoring.
+        // Whether this refers to read or written words, depends on the dlc_rnw variable.
+        trans.size_d1_du = *dlc_size;
+    #else
+        trans.win_du =  0;
+        // trans.size_d1_du = *dlc_size;
+        trans.size_d1_du = sizeof(dlc_results);
+    #endif
 
-    // Set the size of the transaction. This HAS to be the same value as the dLC will be monitoring.
-    // Whether this refers to read or written words, depends on the dlc_rnw variable.
-    trans.size_d1_du = *dlc_size;
+
 
 
     // We do not set an interrupt for the transaction finish, as it would be given by the
     // window interrupt anyways.
-    trans.end = DMA_TRANS_END_INTR;
+    trans.end = DMA_TRANS_END_POLLING;
 
     // The DMA will restart the same transaction again once it finishes.
     // It will finish when the dLC tells it to do so, because it has already written dlc_size packets.
@@ -187,7 +201,7 @@ int main() {
 
     // Specify that we will use the HW FIFO mode: all data read will be forwarded to the
     // stream peripheral that is connected to the hw fifo.
-    trans.hw_fifo_en = true;
+    trans.hw_fifo_en = DLC_ENABLED;
 
 /*############################################################
 ####### LOAD THE CONFIGURATION ON THE DMA ###################*/
@@ -232,28 +246,36 @@ int main() {
 /*############################################################
 ####### WAIT FOR THE DMA TO FINISH ########################*/
 
-    // This is an arbitrary number I chose from seeing more or less how many windows will be
-    // triggered during the recording of ECG that we have, considering the transactions finishing.
-    uint8_t windows_to_process = 3;
 
-    while( window_intr_flag + transactions_intr_flag < windows_to_process ) {
-        CSR_CLEAR_BITS(CSR_REG_MSTATUS, 0x8);
-        if ( window_intr_flag + transactions_intr_flag < windows_to_process  ) {
-                wait_for_interrupt();
-                // asm volatile ("nop");
-        }
-        // printf("\n%d | %d\n", window_intr_flag, transactions_intr_flag);
-        CSR_SET_BITS(CSR_REG_MSTATUS, 0x8);
-    }
+    CSR_CLEAR_BITS(CSR_REG_MIE, DMA_CSR_REG_MIE_MASK );
+    CSR_CLEAR_BITS(CSR_REG_MSTATUS, 0x8);
+    CSR_CLEAR_BITS(CSR_REG_MIE, 1<<19 );
+    CSR_CLEAR_BITS(CSR_REG_MIE, 1<<30 );
+    wait_for_interrupt();
 
-    // OPTIONAL: Stop the circular mode
-    // dma_stop_circular(trans.channel);
 
-    // Celebrate in a fairly lame way
-    PRINTF("DMA done! Did %d windows and %d transactions which finished\n\r", window_intr_flag, transactions_intr_flag);
+    // // This is an arbitrary number I chose from seeing more or less how many windows will be
+    // // triggered during the recording of ECG that we have, considering the transactions finishing.
+    // uint8_t windows_to_process = 100;
 
-    // There is nothing to check, as the results depend on the chosen configuration. Additionally, the circular mode will override whatever we try to check.
-    return EXIT_SUCCESS;
+    // while( window_intr_flag + transactions_intr_flag < windows_to_process ) {
+    //     CSR_CLEAR_BITS(CSR_REG_MSTATUS, 0x8);
+    //     if ( window_intr_flag + transactions_intr_flag < windows_to_process  ) {
+    //             // wait_for_interrupt();
+    //             // asm volatile ("nop");
+    //     }
+    //     // printf("\n%d | %d\n", window_intr_flag, transactions_intr_flag);
+    //     CSR_SET_BITS(CSR_REG_MSTATUS, 0x8);
+    // }
+
+    // // OPTIONAL: Stop the circular mode
+    // // dma_stop_circular(trans.channel);
+
+    // // Celebrate in a fairly lame way
+    // PRINTF("DMA done! Did %d windows and %d transactions which finished\n\r", window_intr_flag, transactions_intr_flag);
+
+    // // There is nothing to check, as the results depend on the chosen configuration. Additionally, the circular mode will override whatever we try to check.
+    // return EXIT_SUCCESS;
 
 
 }

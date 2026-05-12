@@ -74,15 +74,15 @@ int main(int argc, char *argv[])
     //   uint32_t wgs[] = { 8, 16 };            // Gain of the first stage
     //   uint32_t ass[] = { 15, 31 };           // Mask of activated stages
     //   uint32_t wws[] = { 3, 4, 5 };          // Window lenght (2^x) samples
-      uint32_t dfs[] = { 16};       // Decimation factor
       uint32_t wgs[] = { 16 };            // Gain of the first stage
-      uint32_t ass[] = { 15 };           // Mask of activated stages
-      uint32_t wws[] = { 5 };          // Window lenght (2^x) samples
+      uint32_t dfs[] = { 2, 3, 4, 5, 6};       // Decimation factor
+      uint32_t ass[] = { 15, 31, 63 };           // Mask of activated stages
+      uint32_t wws[] = { 2, 3, 4 };          // Window lenght (2^x) samples
       #else
-      uint32_t dfs[] = { 1, 2, 16, 32 };     // Decimation factor
+      uint32_t dfs[] = { 2, 4, 6, 8, 12, 14, 15 };     // Decimation factor
       uint32_t wgs[] = { DSM_CLK_DIV_CC };   // Clock division (virtual)
-      uint32_t ass[] = { 63 };               // Mask of activated stages
-      uint32_t wws[] = { 2, 3, 4,5,6 }; // Delay comb
+      uint32_t ass[] = { 15, 31, 63 };               // Mask of activated stages
+      uint32_t wws[] = { 1, 2 }; // Delay comb
     #endif
 
     uint32_t sim_len_n = sizeof(wgs)*sizeof(ass)*sizeof(wws)*sizeof(dfs)/256;
@@ -120,7 +120,7 @@ int main(int argc, char *argv[])
                       SES_set_window_size(wws[w]);              // Set window size
                     #else
                       mmio_region_write32(pdm2pcm_base_addr, PDM2PCM_CONTROL_REG_OFFSET, 0);                    // stop the decimation filter
-                      mmio_region_write32(pdm2pcm_base_addr, PDM2PCM_CLKDIVIDX_REG_OFFSET, wgs[g]);                  // Set the decimator to output a clock at the DSM's sampling frequency
+                      mmio_region_write32(pdm2pcm_base_addr, PDM2PCM_CLKDIVIDX_REG_OFFSET, wgs[g]);   // Set the decimator to output a clock at the DSM's sampling frequency
                       mmio_region_write32(pdm2pcm_base_addr, PDM2PCM_DECIMCIC_REG_OFFSET, dfs[f]);              // Set the decimation factor
                       mmio_region_write32(pdm2pcm_base_addr, PDM2PCM_CIC_ACTIVATED_STAGES_REG_OFFSET, ass[a]);  // Set the number of activated stages
                       mmio_region_write32(pdm2pcm_base_addr, PDM2PCM_CIC_DELAY_COMB_REG_OFFSET, wws[w]);        // Delay comb

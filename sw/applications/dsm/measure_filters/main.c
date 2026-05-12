@@ -65,15 +65,15 @@ int main(int argc, char *argv[])
     }
 
     #ifdef SES
-      uint8_t dfs[] = { 50 };                      // Decimation factor
       uint8_t wgs[] = { 16 };                       // Gain of the first stage
+      uint8_t wws[] = { 3 };                        // Window lenght (2^x) samples
+      uint8_t dfs[] = { 2 };                      // Decimation factor
       uint8_t ass[] = { 63 };      // Mask of activated stages
-      uint8_t wws[] = { 2 };                        // Window lenght (2^x) samples
       #else
-      uint8_t dfs[] = { 32 };                      // Decimation factor
       uint8_t wgs[] = { 1 };                        // NOT USED
-      uint8_t ass[] = {  63 };                      // Mask of activated stages
       uint8_t wws[] = { 1 };                        // Delay comb
+      uint8_t dfs[] = { 15 };                      // Decimation factor
+      uint8_t ass[] = {  15 };                      // Mask of activated stages
     #endif
 
     SES_set_gain(1, 0);
@@ -89,7 +89,8 @@ int main(int argc, char *argv[])
         for( uint8_t a=0; a<sizeof(ass); a++ ){
             for( uint8_t w=0; w<sizeof(wws); w++ ){
                 for( uint8_t f=0; f<sizeof(dfs); f++ ){
-                    HEADER(wgs[g], wws[w], dfs[f], ass[a]);
+                    // HEADER(wgs[g], wws[w], dfs[f], ass[a]);
+                    // for (int i = 0 ; i < 2000000 ; i++) { asm volatile ("nop");}
 
                     /* ====================================
                     CONFIGURE THE SES FILTER

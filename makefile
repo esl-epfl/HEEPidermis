@@ -429,6 +429,11 @@ uart:
 	@echo "Starting UART terminal using $(UART_TERMINAL)..."
 	($(TERM_EXEC) & echo $$! > .uart.pid)
 
+# Remove the UART log
+.PHONY: uart-clean
+uart-clean:
+	: > uart.log
+
 # Open openOCD and uart
 .PHONY: jtag_open
 jtag_open: openocd uart
