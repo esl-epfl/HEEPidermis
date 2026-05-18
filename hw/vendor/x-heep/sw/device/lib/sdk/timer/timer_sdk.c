@@ -51,6 +51,11 @@ void timer_irq_enable()
   rv_timer_irq_enable(&timer, 0, 0, kRvTimerEnabled);
 }
 
+void timer_irq_disable()
+{
+    rv_timer_irq_enable(&timer, 0, 0, kRvTimerDisabled);
+}
+
 void timer_irq_clear()
 {
   rv_timer_irq_clear(&timer, 0, 0);

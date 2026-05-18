@@ -1,160 +1,239 @@
-#include "VCO_sdk.h"
-#include "VCO_decoder.h"
-#include "timer_sdk.h"
+// Copyright 2026 EPFL contributors
+// SPDX-License-Identifier: Apache-2.0
+//
+// File: VCO_sdk.c
+// Author: Omar Shibli & Ismail Essaidi
+// Date: 08/04/2026
+// Description: Implementation of the VCO SDK functions
 
-#define TABLE_SIZE 24
-#define SYS_FCLK_HZ 10000000
-#define VCO_BHV_FREQ_GAIN 100
+#include "VCO_sdk.h"
+
+#define TABLE_SIZE 25
+#define VCO_GAIN 1
+#define VCO_ACCEL_RATIO 100 // The ratio by which the VCO is accelerated in simulation to allow faster testing. The refresh rate and integration rate are divided by this factor in simulation mode.
 #define VCO_DECODER_PHASES 62u
 #define VCO_READOUT_DELAY_CC 3u
 
-static uint32_t g_refresh_rate_Hz = 0;
-static vco_sdk_t vco_data;
-
+// TODO: check if 320mV is accurate + we can discard 820 mV point
 const uint32_t _table_Vin_uV[TABLE_SIZE] ={
-    330000, 340000, 360000, 380000, 400000, 
-    420000, 440000, 460000, 480000, 500000, 
-    520000, 540000, 560000, 580000, 600000, 
-    620000, 640000, 660000, 680000, 700000, 
-    720000, 740000, 760000, 780000
+    330000, 340000, 360000, 380000, 400000,
+    420000, 440000, 460000, 480000, 500000,
+    520000, 540000, 560000, 580000, 600000,
+    620000, 640000, 660000, 680000, 700000,
+    720000, 740000, 760000, 780000, 800000
 };
 const uint32_t _table_fosc_Hz[TABLE_SIZE] = {
     24000, 26130, 31330, 37320, 45270,
     55150, 67270, 82680, 99870, 121190,
     146020, 175270, 208990, 247770, 291780,
-    341260, 396650, 457900, 525140, 598560, 
-    677660, 762750, 853760, 950200
+    341260, 396650, 457900, 525140, 598560,
+    677660, 762750, 853760, 950200, 1051710
 };
 
-/* 
-In this function we take in the value of the vin we have found and we get the slope
-at the point if needed.
-*/
-vco_status_t vco_get_kvco_Hz_per_V(uint32_t vin_uV, uint32_t *kvco_Hz_per_V) {
+const uint32_t _table_kvco_Hz_per_V[TABLE_SIZE] = {
+    200000, 233333,   275000,  350000, 450000,
+    550000,   650000,  800000, 975000, 1175000,
+    1350000, 1575000, 1825000, 2075000, 2400000,
+    2625000, 2800000, 3075000, 3600000, 3900000,
+    4025000, 4475000, 4750000, 4875000, 5500000
+};
 
-    if (kvco_Hz_per_V == 0) {
-        return VCO_STATUS_INVALID_ARGUMENT;
-    }
+#define SYS_FCLK_HZ 10000000
+#define VCO_SUPPLY_VOLTAGE_UV    800000U
 
-    if (vin_uV <= _table_Vin_uV[0]) {
-        uint32_t df = _table_fosc_Hz[1] - _table_fosc_Hz[0];
-        uint32_t dv_uV = _table_Vin_uV[1] - _table_Vin_uV[0];
-        *kvco_Hz_per_V = (uint32_t)(((uint64_t)df * 1000000ULL) / dv_uV);
-        return VCO_STATUS_OK;
-    }
+#define INTERPOLATE_FROM_LUT // comment if you want to read directly from LUT without interpolation (it gives less smooth results)
 
-    if (vin_uV >= _table_Vin_uV[TABLE_SIZE - 1]) {
-        uint32_t df = _table_fosc_Hz[TABLE_SIZE - 1] - _table_fosc_Hz[TABLE_SIZE - 2];
-        uint32_t dv_uV = _table_Vin_uV[TABLE_SIZE - 1] - _table_Vin_uV[TABLE_SIZE - 2];
-        *kvco_Hz_per_V = (uint32_t)(((uint64_t)df * 1000000ULL) / dv_uV);
-        return VCO_STATUS_OK;
-    }
+#define VCO_FLAG_HAS_PREV        (1U << 0)
+#define VCO_FLAG_CONFIG_CHANGED  (1U << 1)
+#define VCO_FLAG_ENABLED         (1U << 2)
 
-    int i;
-    for (i = 0; i < TABLE_SIZE - 1; i++) {
-        if (vin_uV >= _table_Vin_uV[i] && vin_uV <= _table_Vin_uV[i + 1]) {
-            uint32_t df = _table_fosc_Hz[i + 1] - _table_fosc_Hz[i];
-            uint32_t dv_uV = _table_Vin_uV[i + 1] - _table_Vin_uV[i];
-            *kvco_Hz_per_V = (uint32_t)(((uint64_t)df * 1000000ULL) / dv_uV);
-            return VCO_STATUS_OK;
-        }
-    }
+static uint32_t g_refresh_rate_Hz = 0;
+static vco_sdk_t vco_data;
 
-    return VCO_STATUS_INVALID_CONFIGURATION;
+static bool vco_flag_is_set(uint8_t flag) {
+    return (vco_data.flags & flag) != 0U;
 }
 
-// Exposed via VCO_sdk.h for use by other SDK layers (e.g. VCO_dlc_sdk).
-uint32_t __interpolate_Vin_uV(uint32_t f_target) {
-    // 1. Handle Out-of-Bounds
-    if (f_target <= _table_fosc_Hz[0]) return _table_Vin_uV[0];
-    if (f_target >= _table_fosc_Hz[TABLE_SIZE - 1]) return _table_Vin_uV[TABLE_SIZE - 1];
-
-    // 2. Binary Search to find the interval [low, high]
-    int low = 0;
-    int high = TABLE_SIZE - 1;
-    while (low <= high) {
-        int mid = low + (high - low) / 2;
-        if (_table_fosc_Hz[mid] < f_target) {
-            low = mid + 1;
-        } else {
-            high = mid - 1;
-        }
-    }
-
-    // After search, table_fosc_Hz[high] < f_target < table_fosc_Hz[low]
-    uint32_t f0 = _table_fosc_Hz[high];
-    uint32_t f1 = _table_fosc_Hz[low];
-    uint32_t v0 = _table_Vin_uV[high];
-    uint32_t v1 = _table_Vin_uV[low];
-
-    // 3. Linear Interpolation Formula
-    // V = v0 + (f_target - f0) * (v1 - v0) / (f1 - f0)
-
-    uint32_t delta_f_target = f_target - f0;
-    uint32_t delta_v_table = v1 - v0;
-    uint32_t delta_f_table = f1 - f0;
-
-    // We multiply before dividing to keep precision.
-    // Result fits in uint32_t because 20,000 * ~106,000 < 2^32
-    uint32_t result_uV = v0 + ((delta_f_target * delta_v_table) / delta_f_table);
-
-    return result_uV;
+static void vco_flag_set(uint8_t flag) {
+    vco_data.flags |= flag;
 }
 
-/*  
+static void vco_flag_clear(uint8_t flag) {
+    vco_data.flags &= (uint8_t)~flag;
+}
+
+static uint32_t vco_get_refresh_cycles(void) {
+    return vco_data.on_cycles + vco_data.off_cycles;
+}
+
+static uint32_t freq_to_cc(uint32_t frequency_Hz) {
+#if TARGET_SIM
+    return SYS_FCLK_HZ / (VCO_ACCEL_RATIO * frequency_Hz);
+#else
+    return SYS_FCLK_HZ / frequency_Hz;
+#endif
+}
+
+static void timer_irq_disable_local(void) {
+    rv_timer_irq_enable(&timer, 0, 0, kRvTimerDisabled);
+}
+
+static void vco_arm_toggle_after(uint32_t delay_cycles) {
+    uint32_t now;
+
+    if (delay_cycles == 0U) return;
+
+    now = timer_get_cycles();
+    timer_irq_disable_local();
+    timer_irq_clear();
+    timer_arm_set(now + delay_cycles);
+    timer_irq_enable();
+}
+
+static void vco_update_duty_windows(void) {
+    uint32_t refresh_cycles = freq_to_cc(g_refresh_rate_Hz);
+
+    if (vco_data.duty_cycle_code == 255U) {
+        vco_data.on_cycles = refresh_cycles;
+        vco_data.off_cycles = 0U;
+        vco_data.integration_rate_Hz = g_refresh_rate_Hz;
+        return;
+    }
+
+    vco_data.on_cycles =
+        (uint32_t)(((uint64_t)refresh_cycles * vco_data.duty_cycle_code) / 255ULL);
+
+    vco_data.off_cycles =
+        refresh_cycles - vco_data.on_cycles;
+
+    vco_data.integration_rate_Hz =
+        (g_refresh_rate_Hz * 255U) / vco_data.duty_cycle_code;
+}
+
+/*
 This function initializes the VCO, it uses an enum to set the channel
 used as either NONE, P Channel, N channel, or Pseudo Differential mode.
 */
 vco_status_t vco_initialize(vco_channel_t channel, uint32_t refresh_rate_Hz){
-    
+
     //Check if valid refresh rate
     if (refresh_rate_Hz == 0) {
         return VCO_STATUS_INVALID_ARGUMENT;
     }
-
+    // clean start
     VCOp_enable(false);
     VCOn_enable(false);
-    
+
     //Enable the used channel based on the specified input
-    switch (channel)
-    {
-    case VCO_CHANNEL_NONE:
-        break;
-    case VCO_CHANNEL_P:
-        VCOp_enable(true);
-        break;
-    case VCO_CHANNEL_N:
-        VCOn_enable(true);
-        break;
-    case VCO_CHANNEL_DIFFERENTIAL:
-        VCOp_enable(true);
-        VCOn_enable(true);
-        break;
-    default:
-        return VCO_STATUS_INVALID_CONFIGURATION;
-    }
+    vco_status_t status = vco_enable(channel, true); // updates vco_data.vco_enabled
+    if (status != VCO_STATUS_OK) return status;
 
-    // set the VCO refresh rate
+    // set the VCO timing
     g_refresh_rate_Hz = refresh_rate_Hz;
-    #if TARGET_SIM
-        uint32_t refresh_rate_CC = (SYS_FCLK_HZ/(100*refresh_rate_Hz));
-    #else
-        uint32_t refresh_rate_CC = (SYS_FCLK_HZ/refresh_rate_Hz);
-    #endif
-    VCO_set_refresh_rate(refresh_rate_CC);
+    vco_data.duty_cycle_code = 255U;
+    vco_update_duty_windows();
 
-    //initialize the VCO data 
-    vco_data.refresh_cycles = refresh_rate_CC;
-    vco_data.has_prev = 0;
-    vco_data.last_timestamp = timer_get_cycles();
-    vco_data.channel = channel;
+    VCO_set_refresh_rate(vco_get_refresh_cycles());
+
+    //initialize the VCO data
+    vco_data.last_timestamp = 0;
+    vco_data.flags &= (uint8_t)~(VCO_FLAG_HAS_PREV | VCO_FLAG_CONFIG_CHANGED);
+    vco_data.channel = (uint8_t)channel;
 
     return VCO_STATUS_OK;
 }
 
+/*
+This function sets the refresh rate of the VCO. It updates both the global variable and the hardware VCO register.
+*/
+vco_status_t vco_set_refresh_rate(uint32_t refresh_rate_Hz) {
+    if (refresh_rate_Hz == 0) {
+        return VCO_STATUS_INVALID_ARGUMENT;
+    }
+
+    // update the global variables
+    g_refresh_rate_Hz = refresh_rate_Hz;
+    vco_update_duty_windows();
+
+    // update the hardware register with the full refresh period
+    VCO_set_refresh_rate(vco_get_refresh_cycles());
+    VCO_trigger();
+
+    vco_flag_set(VCO_FLAG_CONFIG_CHANGED); // set the configuration changed flag since changing config biases timestamp that we use in vco_get_Vin_uV.
+    return VCO_STATUS_OK;
+}
 
 /*
-This function return the frequency read from the counter of the VCO based 
+In this function we search for the value x based on fp(xp) LUT.
+The xp and fp arrays represent the known points of the function, while left and right are the values to return if x is out of bounds.
+*/
+static uint32_t search_LUT(uint32_t x,
+    uint32_t *xp,
+    uint32_t *fp,
+                        uint32_t left, uint32_t right)
+{
+    // 1. Handle Out-of-Bound
+    if (x < xp[0]) return left;
+    if (x >= xp[TABLE_SIZE - 1]) return right;
+
+    // 2. Binary Search to find the interval [low, high]
+    uint8_t low = 0, high = TABLE_SIZE - 1;
+    while (low < high - 1) {
+        uint8_t mid = low + (high - low) / 2;
+        if (xp[mid] < x) low = mid;
+        else high = mid;
+    }
+    // 3. Return lower bound value. We could return high or low. // TODO check which one gives better results.
+    return fp[low];
+}
+
+/*
+In this function we perform a linear interpolation of the value x based on fp(xp) LUT.
+The xp and fp arrays represent the known points of the function, while left and right are the values to return if x is out of bounds.
+*/
+static uint32_t linear_interp(uint32_t x,
+                        uint32_t *xp,
+                        uint32_t *fp,
+                        uint32_t left, uint32_t right)
+{
+    // 1. Handle Out-of-Bound
+    if (x <= xp[0]) return left;
+    if (x >= xp[TABLE_SIZE - 1]) return right;
+
+    // 2. Binary Search to find the interval [low, high]
+    uint8_t low = 0, high = TABLE_SIZE - 1;
+    while (low < high - 1) {
+        uint8_t mid = low + (high - low) / 2;
+        if (xp[mid] < x) low = mid;
+        else high = mid;
+    }
+
+    // 3. Linear Interpolation Formula
+    // result = fp0 + (x_target - x0) * (fp1 - fp0) / (x1 - x0)
+    uint32_t x0 = xp[low];
+    uint32_t x1 = xp[high];
+    // We multiply before dividing to keep precision.
+    return fp[low] + (((fp[high] - fp[low]) * (x - x0)) / (x1 - x0));
+}
+
+// Interpolate Vin from a VCO oscillation frequency using the calibration table.
+uint32_t interpolate_Vin_uV(uint32_t f_target){
+    return linear_interp(f_target, _table_fosc_Hz, _table_Vin_uV, _table_Vin_uV[0], _table_Vin_uV[TABLE_SIZE - 1]);
+}
+
+// Estimate local VCO sensitivity K_VCO = df/dV around a given Vin.
+uint32_t vco_get_kvco_Hz_per_V(uint32_t vin_uV) {
+
+    // left value is 0 because VCO stops oscillating below 330mV
+    #ifdef INTERPOLATE_FROM_LUT
+        return linear_interp(vin_uV, _table_Vin_uV, _table_kvco_Hz_per_V, 0, _table_kvco_Hz_per_V[TABLE_SIZE - 1]);
+    #else
+        return search_LUT(vin_uV, _table_Vin_uV, _table_kvco_Hz_per_V, 0, _table_kvco_Hz_per_V[TABLE_SIZE - 1]);
+    #endif
+}
+
+/*
+This function return the frequency read from the counter of the VCO based
 on the setup that was initialized.
 */
 vco_status_t vco_get_Vin_uV(uint32_t* vin_uV){
@@ -170,13 +249,26 @@ vco_status_t vco_get_Vin_uV(uint32_t* vin_uV){
 
     uint32_t now = timer_get_cycles();
     uint32_t elapsed_cycles = now - vco_data.last_timestamp;
+    uint32_t refresh_cycles = vco_get_refresh_cycles();
 
-    uint32_t readout_delay = (vco_data.refresh_cycles > VCO_READOUT_DELAY_CC)
-                           ? VCO_READOUT_DELAY_CC
-                           : 0u;
-    uint64_t sample_ready_cycles = (uint64_t)vco_data.refresh_cycles + readout_delay;
+    uint32_t readout_delay = (vco_data.on_cycles > VCO_READOUT_DELAY_CC)
+                        ? VCO_READOUT_DELAY_CC
+                        : 0u;
+    uint64_t sample_ready_cycles = (uint64_t)refresh_cycles + readout_delay;
     uint64_t missed_ready_cycles =
-        ((uint64_t)vco_data.refresh_cycles * 2u) + readout_delay;
+        ((uint64_t)refresh_cycles * 2u) + readout_delay;
+
+    /* If it is our first measurement, or the first one after a config change:
+        1. We reset the timestamp (take into account config change latency)
+        2. We return No_New_SAMPLE to indicate that we need a 2nd measurement for 1 sample
+    */
+    bool discard_next = vco_flag_is_set(VCO_FLAG_CONFIG_CHANGED) || !vco_flag_is_set(VCO_FLAG_HAS_PREV); // either config just changed or it is the first read
+    if (discard_next) {
+        vco_data.last_timestamp = now; // reset timestamp because it was biased by config change
+        vco_flag_clear(VCO_FLAG_CONFIG_CHANGED);
+        vco_flag_set(VCO_FLAG_HAS_PREV);
+        return VCO_STATUS_NO_NEW_SAMPLE;
+    }
 
     // Make sure the delayed refresh train has latched the decoder count.
     if ((uint64_t)elapsed_cycles < sample_ready_cycles) {
@@ -185,22 +277,99 @@ vco_status_t vco_get_Vin_uV(uint32_t* vin_uV){
 
     if ((uint64_t)elapsed_cycles >= missed_ready_cycles) {
         vco_data.last_timestamp = now;
-        vco_data.has_prev = true;
+        vco_flag_set(VCO_FLAG_HAS_PREV);
         return VCO_STATUS_MISSED_UPDATE;   // missed one or more updates
     }
 
-    if (!vco_data.has_prev) {
-        vco_data.last_timestamp += vco_data.refresh_cycles;
-        vco_data.has_prev = true;
-        return VCO_STATUS_NO_NEW_SAMPLE;   // discard the first partial interval
-    }
-
     uint32_t decoder_count = VCO_get_count();
-    uint32_t frequency_Hz = (uint32_t)(((uint64_t)decoder_count * g_refresh_rate_Hz) / VCO_DECODER_PHASES);
+    uint32_t frequency_Hz = (uint32_t)(((uint64_t)decoder_count * vco_data.integration_rate_Hz) / VCO_DECODER_PHASES);
 
-    *vin_uV  = __interpolate_Vin_uV(frequency_Hz);
+    *vin_uV  = interpolate_Vin_uV(frequency_Hz);
 
-    vco_data.last_timestamp += vco_data.refresh_cycles;
+    vco_data.last_timestamp += refresh_cycles;
 
     return VCO_STATUS_OK;
+}
+
+/*
+This function enables/disables the VCO and handles vco_data
+*/
+vco_status_t vco_enable(vco_channel_t channel, bool enable)
+{
+    VCO_trigger();
+    switch (channel)
+    {
+    case VCO_CHANNEL_NONE:
+        break;
+    case VCO_CHANNEL_P:
+        VCOp_enable(enable);
+        break;
+    case VCO_CHANNEL_N:
+        VCOn_enable(enable);
+        break;
+    case VCO_CHANNEL_DIFFERENTIAL:
+        VCOp_enable(enable);
+        VCOn_enable(enable);
+        break;
+    default:
+        return VCO_STATUS_INVALID_CONFIGURATION;
+    }
+    if (enable) {
+        vco_flag_set(VCO_FLAG_ENABLED);
+    } else {
+        vco_flag_clear(VCO_FLAG_ENABLED);
+    }
+    return VCO_STATUS_OK;
+}
+
+// applies duty cycling to the VCO by setting its duty cycle D (between 0 and 255 representing D=1)
+vco_status_t vco_duty_cycle(vco_channel_t channel, uint8_t D) {
+    if (channel == VCO_CHANNEL_NONE || channel != (vco_channel_t)vco_data.channel) {
+        return VCO_STATUS_INVALID_CONFIGURATION;
+    }
+    if (D == 0U || g_refresh_rate_Hz == 0U) {
+        return VCO_STATUS_INVALID_ARGUMENT;
+    }
+
+    vco_data.duty_cycle_code = D;
+    vco_update_duty_windows();
+    vco_flag_set(VCO_FLAG_CONFIG_CHANGED); // set the configuration changed flag since we are disabling the VCO, this will make sure that when we enable it again, we don't use old timestamps that keep track of readings which get biased here.
+
+
+    if (vco_data.duty_cycle_code == 255U) { // if D=255, keep VCO ON (no duty cycling)
+        timer_irq_disable_local();
+        timer_irq_clear();
+        return vco_enable(channel, true);
+    }
+
+    if (vco_flag_is_set(VCO_FLAG_ENABLED)) {
+        vco_status_t status = vco_enable(channel, false);
+        if (status != VCO_STATUS_OK) return status;
+    }
+
+    vco_arm_toggle_after(vco_data.off_cycles);
+    return VCO_STATUS_OK;
+}
+
+bool vco_duty_cycle_is_on(void) {
+    return vco_flag_is_set(VCO_FLAG_ENABLED);
+}
+
+void vco_handle_timer_irq(void) {
+    if (vco_data.duty_cycle_code == 255U || vco_data.channel == VCO_CHANNEL_NONE) {
+        timer_irq_clear();
+        timer_irq_disable_local();
+        return;
+    }
+
+    timer_irq_clear();
+    timer_irq_disable_local();
+
+    if (vco_flag_is_set(VCO_FLAG_ENABLED)) {
+        (void)vco_enable((vco_channel_t)vco_data.channel, false);
+        vco_arm_toggle_after(vco_data.off_cycles);
+    } else {
+        (void)vco_enable((vco_channel_t)vco_data.channel, true);
+        vco_arm_toggle_after(vco_data.on_cycles);
+    }
 }

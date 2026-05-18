@@ -13,14 +13,8 @@ extern "C" {
 
 
 #define REFERENCE_CLOCK_Hz 100*1000*1000
-#define UART_BAUDRATE 256000
-// Calculation formula: NCO = 16 * 2^nco_width * baud / fclk.
-// NCO creates 16x of baudrate. So, in addition to the nco_width,
-// 2^4 should be multiplied.
-// We assume that the lowest baudrate will be 9600, and the largest 256000.
-// Given this range, by dividing by 100 it always remains integer and below 32-bits.
-// This saves us the need of performing 64-bit divisions to compute NCO.
-#define UART_NCO 52428 //((uint32_t)( (((uint64_t)UART_BAUDRATE * 16) << 16) / REFERENCE_CLOCK_Hz ))
+#define UART_BAUDRATE (REFERENCE_CLOCK_Hz / 20) // close to maximum baud rate (/16)
+#define UART_NCO 52428
 #define TARGET_SIM 1
 
 /**

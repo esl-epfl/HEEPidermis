@@ -1,3 +1,11 @@
+# Copyright 2026 EPFL contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# File: vco_model.py
+# Author: Juan Sapriza & Ismail Essaidi
+# Date: 08/04/2026
+# Description: Implementation of the VCO model and analysis functions
+
 from dataclasses import dataclass
 import sys
 import numpy as np
@@ -68,8 +76,8 @@ class VCOADCModel:
         self.pcnt_data = np.asarray(df[cols[3]], dtype=float)
 
         self.piecewise_threshold = float(self.vin_data[np.where(self.fosc_data > 0)[0][0]])
-        self.vin_active = self.vin_data[self.vin_data >= self.piecewise_threshold]
-        self.fosc_active = self.fosc_data[self.vin_data >= self.piecewise_threshold]
+        self.vin_active_mV = self.vin_data[self.vin_data >= self.piecewise_threshold]
+        self.fosc_active_kHz = self.fosc_data[self.vin_data >= self.piecewise_threshold]
 
         # Variability (Allen Deviation)
         df_n = self._clean_csv(filename="VCO variability - summary N.csv")
@@ -78,12 +86,12 @@ class VCOADCModel:
         
         if self.representation == "lut":
             # Precompute the derivative LUT for dV/dF to speed up delta_G calculations
-            if np.any(np.diff(self.fosc_active) <= 0):
-                raise ValueError("LUT inversion requires fosc_active to be strictly increasing.")
-            self.df_dv_lut = self._build_lut_derivative(self.vin_active, self.fosc_active)
+            if np.any(np.diff(self.fosc_active_kHz) <= 0):
+                raise ValueError("LUT inversion requires fosc_active_kHz to be strictly increasing.")
+            self.df_dv_lut_kHz_per_mV = self._build_lut_derivative(self.vin_active_mV , self.fosc_active_kHz)
         else:
             # Fit polynomial for the active region
-            self.popt_poly, _ = curve_fit(self.polynomial_model, self.vin_active, self.fosc_active)
+            self.popt_poly, _ = curve_fit(self.polynomial_model, self.vin_active_mV, self.fosc_active_kHz)
     
     def _clean_csv(self, filename):
         path = os.path.join(self.data_folder, filename)
@@ -146,29 +154,25 @@ class VCOADCModel:
         denom = self.params.vdd - vin_V
         return vin_V, i_dc_A, denom
 
-    def get_de_dv_lut(self):
-        return self.df_dv_lut
-
     def kvco_kHz_per_mV(self, vin_mV):
-        vin_arr = np.asarray(vin_mV, dtype=float)
-
+        vin_arr_mV = np.asarray(vin_mV, dtype=float)
         if self.representation == "poly":
             a, b, _ = self.popt_poly
             out = np.where(
-                vin_arr < self.piecewise_threshold,
+                vin_arr_mV < self.piecewise_threshold,
                 0.0,
-                2 * a * vin_arr + b
+                2 * a * vin_arr_mV + b
             )
 
         elif self.representation == "lut":
             out = np.interp(
-                vin_arr,
-                self.vin_active,
-                self.df_dv_lut,
+                vin_arr_mV,
+                self.vin_active_mV,
+                self.df_dv_lut_kHz_per_mV,
                 left=0.0,
-                right=self.df_dv_lut[-1]
+                right=self.df_dv_lut_kHz_per_mV[-1]
             )
-            out = np.where(vin_arr < self.piecewise_threshold, 0.0, out)
+            out = np.where(vin_arr_mV < self.piecewise_threshold, 0.0, out)
 
         else:
             raise ValueError(f"Unknown representation: {self.representation}")
@@ -211,10 +215,10 @@ class VCOADCModel:
         elif self.representation == "lut":
             out = np.interp(
                 vin_arr,
-                self.vin_active,
-                self.fosc_active,
+                self.vin_active_mV,
+                self.fosc_active_kHz,
                 left=0.0,
-                right=self.fosc_active[-1]
+                right=self.fosc_active_kHz[-1]
             )
             out = np.where(vin_arr < self.piecewise_threshold, 0.0, out)
 

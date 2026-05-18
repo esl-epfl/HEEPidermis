@@ -121,6 +121,8 @@ colours = ["black", "gray", "lightgray", 'red']
 
 adev_results = []
 ire_results = []
+frequency_uncertainty_results = []
+fquant_results = []
 quant_results = []
 
 for i, col in enumerate(df_n.columns):
@@ -130,19 +132,22 @@ for i, col in enumerate(df_n.columns):
     # If KVCO is 0 or negative (due to noise in gradient), we handle it
     scaling_factor = f_means[i] / np.abs(kvco[i]) if kvco[i] != 0 else np.nan
     ires = adevs * scaling_factor
+    # frequency_uncertainty_results (Hz) = ADEV * f 
+    frequency_uncertainty_results.append(adevs * f_means[i])
 
     fquant = selected_fs#1/selected_taus
     vquant = fquant/np.abs(kvco[i]) if kvco[i] != 0 else np.nan
     quant_results.append(vquant)
+    fquant_results.append(fquant)
 
     adev_results.append(adevs)
     ire_results.append(ires)
 
 adev_results = np.array(adev_results) # (Voltages, Taus)
 ire_results = np.array(ire_results)   # (Voltages, Taus)
-
+frequency_uncertainty_results = np.array(frequency_uncertainty_results)   # (Voltages, Taus)
 quant_results = np.array(quant_results)   # (Voltages, Taus)
-
+fquant_results = np.array(fquant_results)   # (Voltages, Taus)
 
 
 
@@ -182,6 +187,31 @@ plt.legend()
 plt.tight_layout()
 plt.savefig('figs/ire_vs_vin.svg')
 
+# Plot 3: Frequency Uncertainty (Hz) vs Vin
+plt.figure(figsize=(6, 3))
+for j, tau in enumerate(selected_taus):
+    fs_eff = 1 / tau
+    plt.plot(
+        voltages * 1e3,
+        frequency_uncertainty_results[:, j],
+        'o-',
+        c=colours[j],
+        label=rf'$f_{{int}}={fs_eff:g}$ Hz'
+    )
+plt.plot(voltages*1e3, fquant_results[:, -1], c=colours[-1], linestyle='--', label=r'$f_{int}$'+f'{selected_fs[-1]:g} Hz')
+
+
+plt.yscale('log')
+plt.xlim(200, 850)
+plt.xlabel('Input Voltage (mV)')
+plt.ylabel('Frequency Uncertainty (Hz)')
+plt.title('― From Allan Deviation using 1σ of inter-sample variance\n--- From frequency quantization error', fontsize=9, loc='left')
+plt.grid(True, which="both", ls="-", alpha=0.3)
+plt.legend()
+plt.tight_layout()
+plt.savefig('figs/frequency_uncertainty_vs_vin.svg')
+
 # Output some diagnostic data
 print("Voltages:", voltages)
 print("KVCO values (Hz/V):", kvco)
+# %%

@@ -134,7 +134,7 @@ int main() {
 /*############################################################
 ####### CONFIGURE THE iDACs'  ##########################*/
 
-    iDACs_set_currents(100,50);
+    iDACs_set_currents(10,5);
 
     debug = 'dac';
 

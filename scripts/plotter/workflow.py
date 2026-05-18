@@ -1,3 +1,11 @@
+# Copyright 2026 EPFL contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# File: workflow.py
+# Author: Ismail Essaidi
+# Date: 08/04/2026
+# Description: Forward and reverse computation workflows for PoI optimization
+
 import numpy as np
 from dataclasses import dataclass
 from typing import Tuple, Optional

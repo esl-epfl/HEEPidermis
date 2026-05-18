@@ -144,12 +144,12 @@ static int test_gsr_controller(void)
             PRINTF("  step %2d: mode=%d  G=%lu nS  base=%lu nS  slope=%ld nS/s\n",
                    steps_done,
                    (int)ctrl.mode,
-                   ctrl.G_nS,
-                   ctrl.baseline_nS,
-                   (long)ctrl.slope_nS);
+                   ctrl.sample.G_nS,
+                   ctrl.sample.baseline_nS,
+                   (long)ctrl.sample.slope_nS);
             steps_done++;
         } else if (st == GSR_STATUS_NO_NEW_SAMPLE) {
-            
+
         } else if (st == GSR_STATUS_MISSED_UPDATE) {
             PRINTF("  WARN: missed update at step %d\n", steps_done);
         } else {

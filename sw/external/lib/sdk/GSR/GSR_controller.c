@@ -1,74 +1,181 @@
-#define VIN_LOW_UV                    560000U
-#define VIN_HIGH_UV                   680000U
+#define GSR_IDAC_LSB_NA              40U
+#define GSR_IDAC_MAX_CODE            255U
+#define GSR_MAX_CURRENT_NA           ((uint32_t)GSR_IDAC_MAX_CODE * GSR_IDAC_LSB_NA)
+#define GSR_VCO_SUPPLY_VOLTAGE_UV    800000U
+#define GSR_VIN_MIN_UV               330000U
+#define GUARD_IDC_NA                 50U // guard i_dc to prevent going out of range in the next conductance measurement; 500nA corresponds to 1 uS of change in conductance
+#define VCO_VARIANCE                 3U // variance in the VCO frequency-to-voltage conversion, used for sensitivity estimation
+#define F_NYQ_HZ                     2U // Nyquist frequency for the GSR measurement
+#define RESOLUTION_DB_SCALE      100U   // Return value in dB * 100
+#define ADEV_VAR
+#define min(a, b) (((a) < (b)) ? (a) : (b))
 
 #include "GSR_controller.h"
 
-/* 
-Estimate the minimum detectable conductance variation at the current
-operating point using the local VCO sensitivity and the active sampling rate.
-*/
-gsr_status_t estimate_deltaG_min_nS(gsr_controller_t *ctrl) {
+// Update the baseline estimate using a simple exponential-style moving average.
+static uint32_t calculate_baseline(uint32_t prev_baseline, uint32_t sample) {
 
-    uint32_t kvco_Hz_per_V;
+    return (uint32_t)(((uint64_t)7U * prev_baseline + sample) / 8U);
+}
 
-    if (ctrl == 0) {
-        return GSR_STATUS_INVALID_ARGUMENT;
+// Reconfigure the iDAC current used for conductance measurement, with range checking based on the current limits.
+static gsr_status_t controller_set_current(gsr_controller_t *ctrl, uint8_t idac_code) {
+    uint32_t current_nA;
+
+    if (ctrl == NULL) return GSR_STATUS_INVALID_ARGUMENT;
+    current_nA = gsr_current_from_idac_code_nA(idac_code);
+    if (ctrl->max_current_nA < GUARD_IDC_NA) { // TODO: handle that differently in the future
+        return GSR_STATUS_OUT_OF_RANGE; // current limits are too low to safely update, this is a protective check to prevent underflow in the next check
     }
-
-    if (ctrl->G_nS == 0 || ctrl->current_refresh_rate_Hz == 0) {
-        return GSR_STATUS_INVALID_ARGUMENT;
-    }
-
-    vco_status_t vst = vco_get_kvco_Hz_per_V(ctrl->vin_uV, &kvco_Hz_per_V);
-    if (vst != VCO_STATUS_OK) {
-        return GSR_STATUS_NOT_INITIALIZED;
-    }
-
-    /* Ts = 1 / fs
-       i_nA = 40 * idac_code
-       A_nS = Ts * K_VCO * i = (K_VCO * i_nA) / fs
-       This is numerically in nS
-    */
-    uint64_t i_nA = (uint64_t)40U * (uint64_t)ctrl->idac_code;
-    uint64_t A_nS = ((uint64_t)kvco_Hz_per_V * i_nA) / (uint64_t)ctrl->current_refresh_rate_Hz;
-
-    if (A_nS <= (uint64_t)ctrl->G_nS) {
+    // check validity of current range.
+    if (current_nA > ctrl->max_current_nA - GUARD_IDC_NA) {
         return GSR_STATUS_OUT_OF_RANGE;
     }
 
-    ctrl->deltaG_min_nS =
-        (uint32_t)(((uint64_t)ctrl->G_nS * (uint64_t)ctrl->G_nS) / (A_nS - (uint64_t)ctrl->G_nS));
+    // current configuration
+    ctrl->config.idac_code = idac_code;
+
+    // Delegate actual hardware/current model update to the clean SDK
+    gsr_update_current(idac_code);
 
     return GSR_STATUS_OK;
 }
 
-// Update the baseline estimate using a simple exponential-style moving average.
-static uint32_t calculate_baseline(uint32_t prev_baseline, uint32_t sample) {
-    
-    return (uint32_t)(((uint64_t)7U * prev_baseline + sample) / 8U);
+static gsr_status_t controller_set_vco(gsr_controller_t *ctrl, gsr_ctrl_mode_t mode, uint8_t D) {
+    if (ctrl == NULL) return GSR_STATUS_INVALID_ARGUMENT;
+    uint32_t new_rate_Hz;
+    gsr_status_t ret;
+    switch (mode) {
+        case GSR_CTRL_MODE_BASELINE:
+            new_rate_Hz = ctrl->config.baseline_refresh_rate_Hz;
+            break;
+        case GSR_CTRL_MODE_PHASIC:
+            new_rate_Hz = ctrl->config.phasic_refresh_rate_Hz;
+            break;
+        case GSR_CTRL_MODE_RECOVERY:
+            new_rate_Hz = ctrl->config.recovery_refresh_rate_Hz;
+            break;
+        default:
+            return GSR_STATUS_INVALID_ARGUMENT;
+    }
+    ctrl->config.current_refresh_rate_Hz = new_rate_Hz; // keep track of the current refresh rate in the controller state for reference
+    ret = gsr_status_from_vco(vco_set_refresh_rate(new_rate_Hz));
+    if (ret != GSR_STATUS_OK) return ret;
+    ret = gsr_status_from_vco(vco_duty_cycle(ctrl->config.channel, D));
+    return ret;
 }
 
-// Reconfigure the VCO refresh rate while keeping the selected channel unchanged.
-static gsr_status_t controller_set_refresh(vco_channel_t channel, uint32_t refresh_rate_Hz) {
+static uint32_t max_current_for_conductance_nS(uint32_t conductance_nS) {
+    const uint32_t delta_v_min_uV = GSR_VCO_SUPPLY_VOLTAGE_UV - GSR_VIN_MIN_UV;
+    uint32_t max_current_nA = (uint32_t)(((uint64_t)conductance_nS * delta_v_min_uV) / 1000000ULL);
 
-    vco_status_t st = vco_initialize(channel, refresh_rate_Hz);
-
-    if (st == VCO_STATUS_OK) return GSR_STATUS_OK;
-    if (st == VCO_STATUS_INVALID_ARGUMENT) return GSR_STATUS_INVALID_ARGUMENT;
-    return GSR_STATUS_NOT_INITIALIZED;
-
+    return min(max_current_nA, GSR_MAX_CURRENT_NA);
 }
 
+// TODO: Compute the frequency error of the VCO (based on allen deviation measurements)
+static uint32_t compute_frequency_error_Hz(uint32_t vin_uV, uint32_t integration_rate_Hz, uint8_t variance)
+{
+
+    // We use a fixed value for the frequency error based on the Allen deviation measurements of the VCO.
+    #ifdef ADEV_VAR
+        return 250; // approximated by 100Hz (see report and hw/vendor/analog-library/VCO/VCO_characteristics/figs/frequency_uncertainty_vs_vin.svg plot for justification)
+    #else
+        return integration_rate_Hz;
+    #endif
+}
+
+// Compute the conductance sensitivity (delta G) of the VCO around a given Vin, based on the i_dc and refresh rate.
+static uint32_t compute_conductance_sensitivity_nS(uint32_t conductance_nS, uint32_t vin_uV, uint32_t current_nA, uint32_t integration_rate_Hz)
+{
+    uint32_t frequency_error_Hz = compute_frequency_error_Hz(vin_uV, integration_rate_Hz, VCO_VARIANCE);
+    uint32_t kvco_Hz_per_V = vco_get_kvco_Hz_per_V(vin_uV);
+
+    // Note: 32-bit arithmetic is safe from overflow because
+    // kvco_Hz_per_V < 6'000'000 Hz/V (from measurements in scripts/plotter)
+    // current_nA < 10'200 nA (based on front-end settings)
+    // frequency_error_Hz < 10'000 Hz (based on measurements in scripts/plotter)
+    // conductance_nS < 500'000 nS (very conservative upper bound for skin conductance)
+    // worst case denom = 7 * 10^10  = 2^37 < 2^63, so the 64-bit intermediate is safe from overflow
+    // worst case numer = 10'000 * 500'000 * 500'000 = 2.5 * 10^15 = 2^51 < 2^63, so the 64-bit intermediate is safe from overflow
+    uint64_t denom = kvco_Hz_per_V * current_nA + frequency_error_Hz * conductance_nS;
+
+    if (denom == 0ULL) return 0; // avoid division by zero, sensitivity is effectively zero if the VCO frequency doesn't change with voltage or if there is no current
+
+    uint64_t numer = frequency_error_Hz * conductance_nS * conductance_nS;
+
+    uint32_t delta_G_nS = (uint32_t)(numer / denom);
+
+    return delta_G_nS;
+}
+
+/*
+return the Q1 approximation of log2(x), which is 2*log2(x) rounded to the nearest integer.
+Q1 means the value is scaled by 2. Example: return 7 means 3.5
+*/
+static uint32_t approx_log2_q1_u32(uint32_t x)
+{
+    if (x == 0U) return 0U;
+
+    uint32_t n = 0U;
+    uint32_t tmp = x;
+
+    while (tmp >>= 1U) n++;
+
+    uint32_t log2_q1 = n << 1U;
+
+    // Add 0.5 if the bit just below the MSB is set
+    if (n > 0U) log2_q1 += (x >> (n - 1U)) & 1U;
+
+    return log2_q1;
+}
+
+static uint32_t compute_conductance_resolution_dB(const gsr_controller_t *ctrl, uint32_t sensitivity_nS)
+{
+    uint32_t OSR = ctrl->config.current_refresh_rate_Hz >> 1U; // because F_NYQ_HZ = 2Hz
+    uint32_t amplitude_nS = ctrl->sample.amplitude_nS;
+
+    if (sensitivity_nS == 0U || amplitude_nS == 0U || OSR == 0U) return 0;
+
+    uint32_t log2_A_q1 = approx_log2_q1_u32(amplitude_nS);
+    uint32_t log2_OSR_q1 = approx_log2_q1_u32(OSR);
+    uint32_t log2_dG_q1 = approx_log2_q1_u32(sensitivity_nS);
+
+    /*
+     * resolution[dB] = 10 * (log10(OSR) + 2log10(A) - 2log10(DeltaG))
+     *                ≈ 3 * (log2(OSR) + 2log2(A) - 2log2(DeltaG))
+     *
+     * All log2 values are Q1, so result is also Q1 dB. (Q1 means value / 2.)
+     */
+    int32_t resolution_dB_q1 =
+    3 * (((int32_t)log2_A_q1 << 1)
+        + (int32_t)log2_OSR_q1
+        - ((int32_t)log2_dG_q1 << 1));
+
+    if (resolution_dB_q1 <= 0) return 0U;
+
+    /* Convert from Q1 dB to integer dB by dividing by 2 (Q1 means value / 2)
+     * and multiplying by 100 to return resolution in dB * 100 for better precision.
+     */
+    return ((uint32_t)resolution_dB_q1 * RESOLUTION_DB_SCALE) >> 1;
+}
+
+/*
+Compute the amplitude of the current sample relative to the baseline in nS.
+*/
+static uint32_t compute_amplitude_nS(const gsr_controller_t *ctrl) {
+    if (ctrl->sample.baseline_nS == 0U) return 0U; // this can happen at the very beginning when no baseline has been established yet.
+    return (ctrl->sample.G_nS >= ctrl->sample.baseline_nS)
+             ? (ctrl->sample.G_nS - ctrl->sample.baseline_nS)
+             : (ctrl->sample.baseline_nS - ctrl->sample.G_nS);
+}
 /*
 Detect whether the current sample indicates the onset of a phasic event using either
 deviation from the baseline or slope magnitude
 */
 static bool event_detected(const gsr_controller_t *ctrl){
 
-    uint32_t amp = (ctrl->G_nS >= ctrl->baseline_nS)
-             ? (ctrl->G_nS - ctrl->baseline_nS)
-             : (ctrl->baseline_nS - ctrl->G_nS);
-    uint32_t slope_abs = (ctrl->slope_nS >= 0) ? (uint32_t)ctrl->slope_nS : (uint32_t)(-ctrl->slope_nS);
+    uint32_t amp = compute_amplitude_nS(ctrl);
+    uint32_t slope_abs = (ctrl->sample.slope_nS >= 0) ? (uint32_t)ctrl->sample.slope_nS : (uint32_t)(-ctrl->sample.slope_nS);
 
     return (amp >= ctrl->amplitude_threshold_nS) || (slope_abs >= ctrl->slope_threshold_nS);
 
@@ -77,44 +184,11 @@ static bool event_detected(const gsr_controller_t *ctrl){
 // Check whether the signal has returned close enough to baseline
 static bool signal_settled(const gsr_controller_t *ctrl) {
 
-    uint32_t amp = (ctrl->G_nS >= ctrl->baseline_nS)
-             ? (ctrl->G_nS - ctrl->baseline_nS)
-             : (ctrl->baseline_nS - ctrl->G_nS);
-    uint32_t slope_abs = (ctrl->slope_nS >= 0) ? (uint32_t)ctrl->slope_nS : (uint32_t)(-ctrl->slope_nS);
+    uint32_t amp = compute_amplitude_nS(ctrl);
+    uint32_t slope_abs = (ctrl->sample.slope_nS >= 0) ? (uint32_t)ctrl->sample.slope_nS : (uint32_t)(-ctrl->sample.slope_nS);
 
     return (amp <= ctrl->settle_threshold_nS) && (slope_abs <= ctrl->settle_threshold_nS);
 
-}
-
-/*
-Adjust the injected current during baseline mode to keep Vin inside the
-desired operating window.
-*/
-static void retune_current_for_baseline(gsr_controller_t *ctrl) {
-    uint32_t vin_uV = ctrl->vin_uV;
-    int32_t new_code;
-
-    /* Already in the desired operating region */
-    if ((vin_uV >= VIN_LOW_UV) && (vin_uV <= VIN_HIGH_UV)) {
-        return;
-    }
-
-    new_code = (int32_t)ctrl->idac_code;
-
-    /*
-     * Vin = VDD - I/G
-     * If Vin is too low, current is too high -> decrease code
-     * If Vin is too high, current is too low -> increase code
-     */
-    if (vin_uV < VIN_LOW_UV && new_code>1) {
-        new_code--;
-        ctrl->idac_code = (uint8_t)new_code;
-        gsr_update_current(ctrl->idac_code);
-    } else if (vin_uV > VIN_HIGH_UV && new_code<250) {
-        new_code++;
-        ctrl->idac_code = (uint8_t)new_code;
-        gsr_update_current(ctrl->idac_code);
-    }
 }
 
 // Load a default controller configuration for standard GSR operation.
@@ -124,19 +198,44 @@ gsr_status_t gsr_set_default_settings(gsr_controller_t *ctrl) {
         return GSR_STATUS_INVALID_ARGUMENT;
     }
 
-    ctrl->channel = VCO_CHANNEL_P;
-    ctrl->baseline_refresh_rate_Hz = 2;
-    ctrl->phasic_refresh_rate_Hz = 20;
-    ctrl->recovery_refresh_rate_Hz = 5;
-    ctrl->idac_code = 20;
+    ctrl->config.channel = VCO_CHANNEL_P;
+    ctrl->config.D = 255; // 100% duty cycle
+    ctrl->config.M = 1; // no oversampling by default, just take one measurement per sample. This can be increased for more noisy environments at the cost of temporal resolution and power consumption.
+    ctrl->config.baseline_refresh_rate_Hz = 2;
+    ctrl->config.phasic_refresh_rate_Hz = 10;
+    ctrl->config.recovery_refresh_rate_Hz = 5;
+    ctrl->config.idac_code = 20; // 0.8 uA
+    ctrl->config.current_refresh_rate_Hz = ctrl->config.baseline_refresh_rate_Hz; // initialize the current refresh rate to the baseline rate
     ctrl->amplitude_threshold_nS = 80;
     ctrl->slope_threshold_nS = 40;
     ctrl->settle_threshold_nS = 25;
     ctrl->recovery_count_required = 8;
-    ctrl->deltaG_min_nS = 0;
 
     return GSR_STATUS_OK;
 }
+
+// Update the controller configuration and apply it to the hardware.
+gsr_status_t gsr_controller_set_config(gsr_controller_t *ctrl) {
+
+    if (ctrl == NULL) return GSR_STATUS_INVALID_ARGUMENT;
+
+    gsr_status_t ret;
+    gsr_config_t *config = &ctrl->config;
+    if (config->baseline_refresh_rate_Hz == 0U || config->phasic_refresh_rate_Hz == 0U || config->recovery_refresh_rate_Hz == 0U || config->idac_code == 0U) {
+        return GSR_STATUS_INVALID_ARGUMENT;
+    }
+
+    // setup the config of the iDAC Hardware registers
+    ret = controller_set_current(ctrl, config->idac_code);
+    if (ret != GSR_STATUS_OK) return ret;
+
+    // setup the config of the VCO Hardware registers
+    ret = controller_set_vco(ctrl, ctrl->mode, config->D);
+    if (ret != GSR_STATUS_OK) return ret;
+
+    return ret;
+}
+
 
 // Initialize controller state variables and start the GSR front-end.
 gsr_status_t gsr_controller_init(gsr_controller_t *ctrl) {
@@ -146,18 +245,109 @@ gsr_status_t gsr_controller_init(gsr_controller_t *ctrl) {
     }
 
     ctrl->mode = GSR_CTRL_MODE_INIT;
+    gsr_sample_t init_sample = {
+        .G_nS = 0U,
+        .prev_G_nS = 0U,
+        .vin_uV = 0U,
+        .baseline_nS = 0U,
+        .amplitude_nS = 0U,
+        .slope_nS = 0,
+        .current_nA = gsr_current_from_idac_code_nA(ctrl->config.idac_code),
+        .valid = false
+    };
+    ctrl->sample = init_sample;
 
-    ctrl->G_nS = 0;
-    ctrl->vin_uV = 0;
-    ctrl->prev_G_nS = 0;
-    ctrl->baseline_nS = 0;
-    ctrl->slope_nS = 0;
     ctrl->recovery_counter = 0;
+    ctrl->max_current_nA = GSR_MAX_CURRENT_NA;
+
     ctrl->initialized = false;
 
-    return gsr_init(ctrl->channel, ctrl->baseline_refresh_rate_Hz, ctrl->idac_code);
+    // initialize with the baseline refresh rate
+    return gsr_init(ctrl->config.channel, ctrl->config.baseline_refresh_rate_Hz, ctrl->config.idac_code);
 
 }
+
+static gsr_status_t gsr_read_sample_now(gsr_controller_t *ctrl) {
+    uint32_t new_vin_uV = 0U;
+    uint32_t new_conductance_nS = 0U;
+    gsr_status_t ret;
+
+    if (ctrl == NULL || ctrl->config.M == 0U) return GSR_STATUS_INVALID_ARGUMENT;
+
+    if (ctrl->config.M > 1) {
+        ret = gsr_get_conductance_oversampled(&new_conductance_nS, &new_vin_uV, ctrl->config.M);
+    } else {
+        ret = gsr_get_conductance_nS(&new_conductance_nS, &new_vin_uV);
+    }
+    if (ret != GSR_STATUS_OK) { // OUT_OF_RANGE or NOT_INITIALIZED or MISSED_UPDATE or NO_NEW_SAMPLE
+        // Need to implememt correct strategy in gcase OUT_OF_RANGE or NO_NEW_SAMPLE or MISSED_UPDATE
+        ctrl->sample.valid = false;
+        return ret;
+    }
+
+    ctrl->sample.prev_G_nS = ctrl->sample.G_nS;
+    ctrl->sample.G_nS = new_conductance_nS;
+    ctrl->sample.vin_uV = new_vin_uV;
+    ctrl->sample.current_nA = gsr_current_from_idac_code_nA(ctrl->config.idac_code);
+    // update max current limit based on the new conductance measurement
+    ctrl->max_current_nA = max_current_for_conductance_nS(new_conductance_nS);
+
+    ctrl->sample.valid = true;
+
+    if (!ctrl->initialized) {
+        ctrl->sample.baseline_nS = ctrl->sample.G_nS;
+        ctrl->sample.prev_G_nS = ctrl->sample.G_nS;
+        ctrl->sample.slope_nS = 0;
+        ctrl->sample.amplitude_nS = 0;
+        ctrl->mode = GSR_CTRL_MODE_BASELINE;
+        ctrl->config.current_refresh_rate_Hz = ctrl->config.baseline_refresh_rate_Hz;
+        ctrl->initialized = true;
+        return GSR_STATUS_OK;
+    }
+    // Slope is expressed in nS/s by multiplying the sample difference by fs.
+    ctrl->sample.slope_nS = ((int32_t)ctrl->sample.G_nS - (int32_t)ctrl->sample.prev_G_nS) * (int32_t)ctrl->config.current_refresh_rate_Hz;
+
+    // Only baseline mode is allowed to slowly adapt the tonic reference.
+    if (ctrl->mode == GSR_CTRL_MODE_BASELINE) {
+        ctrl->sample.baseline_nS = calculate_baseline(ctrl->sample.baseline_nS, ctrl->sample.G_nS);
+    }
+    // compute amplitude after updating the baseline.
+    ctrl->sample.amplitude_nS = compute_amplitude_nS(ctrl);
+
+    return ret;
+}
+
+gsr_status_t gsr_read_sample(gsr_controller_t *ctrl)
+{
+    if (ctrl == NULL) return GSR_STATUS_INVALID_ARGUMENT;
+
+    if (ctrl->config.D == 255U) { // no duty cycling
+        return gsr_read_sample_now(ctrl);
+    }
+
+    while (1) {
+        asm volatile("wfi");
+
+        if (!vco_duty_cycle_is_on()) {
+            return gsr_read_sample_now(ctrl);
+        }
+    }
+}
+
+const gsr_sample_t *gsr_get_last_sample(const gsr_controller_t *ctrl) {
+    if (ctrl == NULL) return NULL;
+
+    return &ctrl->sample;
+}
+
+gsr_metrics_t get_metrics(gsr_controller_t *ctrl) {
+    gsr_metrics_t metrics;
+    metrics.conductance_sensitivity_nS = compute_conductance_sensitivity_nS(ctrl->sample.G_nS , ctrl->sample.vin_uV,
+                                                                            ctrl->sample.current_nA, ctrl->config.current_refresh_rate_Hz);
+    metrics.resolution_dB = compute_conductance_resolution_dB(ctrl, metrics.conductance_sensitivity_nS);
+    return metrics;
+}
+
 
 /*
 Execute one control step.
@@ -178,93 +368,69 @@ gsr_status_t gsr_controller_step(gsr_controller_t *ctrl) {
         return GSR_STATUS_INVALID_ARGUMENT;
     }
 
-    st = gsr_get_conductance_nS(&sample_nS, &vin_uV);
-    if (st != GSR_STATUS_OK) {
-        return st;
-    }
-
-    ctrl->vin_uV = vin_uV;
-    ctrl->prev_G_nS = ctrl->G_nS;
-    ctrl->G_nS = sample_nS;
-
-    if (!ctrl->initialized) {
-        ctrl->baseline_nS = ctrl->G_nS;
-        ctrl->prev_G_nS = ctrl->G_nS;
-        ctrl->slope_nS = 0;
-        ctrl->mode = GSR_CTRL_MODE_BASELINE;
-        ctrl->current_refresh_rate_Hz = ctrl->baseline_refresh_rate_Hz;
-        ctrl->initialized = true;
-        return GSR_STATUS_OK;
-    }
-
-    // Slope is expressed in nS/s by multiplying the sample difference by fs.
-    ctrl->slope_nS = ((int32_t)ctrl->G_nS - (int32_t)ctrl->prev_G_nS) * (int32_t)ctrl->current_refresh_rate_Hz;
-
-    // Only baseline mode is allowed to slowly adapt the tonic reference.
-    if (ctrl->mode == GSR_CTRL_MODE_BASELINE) {
-        ctrl->baseline_nS = calculate_baseline(ctrl->baseline_nS, ctrl->G_nS);
-    }
+    st = gsr_read_sample(ctrl);
+    if (st != GSR_STATUS_OK) return st;
 
     switch (ctrl->mode) {
 
-    case GSR_CTRL_MODE_INIT:
-        ctrl->mode = GSR_CTRL_MODE_BASELINE;
-        break;
-
-    case GSR_CTRL_MODE_BASELINE:
-        //This line was removed since Esmail will be working on this.
-        // retune_current_for_baseline(ctrl);
-
-        if (event_detected(ctrl)) {
-            st = controller_set_refresh(ctrl->channel, ctrl->phasic_refresh_rate_Hz);
-            if (st != GSR_STATUS_OK) return st;
-
-            ctrl->current_refresh_rate_Hz = ctrl->phasic_refresh_rate_Hz;
-            ctrl->mode = GSR_CTRL_MODE_PHASIC;
-            ctrl->recovery_counter = 0;
-        }
-        break;
-    
-    // Phasic mode increases sampling rate to better capture fast events.
-    case GSR_CTRL_MODE_PHASIC:
-        if (signal_settled(ctrl)) {
-            st = controller_set_refresh(ctrl->channel, ctrl->recovery_refresh_rate_Hz);
-            if (st != GSR_STATUS_OK) return st;
-
-            ctrl->current_refresh_rate_Hz = ctrl->recovery_refresh_rate_Hz;
-            ctrl->mode = GSR_CTRL_MODE_RECOVERY;
-            ctrl->recovery_counter = 0;
-        }
-        break;
-
-    // Recovery mode uses an intermediate sampling rate until the signal is stable again.
-    case GSR_CTRL_MODE_RECOVERY:
-        if (!signal_settled(ctrl)) {
-            st = controller_set_refresh(ctrl->channel, ctrl->phasic_refresh_rate_Hz);
-            if (st != GSR_STATUS_OK) return st;
-
-            ctrl->current_refresh_rate_Hz = ctrl->phasic_refresh_rate_Hz;
-            ctrl->mode = GSR_CTRL_MODE_PHASIC;
-            ctrl->recovery_counter = 0;
-            break;
-        }
-
-        ctrl->recovery_counter++;
-
-        if (ctrl->recovery_counter >= ctrl->recovery_count_required) {
-            retune_current_for_baseline(ctrl);
-
-            st = controller_set_refresh(ctrl->channel, ctrl->baseline_refresh_rate_Hz);
-            if (st != GSR_STATUS_OK) return st;
-
-            ctrl->current_refresh_rate_Hz = ctrl->baseline_refresh_rate_Hz;
+        case GSR_CTRL_MODE_INIT:
             ctrl->mode = GSR_CTRL_MODE_BASELINE;
-            ctrl->recovery_counter = 0U;
-        }
-        break;
+            break;
 
-    default:
-        return GSR_STATUS_NOT_INITIALIZED;
+        case GSR_CTRL_MODE_BASELINE:
+            //This line was removed since Esmail will be working on this.
+            // retune_current_for_baseline(ctrl);
+
+            if (event_detected(ctrl)) {
+                st = controller_set_vco(ctrl, GSR_CTRL_MODE_PHASIC, ctrl->config.D);
+                if (st != GSR_STATUS_OK) return st;
+
+                ctrl->config.current_refresh_rate_Hz = ctrl->config.phasic_refresh_rate_Hz;
+                ctrl->mode = GSR_CTRL_MODE_PHASIC;
+                ctrl->recovery_counter = 0;
+            }
+            break;
+
+        // Phasic mode increases sampling rate to better capture fast events.
+        case GSR_CTRL_MODE_PHASIC:
+            if (signal_settled(ctrl)) {
+                st = controller_set_vco(ctrl, GSR_CTRL_MODE_RECOVERY, ctrl->config.D);
+                if (st != GSR_STATUS_OK) return st;
+
+                ctrl->config.current_refresh_rate_Hz = ctrl->config.recovery_refresh_rate_Hz;
+                ctrl->mode = GSR_CTRL_MODE_RECOVERY;
+                ctrl->recovery_counter = 0;
+            }
+            break;
+
+        // Recovery mode uses an intermediate sampling rate until the signal is stable again.
+        case GSR_CTRL_MODE_RECOVERY:
+            if (!signal_settled(ctrl)) {
+                st = controller_set_vco(ctrl, GSR_CTRL_MODE_PHASIC, ctrl->config.D);
+                if (st != GSR_STATUS_OK) return st;
+
+                ctrl->config.current_refresh_rate_Hz = ctrl->config.phasic_refresh_rate_Hz;
+                ctrl->mode = GSR_CTRL_MODE_PHASIC;
+                ctrl->recovery_counter = 0;
+                break;
+            }
+
+            ctrl->recovery_counter++;
+
+            if (ctrl->recovery_counter >= ctrl->recovery_count_required) {
+                // retune_current_for_baseline(ctrl); // CHANGE: removed since Esmail will be working on this.
+
+                st = controller_set_vco(ctrl, GSR_CTRL_MODE_BASELINE, ctrl->config.D);
+                if (st != GSR_STATUS_OK) return st;
+
+                ctrl->config.current_refresh_rate_Hz = ctrl->config.baseline_refresh_rate_Hz;
+                ctrl->mode = GSR_CTRL_MODE_BASELINE;
+                ctrl->recovery_counter = 0U;
+            }
+            break;
+
+        default:
+            return GSR_STATUS_NOT_INITIALIZED;
     }
 
     return GSR_STATUS_OK;

@@ -103,6 +103,9 @@
 (31)TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.memory_subsystem_i.ram1_i.tc_ram_i.debug_section[31:0]
 @1401200
 -group_end
+@22
+[color] 3
+TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.memory_subsystem_i.ram1_i.tc_ram_i.debug_section[31:0]
 @420
 [color] 3
 +{DEBUG (signed decimal)} TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.memory_subsystem_i.ram1_i.tc_ram_i.debug_section[31:0]

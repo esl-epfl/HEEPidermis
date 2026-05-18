@@ -1,4 +1,12 @@
-from ipywidgets import FloatSlider, VBox, HBox, Layout, HTML, widgets, interactive_output, ToggleButton
+# Copyright 2026 EPFL contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# File: PoI_plotter.py
+# Author: Ismail Essaidi
+# Date: 08/04/2026
+# Description: Interactive VCO model plotter with forward/reverse optimization
+
+from ipywidgets import FloatSlider, VBox, HBox, Layout, HTML, interactive_output, ToggleButton
 from IPython.display import display
 import matplotlib.pyplot as plt
 from pannels import *
@@ -14,14 +22,14 @@ def PoI_plotter(model, variance=1, avg_window=1):
     )
 
     i_dc_slider = FloatSlider(
-        value=1.0, min=0.1, max=model.i_dc_max(G_init), step=0.01,
+        value=1.0, min=0.1, max=model.i_dc_max(G_init), step=0.04,
         description='i_dc (μA):',
         continuous_update=False,
         layout=Layout(width='300px')
     )
 
     fs_slider = FloatSlider(
-        value=1.0, min=1, max=100.0, step=1,
+        value=1.0, min=0.5, max=20.0, step=0.5,
         description='fs (Hz):',
         continuous_update=False,
         layout=Layout(width='300px')
@@ -74,8 +82,8 @@ def PoI_plotter(model, variance=1, avg_window=1):
         active_variance = variance if variance_on.value else 0
 
         # Skip redundant computations
-        if (_computation_cache['last_G'] == G_value and
-            _computation_cache['last_fs'] == fs_value and
+        if (_computation_cache['last_G'] == G_value and 
+            _computation_cache['last_fs'] == fs_value and 
             _computation_cache['last_variance'] == variance_on.value):
             return
 
@@ -170,12 +178,12 @@ def PoI_plotter(model, variance=1, avg_window=1):
             delta_G_target_nS=delta_G_target_nS,
             P_tot_max_uW=P_tot_max_uW
         )
-        # reverse_result = reverse_compute(
-        #     model=model,
-        #     input=rev_in,
-        #     variance=active_variance,
-        #     avg_window=avg_window
-        # )
+        reverse_result = reverse_compute(
+            model=model,
+            input=rev_in,
+            variance=active_variance,
+            avg_window=avg_window
+        )
 
         fig = plt.figure(figsize=(13, 10), constrained_layout=True)
         gs = fig.add_gridspec(3, 2)
@@ -190,13 +198,13 @@ def PoI_plotter(model, variance=1, avg_window=1):
             result,
             variance=active_variance,
             avg_window=avg_window,
-            reverse_result=None
+            reverse_result=reverse_result
         )
         plot_summary(
             fig.add_subplot(gs[2, 1]),
             result,
             model,
-            reverse_result=None
+            reverse_result=reverse_result
         )
 
         fig.suptitle(

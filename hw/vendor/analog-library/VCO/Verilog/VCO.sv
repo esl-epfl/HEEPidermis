@@ -45,28 +45,6 @@ module VCO #(
     // Make the coarse simply the counter
     assign COARSE_OUT = local_counter;
 
-    // function automatic int transfer_uV_to_Hz(input logic [31:0] vin_uV);
-    //     longint v_mV;
-    //     longint f_hz_raw;
-
-    //     // Safety check for starting voltage
-    //     if (vin_uV < 350_000) return 1; // Return 1kHz min to avoid div-by-zero
-
-    //     v_mV = longint'(vin_uV) / 1000;
-
-    //     // We calculate in Hz first using longint to prevent overflow.
-    //     // C2 (5.35) is handled as 535/100
-    //     // C3 (0.0065) is handled as 65/10000
-    //     f_hz_raw = ( - 180_000
-    //                 + (1650 * v_mV)
-    //                 - ((535 * v_mV * v_mV) / 100)
-    //                 + ((65 * v_mV * v_mV * v_mV) / 10000)
-    //             );
-
-    //     // Apply Gain
-    //     return int'(f_hz_raw *vco_pkg::VcoBhvFreqGain);
-    // endfunction
-
     function automatic int transfer_uV_to_Hz(input logic [31:0] vin_uV);
         longint x_uV;
         longint acc;
@@ -75,7 +53,7 @@ module VCO #(
         // x in uV = x in mV * 1000
         x_uV = longint'(vin_uV);
 
-        if (vin_uV < 320_000) return 1;
+        if (vin_uV < 330_000) return 1;
 
         acc = 643;                      // 0.00643 * 1e5
         acc = (acc * x_uV) / 1000;      // multiply by x_mV
