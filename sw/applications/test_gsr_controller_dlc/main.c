@@ -47,7 +47,7 @@
 #define VREF_DEFAULT_CAL   0b1111111111U
 // dLC configuration
 #define DLC_LOG_LVL_W      5            // level width = 128 counts
-#define DLC_INPUT_SAMPLES  100          // samples per transaction → 200 ms
+#define DLC_INPUT_SAMPLES  20         // samples per transaction → 200 ms
 #define DLC_BUF_SIZE       DLC_INPUT_SAMPLES
 
 // Stop after this many transactions
@@ -101,11 +101,35 @@ static void hw_init(void) {
     timer_cycles_init();
     timer_start();
 }
+// Load a default controller configuration for standard GSR operation.
+static gsr_status_t set_default_settings(gsr_controller_t *ctrl) {
+
+    if (ctrl == 0) {
+        return GSR_STATUS_INVALID_ARGUMENT;
+    }
+
+    ctrl->config.channel = VCO_CHANNEL_P;
+    ctrl->config.duty_cycle_code = 1; // 100% duty cycle
+    ctrl->config.M = 1; // no oversampling by default, just take one measurement per sample. This can be increased for more noisy environments at the cost of temporal resolution and power consumption.
+    ctrl->config.baseline_refresh_rate_Hz = 100;
+    ctrl->config.phasic_refresh_rate_Hz = 10;
+    ctrl->config.recovery_refresh_rate_Hz = 5;
+    ctrl->config.idac_code = 7;
+    ctrl->config.current_refresh_rate_Hz = ctrl->config.baseline_refresh_rate_Hz; // initialize the current refresh rate to the baseline rate
+    ctrl->amplitude_threshold_nS = 80;
+    ctrl->slope_threshold_nS = 40;
+    ctrl->settle_threshold_nS = 25;
+    ctrl->recovery_count_required = 8;
+
+    ctrl->dlc_used = false;
+
+    return GSR_STATUS_OK;
+}
 
 static int init_controller(gsr_controller_t *ctrl, gsr_dlc_config_t *gsr_dlc_cfg) {
     gsr_status_t st;
 
-    st = gsr_set_default_settings(ctrl);
+    st = set_default_settings(ctrl);
     if (st != GSR_STATUS_OK) {
         debug_mark(0xE1U, (uint32_t)st);
         return -1;
@@ -120,13 +144,6 @@ static int init_controller(gsr_controller_t *ctrl, gsr_dlc_config_t *gsr_dlc_cfg
         debug_mark(0xE2U, (uint32_t)st);
         return -1;
     }
-
-    // ctrl->mode = GSR_CTRL_MODE_BASELINE;
-    // st = gsr_controller_set_config(ctrl);
-    // if (st != GSR_STATUS_OK) {
-    //     debug_mark(0xE3U, (uint32_t)st);
-    //     return -1;
-    // }
 
     return 0;
 }
