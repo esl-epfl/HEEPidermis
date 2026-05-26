@@ -69,7 +69,11 @@ Then run:
 
 ```bash
 cd sw/applications/gsr_eval
-python3 txt_to_c_array.py
+python3 txt_to_c_array.py \
+  --input conductance.txt \
+  --start 499999 \
+  --end 600000 \
+  --divisor 1000
 make clean
 make run
 cp fe_output_xHz.csv gt_fe_output.csv
@@ -82,10 +86,36 @@ This writes `input_signal.h`, defining:
 
 and then writes the native FE output CSV.
 
+### Produce a rate-matched GT FE CSV
+
+If `conductance.txt` is sampled faster than the simulation FE input, downsample
+the raw GT before running FE. For example, 200 Hz GT versus 20 Hz simulation
+uses a factor of 10:
+
+```bash
+python3 txt_to_c_array.py \
+  --input conductance.txt \
+  --start 499999 \
+  --end 600000 \
+  --divisor 1000 \
+  --downsample-factor 10 \
+  --downsample-mode pick
+make clean
+make run
+cp fe_output_xHz.csv gt_fe_output_20Hz.csv
+```
+
+Use `--downsample-mode pick` when the simulation samples an instantaneous
+conductance value. Use `--downsample-mode mean` only if the simulated
+measurement averages over the interval. The generated CSV header includes
+`sample_step`, and `compare.py` uses it automatically. In general, use the
+`Nominal GT step/sample` printed by the old high-rate comparison as the
+downsample factor when it is an integer.
+
 ## 3. Produce the Simulation FE CSV
 
 Now run the same native FE code on the reconstructed conductance samples from
-simulation. Edit the user settings at the top of `txt_to_c_array.py`:
+simulation. These are the equivalent converter settings:
 
 ```python
 INPUT_TXT_FILE = _SCRIPT_DIR / "sim.txt"
@@ -98,7 +128,7 @@ DIVISOR = 1
 Then run:
 
 ```bash
-python3 txt_to_c_array.py
+python3 txt_to_c_array.py --input sim.txt --start 0 --end none --divisor 1
 make clean
 make run
 cp fe_output_xHz.csv sim_fe_output_2Hz.csv
@@ -126,6 +156,12 @@ python3 compare.py gt_fe_output.csv sim_fe_output_2Hz.csv --trim 5
 python3 compare.py gt_fe_output.csv sim_fe_output_2Hz.csv --sampling-freq 2
 python3 compare.py gt_fe_output.csv sim_fe_output_2Hz.csv --align nominal
 python3 compare.py gt_fe_output.csv sim_fe_output_2Hz.csv --align fit --fit-offset
+```
+
+For a rate-matched GT CSV, use it directly:
+
+```bash
+python3 compare.py gt_fe_output_20Hz.csv sim_fe_output_20Hz.csv --sampling-freq 20 --plot
 ```
 
 The comparison reports NRMSE for:

@@ -1,5 +1,6 @@
 #include "GSR_sdk.h"
 #include "iDAC_ctrl.h"
+#include "VCO_dlc_sdk.h"
 
 #define VCO_SUPPLY_VOLTAGE_UV 800000
 #define GSR_IDAC_LSB_NA              40U
@@ -7,9 +8,26 @@
 static uint32_t current_nA = 0;
 
 static bool      dlc_used       = false;
-static uint8_t  *s_dlc_buf      = 0;
+static volatile uint8_t *s_dlc_buf = 0;
 static uint16_t  s_dlc_buf_size = 0;
 static uint16_t  s_dlc_read_idx = 0;
+static uint32_t  s_dlc_dt_accum = 0;
+
+static bool gsr_dlc_find_next_event(uint16_t *idx) {
+    if (!dlc_used || s_dlc_buf == 0 || s_dlc_buf_size == 0 || idx == 0) {
+        return false;
+    }
+
+    for (uint16_t offset = 0; offset < s_dlc_buf_size; offset++) {
+        uint16_t candidate = (uint16_t)((s_dlc_read_idx + offset) % s_dlc_buf_size);
+        if (s_dlc_buf[candidate] != 0) {
+            *idx = candidate;
+            return true;
+        }
+    }
+
+    return false;
+}
 
 /*
 Initialize the GSR measurement chain.
@@ -19,14 +37,24 @@ initialized with the requested channel and refresh rate.
 */
 gsr_status_t gsr_init_dlc(vco_channel_t channel, uint32_t refresh_rate_Hz, uint8_t idac_val, const gsr_dlc_config_t *dlc_cfg){
 
-    dlc_used = true;
+    if (dlc_cfg == 0 || dlc_cfg->dlc_cfg == 0 ||
+        dlc_cfg->results_buf == 0 || dlc_cfg->buf_size == 0 ||
+        dlc_cfg->input_samples == 0) {
+        return GSR_STATUS_INVALID_ARGUMENT;
+    }
+
+    dlc_used = false;
     current_nA = 40*idac_val;
     iDACs_set_currents(idac_val, 0);
     s_dlc_buf      = dlc_cfg->results_buf;
     s_dlc_buf_size = dlc_cfg->buf_size;
     s_dlc_read_idx = 0;
+    s_dlc_dt_accum = 0;
     vco_status_t st = vco_dlc_initialize(channel, refresh_rate_Hz, dlc_cfg->dlc_cfg, dlc_cfg->results_buf, dlc_cfg->buf_size, dlc_cfg->input_samples);
-    if (st == VCO_STATUS_OK) return GSR_STATUS_OK;
+    if (st == VCO_STATUS_OK) {
+        dlc_used = true;
+        return GSR_STATUS_OK;
+    }
     if (st == VCO_STATUS_INVALID_ARGUMENT) return GSR_STATUS_INVALID_ARGUMENT;
     return GSR_STATUS_NOT_INITIALIZED;
 
@@ -70,12 +98,18 @@ void gsr_update_current(uint8_t idac_val){
     iDACs_set_currents(idac_val, 0);
 }
 
+bool gsr_dlc_event_pending(void) {
+    uint16_t idx = 0;
+
+    return gsr_dlc_find_next_event(&idx);
+}
+
 /*
 Read one GSR sample in nS.
 The function first reconstructs Vin from the VCO measurement, then computes
 conductance.
 */
-gsr_status_t gsr_get_conductance_nS(uint32_t *conductance_nS, uint32_t* vin_uV_ret) {
+gsr_status_t gsr_get_conductance_nS_with_dt(uint32_t *conductance_nS, uint32_t* vin_uV_ret, uint32_t *dt_ret) {
 
     if (conductance_nS == 0) {
         return GSR_STATUS_INVALID_ARGUMENT;
@@ -85,13 +119,37 @@ gsr_status_t gsr_get_conductance_nS(uint32_t *conductance_nS, uint32_t* vin_uV_r
     uint32_t vin_uV = 0;
 
     if (dlc_used) {
-        uint8_t packed_event = s_dlc_buf[s_dlc_read_idx];
-        s_dlc_read_idx = (s_dlc_read_idx + 1) % s_dlc_buf_size;
-        vco_status_t st = vco_dlc_process_event(packed_event, &vin_uV);
-        if (st != VCO_STATUS_OK) return st;
+        if (s_dlc_buf == 0 || s_dlc_buf_size == 0) {
+            return GSR_STATUS_NOT_INITIALIZED;
+        }
+
+        uint16_t event_idx = 0;
+        if (!gsr_dlc_find_next_event(&event_idx)) {
+            return GSR_STATUS_NO_NEW_SAMPLE;
+        }
+
+        uint8_t packed_event = s_dlc_buf[event_idx];
+        s_dlc_buf[event_idx] = 0;
+        s_dlc_read_idx = (uint16_t)((event_idx + 1) % s_dlc_buf_size);
+        uint16_t packet_dt = 0;
+        vco_status_t st = vco_dlc_process_event_with_dt(packed_event, &vin_uV, &packet_dt);
+        if (st == VCO_STATUS_NO_NEW_SAMPLE) {
+            s_dlc_dt_accum += packet_dt;
+            return GSR_STATUS_NO_NEW_SAMPLE;
+        }
+        if (st != VCO_STATUS_OK) return gsr_status_from_vco(st);
+
+        s_dlc_dt_accum += packet_dt;
+        if (dt_ret != 0) {
+            *dt_ret = s_dlc_dt_accum;
+        }
+        s_dlc_dt_accum = 0;
     } else {
         gsr_status_t st = gsr_status_from_vco(vco_get_Vin_uV(&vin_uV));
         if (st != GSR_STATUS_OK) return st;
+        if (dt_ret != 0) {
+            *dt_ret = 1;
+        }
     }
 
     // Optionally expose Vin to the caller for monitoring or controller use.
@@ -103,6 +161,10 @@ gsr_status_t gsr_get_conductance_nS(uint32_t *conductance_nS, uint32_t* vin_uV_r
     *conductance_nS = (uint32_t)(((uint64_t)current_nA * 1000000ULL) / dv_uV);
     return GSR_STATUS_OK;
 
+}
+
+gsr_status_t gsr_get_conductance_nS(uint32_t *conductance_nS, uint32_t* vin_uV_ret) {
+    return gsr_get_conductance_nS_with_dt(conductance_nS, vin_uV_ret, 0);
 }
 
 /*

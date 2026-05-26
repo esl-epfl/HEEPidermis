@@ -1,30 +1,31 @@
-import re
+#!/usr/bin/env python3
 import argparse
+import csv
 from pathlib import Path
 
 
 # ============================================================
-# USER SETTINGS — CHANGE THESE ONLY
+# USER SETTINGS - CHANGE THESE ONLY
 # ============================================================
 
 _SCRIPT_DIR = Path(__file__).parent
 
-INPUT_TXT_FILE = _SCRIPT_DIR / "conductance.txt"
+INPUT_CSV_FILE = _SCRIPT_DIR / "reconstructed_dlc.csv"
 
 OUTPUT_FILE = _SCRIPT_DIR / "input_signal.h"
 
-START_INDEX = 499999        # inclusive (0-indexed; matches line_start=500000 in resistor.sv)
-END_INDEX   = 600000         # exclusive (0-indexed; matches line_end=600000 in resistor.sv)
+START_INDEX = 0        # inclusive, 0-indexed data row in reconstructed_dlc.csv
+END_INDEX   = 1000     # exclusive, 0-indexed data row in reconstructed_dlc.csv
+
+# reconstructed_dlc.csv contains time_s and conductance_nS. FE consumes the
+# conductance values only.
+CSV_COLUMN = "conductance_nS"
 
 # Divide raw values by this factor before writing.
-# conductance.txt is in pS; dividing by 1000 converts to nS,
-# which keeps intermediate Q14 products within int32 range.
-DIVISOR = 1000
+DIVISOR = 1
 
-# Optional pre-FE downsampling. Use this for GT conductance when the simulation
-# FE runs slower than conductance.txt. For example, 200 Hz GT vs 20 Hz sim uses
-# DOWNSAMPLE_FACTOR = 10.
-DOWNSAMPLE_FACTOR = 2
+# Optional pre-FE downsampling.
+DOWNSAMPLE_FACTOR = 1
 DOWNSAMPLE_MODE = "pick"   # "pick" or "mean"
 DOWNSAMPLE_OFFSET = 0      # source samples to skip before downsampling
 
@@ -48,25 +49,79 @@ HEADER_GUARD_NAME = "INPUT_SIGNAL_H"
 # ============================================================
 
 
-def read_numbers(txt_path):
-    lines = Path(txt_path).read_text().splitlines()
+def _is_number(value):
+    try:
+        float(value)
+    except (TypeError, ValueError):
+        return False
+    return True
 
-    # Prefer one numeric sample per line so UART banners or metadata do not
-    # accidentally become signal samples. Fall back to regex extraction for
-    # legacy files that contain multiple numbers on one line.
-    values = [
-        line.strip()
-        for line in lines
-        if re.fullmatch(r"[-+]?\d*\.?\d+", line.strip())
-    ]
+
+def _column_index(header, column):
+    if column in header:
+        return header.index(column)
+
+    try:
+        index = int(column)
+    except ValueError as exc:
+        raise ValueError(
+            f"Column '{column}' not found. Available columns: {', '.join(header)}"
+        ) from exc
+
+    if index < 0 or index >= len(header):
+        raise ValueError(
+            f"Column index {index} out of range for {len(header)} CSV columns"
+        )
+
+    return index
+
+
+def read_numbers(csv_path, column=CSV_COLUMN):
+    with open(csv_path, newline="") as f:
+        rows = list(csv.reader(f))
+
+    rows = [row for row in rows if any(cell.strip() for cell in row)]
+    if not rows:
+        raise ValueError(f"No rows found in {csv_path}")
+
+    first_row = [cell.strip() for cell in rows[0]]
+    has_header = not all(_is_number(cell) for cell in first_row)
+
+    if has_header:
+        column_idx = _column_index(first_row, column)
+        data_rows = rows[1:]
+    else:
+        try:
+            column_idx = int(column)
+        except ValueError as exc:
+            raise ValueError(
+                "CSV has no header, so --column must be a zero-based column index"
+            ) from exc
+        data_rows = rows
+
+    values = []
+    for data_row_num, row in enumerate(data_rows, start=1):
+        if column_idx >= len(row):
+            raise ValueError(
+                f"Row {data_row_num} has {len(row)} column(s), expected "
+                f"column index {column_idx}"
+            )
+
+        text = row[column_idx].strip()
+        if not text:
+            continue
+        if not _is_number(text):
+            raise ValueError(
+                f"Non-numeric value in row {data_row_num}, column {column_idx}: {text}"
+            )
+
+        value = float(text)
+        values.append(int(round(value)) if ROUND_DECIMALS_TO_INT else value)
+
     if not values:
-        text = "\n".join(lines)
-        values = re.findall(r"[-+]?\d*\.?\d+", text)
+        raise ValueError(f"No numeric samples found in column '{column}'")
 
-    if ROUND_DECIMALS_TO_INT:
-        return [int(round(float(v))) for v in values]
-
-    return [float(v) for v in values]
+    return values
 
 
 def format_c_array(values, array_name=ARRAY_NAME, length_name=LENGTH_NAME,
@@ -120,10 +175,11 @@ def parse_end(value):
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Convert a text signal into input_signal.h for gsr_eval."
+        description="Convert reconstructed dLC conductance CSV into input_signal.h for FE."
     )
-    parser.add_argument("--input", type=Path, default=INPUT_TXT_FILE)
+    parser.add_argument("--input", type=Path, default=INPUT_CSV_FILE)
     parser.add_argument("--output", type=Path, default=OUTPUT_FILE)
+    parser.add_argument("--column", default=CSV_COLUMN)
     parser.add_argument("--start", type=int, default=START_INDEX)
     parser.add_argument("--end", type=parse_end, default=END_INDEX)
     parser.add_argument("--divisor", type=int, default=DIVISOR)
@@ -180,7 +236,7 @@ def downsample_values(values, factor, mode, offset):
 
 def main():
     args = parse_args()
-    numbers = read_numbers(args.input)
+    numbers = read_numbers(args.input, args.column)
 
     if args.start < 0:
         raise ValueError("START_INDEX must be >= 0")
@@ -223,6 +279,7 @@ def main():
     print("Done.")
     print(f"Input file: {args.input}")
     print(f"Output file: {args.output}")
+    print(f"CSV column: {args.column}")
     print(f"Start index: {args.start}")
     print(f"End index: {args.end}")
     print(f"Divisor: {args.divisor}")

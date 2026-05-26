@@ -22,6 +22,7 @@ typedef struct {
     int32_t         current_level;   // absolute quantized level (signed)
     uint32_t        level_width;     // counts per level = 2^log_level_width
     uint32_t        refresh_rate_Hz;
+    uint8_t         input_discard_bits;
     vco_channel_t   channel;
     bool            initialized;
 } vco_dlc_sdk_t;
@@ -40,5 +41,14 @@ vco_status_t vco_dlc_initialize(
 
 //Decode one dLC event and return the reconstructed Vin.
 vco_status_t vco_dlc_process_event(uint8_t packed_event, uint32_t *vin_uV);
+
+//Decode one dLC event and return reconstructed Vin plus elapsed dLC sample ticks.
+vco_status_t vco_dlc_process_event_with_dt(uint8_t packed_event, uint32_t *vin_uV, uint16_t *dt_ret);
+
+// Return the current absolute DLC level (used to emit INITIAL_LEVEL in the output header).
+int32_t vco_dlc_get_current_level(void);
+
+// Return the VCO-input discard applied before the dLC level shift.
+uint8_t vco_dlc_get_input_discard_bits(void);
 
 #endif /* VCO_DLC_SDK_H_ */

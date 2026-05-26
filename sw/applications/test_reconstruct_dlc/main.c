@@ -4,27 +4,26 @@
 //
 // File: test_reconstruct_dlc/main.c
 // Author: Omar Shibli
-// Description: Tests event-based GSR reconstruction using the dLC pipeline.
-//              Uses GSR_sdk (compiled with GSR_USE_VCO_DLC) to get conductance
-//              directly from dLC events.
-//              Output format matches test_reconstruction for easy comparison.
+// Description: Tests event-based GSR capture using the dLC pipeline.
+//              The chip dumps raw packed dLC packets; reconstruction happens
+//              off-chip in gsr_eval_dlc/process_dlc.py.
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
 #include "dma.h"
 #include "core_v_mini_mcu.h"
 #include "x-heep.h"
 #include "cheep.h"
 #include "csr.h"
+#include "fast_intr_ctrl.h"
 #include "hart.h"
 #include "timer_sdk.h"
 #include "soc_ctrl.h"
 #include "REFs_ctrl.h"
 #include "iDAC_ctrl.h"
-#include "GSR_sdk.h"
 #include "DLC_sdk.h"
+#include "VCO_dlc_sdk.h"
 
 
 #define PRINTF_IN_SIM  1
@@ -41,34 +40,31 @@
 
 
 #define SYS_FCLK_HZ        10000000
-#define VCO_FS_HZ          500          // VCO sampling rate
-#define IDAC_DEFAULT_CODE  7            // iDAC code → I = 40×7 = 280 nA
+#define VCO_FS_HZ          100          // VCO sampling rate
+#define VCO_SIM_RATE_MULTIPLIER 100
+#define CAPTURE_INPUT_SAMPLES 2000
+#define IDAC_DEFAULT_CODE  45            // iDAC code -> I = 40 x code nA
 #define IREF_DEFAULT_CAL   255
 #define IDAC_DEFAULT_CAL   15
 
 // dLC configuration
-#define DLC_LOG_LVL_W      7            // level width = 128 counts
-#define DLC_INPUT_SAMPLES  100          // samples per transaction → 200 ms
-#define DLC_BUF_SIZE       DLC_INPUT_SAMPLES
+#define DLC_LOG_LVL_W      8            // level width = 256 counts
+#define DLC_BUF_SIZE       2048         // captured paced DMA slots
+#define DLC_INPUT_SAMPLES  CAPTURE_INPUT_SAMPLES
+#define DLC_DMA_CHANNEL    0
+#define DLC_HEX_BYTES_PER_LINE 32
 
-// Stop after this many transactions
-#define WINDOWS_TO_PROCESS 15
-
-#define INTR_DMA_TRANS_DONE  (1 << 19)
-#define INTR_DMA_WINDOW_DONE (1 << 30)
+#define INTR_DMA_TRANS_DONE  (1u << 19)
+#define INTR_DMA_WINDOW_DONE (1u << 30)
+#define INTR_EXTERNAL        (1u << 31)
 
 
-static uint8_t dlc_buf[DLC_BUF_SIZE];
+static volatile uint8_t dlc_buf[DLC_BUF_SIZE];
 
-volatile int32_t g_trans_flag   = 0;
-volatile int32_t g_window_flag  = 0;
+volatile int32_t g_event_flag = 0;
 
-void dma_intr_handler_trans_done(uint8_t channel) {
-    if (channel == 0) g_trans_flag++;
-}
-
-void dma_intr_handler_window_done(uint8_t channel) {
-    if (channel == 0) g_window_flag++;
+void fic_irq_ext_peripheral(void) {
+    g_event_flag++;
 }
 
 // Suppress the DMA window-ratio warning
@@ -93,85 +89,127 @@ static void hw_init(void) {
 
     iDACs_enable(true, false);
     iDAC1_calibrate(IDAC_DEFAULT_CAL);
+    iDACs_set_currents(IDAC_DEFAULT_CODE, 0);
 
-    enable_timer_interrupt();
-    timer_irq_enable();
     timer_start();
 }
 
-// Process one transaction window.
-static int process_window(void) {
-    int valid = 0;
+static void raw_dlc_clear_buffer(void) {
+    for (uint16_t i = 0; i < DLC_BUF_SIZE; i++) {
+        dlc_buf[i] = 0;
+    }
+}
 
-    for (int i = 0; i < DLC_BUF_SIZE; i++) {
-        uint32_t conductance_nS = 0;
-        gsr_status_t st = gsr_get_conductance_nS(&conductance_nS, 0);
+static uint32_t capture_refresh_cycles(void) {
+#if TARGET_SIM
+    return SYS_FCLK_HZ / (VCO_SIM_RATE_MULTIPLIER * VCO_FS_HZ);
+#else
+    return SYS_FCLK_HZ / VCO_FS_HZ;
+#endif
+}
 
-        if (st == GSR_STATUS_OK) {
-            PRINTF("%lu\n", conductance_nS);
+static void raw_dlc_wait_cycles(uint32_t cycles) {
+    uint32_t start = timer_get_cycles();
+
+    while ((uint32_t)(timer_get_cycles() - start) < cycles) {
+        asm volatile("nop");
+    }
+}
+
+static uint32_t count_raw_dlc_event_bytes(void) {
+    uint32_t valid = 0;
+
+    for (uint32_t i = 0; i < DLC_BUF_SIZE; i++) {
+        if (dlc_buf[i] != 0) {
             valid++;
         }
-        // NO_NEW_SAMPLE and MISSED_UPDATE skipped
     }
 
     return valid;
 }
 
+static void dump_raw_dlc_buffer(void) {
+    static const char hex[] = "0123456789abcdef";
+    char line[(DLC_HEX_BYTES_PER_LINE * 2u) + 1u];
+    uint32_t col = 0;
+
+    for (uint32_t i = 0; i < DLC_BUF_SIZE; i++) {
+        uint8_t packed_event = dlc_buf[i];
+        if (packed_event == 0) {
+            continue;
+        }
+
+        line[(2u * col) + 0u] = hex[(packed_event >> 4) & 0x0fu];
+        line[(2u * col) + 1u] = hex[packed_event & 0x0fu];
+        col++;
+
+        if (col == DLC_HEX_BYTES_PER_LINE) {
+            line[DLC_HEX_BYTES_PER_LINE * 2u] = '\0';
+            PRINTF("HEX %s\n", line);
+            col = 0;
+        }
+    }
+
+    if (col > 0) {
+        line[col * 2u] = '\0';
+        PRINTF("HEX %s\n", line);
+    }
+}
+
 int main(void) {
 
-    PRINTF("HELLO\n");
     hw_init();
 
     // Clear event buffer
-    memset(dlc_buf, 0, sizeof(dlc_buf));
+    raw_dlc_clear_buffer();
 
     dlc_config_t dlc_cfg = {
         .log_level_width = DLC_LOG_LVL_W,
+        .discard_bits    = 0,
         .dlvl_format     = 0,            /* sign-magnitude */
-        .hysteresis_en   = 1,
+        .hysteresis_en   = 0,
     };
 
-    gsr_dlc_config_t gsr_dlc_cfg = {
-        .dlc_cfg       = &dlc_cfg,
-        .results_buf   = dlc_buf,
-        .buf_size      = DLC_BUF_SIZE,
-        .input_samples = DLC_INPUT_SAMPLES,
-    };
+    vco_status_t st = vco_dlc_initialize(
+        VCO_CHANNEL_P,
+        VCO_FS_HZ,
+        &dlc_cfg,
+        (uint8_t *)dlc_buf,
+        DLC_BUF_SIZE,
+        DLC_INPUT_SAMPLES
+    );
 
-    gsr_status_t st = gsr_init_dlc(VCO_CHANNEL_P, VCO_FS_HZ, IDAC_DEFAULT_CODE, &gsr_dlc_cfg);
-
-    if (st != GSR_STATUS_OK) {
-        PRINTF("ERROR: gsr_init failed (%d)\n", (int)st);
+    if (st != VCO_STATUS_OK) {
+        PRINTF("ERROR: vco_dlc_initialize failed (%d)\n", (int)st);
         return EXIT_FAILURE;
     }
 
-    // Enable interrupts and run the processing loop.
-    CSR_SET_BITS(CSR_REG_MSTATUS, 0x8);
-    CSR_SET_BITS(CSR_REG_MIE, INTR_DMA_TRANS_DONE | INTR_DMA_WINDOW_DONE);
+    /*
+     * Do not print while acquisition is live. UART output is slow enough to let
+     * the dLC DMA overwrite a circular buffer, which corrupts reconstruction.
+     * Capture a bounded source-sample window, stop the VCO trigger source, then
+     * dump the packed nonzero dLC event bytes from the buffer.
+     */
+    raw_dlc_wait_cycles(capture_refresh_cycles() * (DLC_INPUT_SAMPLES + 8u));
+    (void)vco_enable(VCO_CHANNEL_P, false);
+    dma_stop_circular(DLC_DMA_CHANNEL);
+    raw_dlc_wait_cycles(capture_refresh_cycles() * 4u);
 
-    int total_windows = 0;
-    int total_samples = 0;
+    uint32_t valid_event_bytes = count_raw_dlc_event_bytes();
 
-    while (total_windows < WINDOWS_TO_PROCESS) {
-        CSR_CLEAR_BITS(CSR_REG_MSTATUS, 0x8);
-        if (g_trans_flag == 0) wait_for_interrupt();
-        CSR_SET_BITS(CSR_REG_MSTATUS, 0x8);
+    PRINTF("SES_CFG none\n");
+    PRINTF("DLC_CFG VCO_FS_HZ=%u SIM_RATE_MULTIPLIER=%u SAMPLE_RATE_HZ=%u "
+           "LOG_LEVEL_WIDTH=%u DLVL_BITS=2 DT_BITS=6 FORMAT=sign_magnitude "
+           "BYTE_ORDER=little INITIAL_LEVEL=%ld IDAC_CODE=%u "
+           "VCO_INPUT_DISCARD_BITS=%u HYSTERESIS=0 CAPTURE_SAMPLES=%u "
+           "VALID_EVENT_BYTES=%lu\n",
+           VCO_FS_HZ, VCO_SIM_RATE_MULTIPLIER,
+           VCO_FS_HZ * VCO_SIM_RATE_MULTIPLIER, DLC_LOG_LVL_W,
+           (long)vco_dlc_get_current_level(), IDAC_DEFAULT_CODE,
+           vco_dlc_get_input_discard_bits(), DLC_BUF_SIZE,
+           (unsigned long)valid_event_bytes);
 
-        if (g_trans_flag > 0) {
-            g_trans_flag--;
-            total_samples += process_window();
-            total_windows++;
-            memset(dlc_buf, 0, sizeof(dlc_buf));
-        }
-
-        if (g_window_flag > 0) g_window_flag--;
-    }
-
-    dma_stop_circular(0);
-    iDACs_enable(false, false);
-
-    PRINTF("done: %d windows, %d conductance samples\n",
-           total_windows, total_samples);
+    dump_raw_dlc_buffer();
 
     return EXIT_SUCCESS;
 }

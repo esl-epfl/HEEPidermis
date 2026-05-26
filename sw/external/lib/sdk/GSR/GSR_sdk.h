@@ -48,6 +48,12 @@ void gsr_update_current(uint8_t idac_val);
 //Read one conductance sample in nS and optionally return the corresponding Vin.
 gsr_status_t gsr_get_conductance_nS(uint32_t *conductance_nS, uint32_t *vin_uV_ret);
 
+//Read one conductance sample and optionally return the dLC delta-time in sample ticks.
+gsr_status_t gsr_get_conductance_nS_with_dt(uint32_t *conductance_nS, uint32_t *vin_uV_ret, uint32_t *dt_ret);
+
+//Return true when the next dLC DMA ring-buffer slot contains an event packet.
+bool gsr_dlc_event_pending(void);
+
 //Average multiple valid conductance samples to reduce noise.
 gsr_status_t gsr_get_conductance_oversampled(uint32_t *conductance_nS, uint32_t *vin_uV_ret, int M);
 

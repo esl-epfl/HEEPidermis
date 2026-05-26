@@ -26,8 +26,10 @@ typedef enum {
 // All dLC hardware knobs in one place.
 typedef struct {
     uint8_t log_level_width;    // log2 of the quantization step in source counts
+    uint8_t discard_bits;       // LSBs discarded before level extraction
     uint8_t dlvl_format;        // 0 = sign-magnitude, 1 = two's complement
     uint8_t hysteresis_en;      // 1 = enable 1-level dead zone against chattering
+    uint32_t initial_level;     // initial absolute dLC level
 } dlc_config_t;
 
 /*
@@ -40,7 +42,7 @@ dlc_status_t dlc_init(
     dma_trigger_slot_mask_t  src_trig,        // DMA trigger slot that paces the reads (e.g. EXT_RX for VCO)
     dma_data_type_t          src_type,        // data width of one source read (e.g. HALF_WORD for VCO counter)
     uint8_t                 *results_buf,     // caller-allocated byte buffer for output events
-    uint16_t                 buf_size,        // size of results_buf in bytes
+    uint16_t                 buf_size,        // DMA output-event limit and size of results_buf in bytes
     uint32_t                 input_samples    // number of source reads per dLC transaction
 );
 

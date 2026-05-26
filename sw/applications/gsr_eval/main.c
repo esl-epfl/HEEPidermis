@@ -15,6 +15,18 @@
     #define PRINTF(...)
 #endif
 
+#ifndef signal_line_start
+#define signal_line_start 500000
+#endif
+
+#ifndef signal_line_end
+#define signal_line_end 600000
+#endif
+
+#ifndef signal_sample_step
+#define signal_sample_step 1
+#endif
+
 extern int EDA_U_diag0[];
 extern int EDA_U_diag1[];
 extern int EDA_U_diag2[];
@@ -33,8 +45,8 @@ int main(void)
              EDA_L_mult_1, EDA_L_mult_2);
 
     /* Metadata header so compare.py can parse parameters */
-    PRINTF("# signal_length=%d line_start=500000 line_end=600000 units=nS\n",
-           signal_length);
+    PRINTF("# signal_length=%d line_start=%d line_end=%d sample_step=%d units=nS\n",
+           signal_length, signal_line_start, signal_line_end, signal_sample_step);
     PRINTF("idx,signal_nS,tonic,phasic\n");
     for (int i = 0; i < signal_length; i++)
         PRINTF("%d,%d,%d,%d\n", i, signal[i], tonic[i], phasic[i]);

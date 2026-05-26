@@ -3,9 +3,10 @@
 Compare ground-truth FE output against simulation FE output.
 
 Ground truth (gt_fe_output.csv) — produced by gsr_eval native build:
-  Header:  # signal_length=N line_start=500000 line_end=600000 units=nS
+  Header:  # signal_length=N line_start=500000 line_end=600000 sample_step=S units=nS
   Columns: idx, signal_nS, tonic, phasic
   idx 0 = conductance.txt line 500000 (1-indexed, as per resistor.sv line_start)
+  sample_step defaults to 1 for older GT CSVs that do not include it.
 
 Simulation (sim_fe_output.csv) — produced by test_reconstruction sim:
   Header:  # SAMPLING_FREQ=F GT_LINE_START=L GT_CHANGE_RATE_HZ=R
@@ -279,11 +280,19 @@ def main():
     if gt_change_rate_hz is None:
         gt_change_rate_hz = parse_number(sim_params.get('GT_CHANGE_RATE_HZ'), 20000)
 
-    # Steps in conductance.txt per simulation sample:
+    gt_sample_step = parse_number(gt_params.get('sample_step'), 1)
+    if gt_sample_step <= 0:
+        print("ERROR: GT sample_step must be > 0.")
+        sys.exit(1)
+
+    # Raw conductance.txt rows per simulation sample:
     #   sim fires at SAMPLING_FREQ * 100 Hz in simulation;
     #   conductance.txt updates at GT_CHANGE_RATE_HZ in simulation.
     sim_rate_sim_hz    = sampling_freq * args.sim_rate_multiplier
-    nominal_gt_step    = gt_change_rate_hz / sim_rate_sim_hz
+    nominal_raw_gt_step = gt_change_rate_hz / sim_rate_sim_hz
+    # GT FE rows per simulation sample. For a high-rate GT FE CSV this is the
+    # raw step. For a pre-FE downsampled GT CSV, divide by the GT sample step.
+    nominal_gt_step    = nominal_raw_gt_step / gt_sample_step
     if args.gt_step is not None:
         nominal_gt_step = args.gt_step
         if args.align == "auto":
@@ -291,8 +300,10 @@ def main():
 
     print(f"SAMPLING_FREQ          : {sampling_freq} Hz")
     print(f"GT_LINE_START          : {gt_line_start}")
-    print(f"Nominal GT step/sample : {nominal_gt_step:.6g}")
-    print(f"GT skip                : {gt_skip} samples")
+    print(f"GT sample step         : {gt_sample_step:.6g} raw rows/GT FE row")
+    print(f"Raw GT step/sample     : {nominal_raw_gt_step:.6g} raw rows/sim sample")
+    print(f"Nominal GT step/sample : {nominal_gt_step:.6g} GT FE rows/sim sample")
+    print(f"GT skip                : {gt_skip} GT FE rows")
     print(f"Trim (end)             : {trim} samples")
     print(f"Sim samples            : {len(sim_data)}")
     print()
@@ -307,12 +318,13 @@ def main():
         sim_data = sim_data[:-trim]
 
     # ---- Map each sim sample k to a GT index -----------------------
-    # GT FE idx 0 == GT line 500000 (line_start of resistor.sv)
-    # GT FE idx j == GT line (500000 + j)
+    # GT FE idx 0 == the line_start recorded in the GT CSV.
+    # GT FE idx j == GT line (gt_origin_line + j * gt_sample_step).
     # Sim sample k == GT line (gt_line_start + k * gt_step)
-    #   => GT FE index = gt_line_start + k * gt_step - 500000
-    #                  = k * gt_step         (when gt_line_start == 500000)
-    gt_fe_offset = gt_line_start - 500000 + gt_skip   # gt_skip compensates sim init overhead
+    #   => GT FE index = (gt_line_start - gt_origin_line) / gt_sample_step
+    #                    + k * (gt_step / gt_sample_step)
+    gt_origin_line = parse_number(gt_params.get('line_start'), 500000)
+    gt_fe_offset = (gt_line_start - gt_origin_line) / gt_sample_step + gt_skip
 
     sim_k        = sim_data[:, 0]
     nominal_rmse = rmse_for_alignment(gt_data, sim_data, gt_fe_offset, nominal_gt_step)

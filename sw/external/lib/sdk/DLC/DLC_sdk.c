@@ -29,6 +29,10 @@ dlc_status_t dlc_init(
         return DLC_STATUS_INVALID_ARGUMENT;
     }
 
+    if (input_samples > buf_size) {
+        return DLC_STATUS_INVALID_ARGUMENT;
+    }
+
     // Program the dLC registers
     volatile uint32_t *dlvl_log_level_width = (volatile uint32_t *)(DLC_START_ADDRESS + DLC_DLVL_LOG_LEVEL_WIDTH_REG_OFFSET);
     volatile uint32_t *dlvl_n_bits_reg      = (volatile uint32_t *)(DLC_START_ADDRESS + DLC_DLVL_N_BITS_REG_OFFSET);
@@ -38,6 +42,7 @@ dlc_status_t dlc_init(
     volatile uint32_t *dlc_size_reg         = (volatile uint32_t *)(DLC_START_ADDRESS + DLC_TRANS_SIZE_REG_OFFSET);
     volatile uint32_t *dlc_hysteresis_en    = (volatile uint32_t *)(DLC_START_ADDRESS + DLC_HYSTERESIS_EN_REG_OFFSET);
     volatile uint32_t *dlc_discard_bits     = (volatile uint32_t *)(DLC_START_ADDRESS + DLC_DISCARD_BITS_REG_OFFSET);
+    volatile uint32_t *dlc_init_level       = (volatile uint32_t *)(DLC_START_ADDRESS + DLC_CURR_LVL_REG_OFFSET);
 
     // In sign-magnitude one bit is used for the sign, in two's complement all fields are used
     uint8_t n_bits_mag = config->dlvl_format
@@ -51,7 +56,8 @@ dlc_status_t dlc_init(
     *dlvl_mask_reg        = (1u << n_bits_mag) - 1u;
     *dt_mask_reg          = (1u << DLC_TIME_BITS) - 1u;
     *dlc_hysteresis_en    = config->hysteresis_en;
-    *dlc_discard_bits     = 0;
+    *dlc_discard_bits     = config->discard_bits;
+    *dlc_init_level       = config->initial_level;
     *dlc_size_reg         = input_samples;
 
     // Save the configured state for decode later on
@@ -77,9 +83,18 @@ dlc_status_t dlc_init(
     s_trans.dst        = &s_tgt_dst;
     s_trans.dim        = DMA_DIM_CONF_1D;
     s_trans.channel    = 0;
-    s_trans.size_d1_du = input_samples;
-    s_trans.win_du     = buf_size;
-    s_trans.end        = DMA_TRANS_END_INTR;
+    /*
+     * dLC TRANS_SIZE counts source samples. DMA size counts output bytes.
+     * Keep the DMA write-side limit tied to the caller's result buffer so
+     * delta-level overflow packets cannot finish the transaction early.
+     */
+    s_trans.size_d1_du = buf_size;
+    /*
+     * Keep DMA silent: the CPU-side loop is woken by the dLC crossing
+     * interrupt when there is event data to process.
+     */
+    s_trans.win_du     = 0;
+    s_trans.end        = DMA_TRANS_END_POLLING;
     s_trans.mode       = DMA_TRANS_MODE_CIRCULAR;
     s_trans.hw_fifo_en = true;
 

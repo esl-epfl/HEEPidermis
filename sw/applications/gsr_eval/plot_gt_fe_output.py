@@ -14,7 +14,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 start = 0
-end   = 4000
+end   = 1000000
 
 args = sys.argv[1:]
 i = 0
