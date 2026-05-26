@@ -57,15 +57,14 @@ volatile int32_t g_window_flag  = 0;
 #define RAW_INPUT_SAMPLES  5U
 #define RAW_BUF_SIZE       RAW_INPUT_SAMPLES
 
-static uint32_t raw_buf_a[RAW_BUF_SIZE];
-static uint32_t raw_buf_b[RAW_BUF_SIZE];
+static uint32_t buf_a[RAW_BUF_SIZE];
+static uint32_t buf_b[RAW_BUF_SIZE];
 
 static volatile bool g_dma_done = false;
-static uint8_t dma_write_buf = 0U;
 
-static dma_target_t raw_dma_src;
-static dma_target_t raw_dma_dst;
-static dma_trans_t  raw_dma_trans;
+static dma_target_t dma_src;
+static dma_target_t dma_dst;
+static dma_trans_t  dma_trans;
 
 void dma_intr_handler_trans_done(uint8_t channel) {
     if (channel == 0U) g_dma_done = true;
@@ -86,52 +85,84 @@ static void debug_mark(uint8_t tag, uint32_t value) {
     debug = ((uint32_t)tag << 24) | (value & 0x00FFFFFFU);
 }
 
-static int raw_vco_dma_start_window(uint32_t *dst_buf)
+static int vco_dma_init(uint32_t *initial_dst_buf)
 {
     dma_config_flags_t res;
-    raw_dma_src.ptr       = (uint8_t *)(VCO_DECODER_START_ADDRESS +
+
+    if (initial_dst_buf == NULL) {
+        return -1;
+    }
+
+    dma_init(NULL);
+
+    dma_src.ptr       = (uint8_t *)(VCO_DECODER_START_ADDRESS +
                                         VCO_DECODER_VCO_DECODER_CNT_REG_OFFSET);
-    raw_dma_src.trig      = DMA_TRIG_SLOT_EXT_RX;
-    raw_dma_src.inc_d1_du = 0;
-    raw_dma_src.type      = DMA_DATA_TYPE_WORD;
+    dma_src.trig      = DMA_TRIG_SLOT_EXT_RX;
+    dma_src.inc_d1_du = 0;
+    dma_src.type      = DMA_DATA_TYPE_WORD;
 
-    raw_dma_dst.ptr       = (uint8_t *)dst_buf;
-    raw_dma_dst.trig      = DMA_TRIG_MEMORY;
-    raw_dma_dst.inc_d1_du = 1;
-    raw_dma_dst.type      = DMA_DATA_TYPE_WORD;
+    dma_dst.ptr       = (uint8_t *)initial_dst_buf;
+    dma_dst.trig      = DMA_TRIG_MEMORY;
+    dma_dst.inc_d1_du = 1;
+    dma_dst.type      = DMA_DATA_TYPE_WORD;
 
-    raw_dma_trans.src        = &raw_dma_src;
-    raw_dma_trans.dst        = &raw_dma_dst;
-    raw_dma_trans.dim        = DMA_DIM_CONF_1D;
-    raw_dma_trans.channel    = 0;
-    raw_dma_trans.size_d1_du = RAW_INPUT_SAMPLES;
-    raw_dma_trans.win_du     = 0; // not circular
-    raw_dma_trans.end        = DMA_TRANS_END_INTR;
-    raw_dma_trans.mode       = DMA_TRANS_MODE_SINGLE;
-    raw_dma_trans.hw_fifo_en = false;
-    
-    raw_dma_trans.flags = 0x0;   
+    dma_trans.src        = &dma_src;
+    dma_trans.dst        = &dma_dst;
+    dma_trans.dim        = DMA_DIM_CONF_1D;
+    dma_trans.channel    = 0;
+    dma_trans.size_d1_du = RAW_INPUT_SAMPLES;
+    dma_trans.win_du     = 0;
+    dma_trans.end        = DMA_TRANS_END_INTR;
+    dma_trans.mode       = DMA_TRANS_MODE_SINGLE;
+    dma_trans.hw_fifo_en = false;
 
-    res = dma_validate_transaction(&raw_dma_trans,
+    dma_trans.flags = 0x0;
+
+    res = dma_validate_transaction(&dma_trans,
                                    DMA_ENABLE_REALIGN,
                                    DMA_PERFORM_CHECKS_INTEGRITY);
     if (res != DMA_CONFIG_OK) {
         return -1;
     }
 
-    res = dma_load_transaction(&raw_dma_trans);
+    res = dma_load_transaction(&dma_trans);
     if (res != DMA_CONFIG_OK) {
         return -1;
     }
 
-    if (dma_launch(&raw_dma_trans) != DMA_CONFIG_OK) {
+    res = dma_launch(&dma_trans);
+    if (res != DMA_CONFIG_OK) {
         return -1;
     }
 
     return 0;
 }
 
-static int process_raw_vco_window(const uint32_t *buf)
+static int vco_dma_start_window(uint32_t *dst_buf)
+{
+    dma_config_flags_t res;
+
+    if (dst_buf == NULL) {
+        return -1;
+    }
+
+    dma_dst.ptr = (uint8_t *)dst_buf;
+    dma_trans.flags = 0x0;
+
+    res = dma_load_transaction(&dma_trans);
+    if (res != DMA_CONFIG_OK) {
+        return -1;
+    }
+
+    res = dma_launch(&dma_trans);
+    if (res != DMA_CONFIG_OK) {
+        return -1;
+    }
+
+    return 0;
+}
+
+static int process_vco_window(const uint32_t *buf)
 {
     int valid = 0;
 
@@ -191,6 +222,8 @@ static gsr_status_t set_default_settings(gsr_controller_t *ctrl) {
 
     ctrl->dlc_used = false;
 
+    ctrl->dma_used = true;
+
     return GSR_STATUS_OK;
 }
 
@@ -221,12 +254,12 @@ int main(void) {
 
     gsr_controller_t ctrl;
 
-    uint32_t *write_buf = raw_buf_a;
-    uint32_t *read_buf  = raw_buf_b;
+    uint32_t *write_buf = buf_a;
+    uint32_t *read_buf  = buf_b;
 
     // Clear event buffer
-    memset(raw_buf_a, 0, sizeof(raw_buf_a));
-    memset(raw_buf_b, 0, sizeof(raw_buf_b));
+    memset(buf_a, 0, sizeof(buf_a));
+    memset(buf_b, 0, sizeof(buf_b));
 
     debug = 'Init';
     hw_init();
@@ -238,7 +271,7 @@ int main(void) {
 
     dma_init(NULL);
 
-    if (raw_vco_dma_start_window(write_buf) != 0) {
+    if (vco_dma_init(write_buf) != 0) {
         debug_mark(0xE3U, 0U);
         return -1;
     }
@@ -258,18 +291,18 @@ int main(void) {
 
         uint32_t *completed_buf = write_buf;
 
-        if (write_buf == raw_buf_a) {
-            write_buf = raw_buf_b;
+        if (write_buf == buf_a) {
+            write_buf = buf_b;
         } else {
-            write_buf = raw_buf_a;
+            write_buf = buf_a;
         }
 
-        if (raw_vco_dma_start_window(write_buf) != 0) {
+        if (vco_dma_start_window(write_buf) != 0) {
             debug_mark(0xE4U, (uint32_t)total_windows);
             break;
         }
 
-        total_samples += process_raw_vco_window(completed_buf);
+        total_samples += process_vco_window(completed_buf);
         total_windows++;
     }
 
