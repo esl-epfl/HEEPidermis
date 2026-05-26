@@ -361,6 +361,30 @@ vco_status_t vco_get_Vin_uV(uint32_t* vin_uV){
     return VCO_STATUS_OK;
 }
 
+vco_status_t vco_count_to_Vin_uV(uint32_t decoder_count, uint32_t *vin_uV)
+{
+    if (vin_uV == NULL) {
+        return VCO_STATUS_INVALID_ARGUMENT;
+    }
+
+    if (vco_data.integration_rate_Hz == 0U) {
+        return VCO_STATUS_NOT_INITIALIZED;
+    }
+
+    uint32_t frequency_Hz = (uint32_t)(((uint64_t)decoder_count * vco_data.integration_rate_Hz) / VCO_DECODER_PHASES);
+
+    *vin_uV = interpolate_Vin_uV(frequency_Hz);
+
+    if (vco_flag_is_set(VCO_FLAG_UNDERFLOW)) {
+        return VCO_STATUS_UNDERFLOW;
+    }
+
+    if (vco_flag_is_set(VCO_FLAG_OVERFLOW)) {
+        return VCO_STATUS_OVERFLOW;
+    }
+
+    return VCO_STATUS_OK;
+}
 
 bool vco_is_on(void) {
     return vco_flag_is_set(VCO_FLAG_ENABLED);
