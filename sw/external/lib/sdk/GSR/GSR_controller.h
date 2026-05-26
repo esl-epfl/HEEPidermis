@@ -21,6 +21,7 @@
 #include "GSR_sdk.h"
 #include "config_profiles.h"
 #include "GSR_types.h"
+#include "dma.h"
 
 /* Hardware configuration required by the measurement layer. */
 typedef struct {
@@ -58,6 +59,21 @@ typedef struct{
     // uint32_t power_nW;                   /* Estimated power consumption of the measurement, used for control decisions. */
 } gsr_metrics_t;
 
+typedef struct {
+    bool enabled;              /* True when DMA acquisition is configured for use. */
+    bool running;              /* True after the DMA has been successfully launched. */
+
+    uint32_t *buf_a;           /* First ping-pong buffer for VCO counts. */
+    uint32_t *buf_b;           /* Second ping-pong buffer for VCO counts. */
+    uint32_t samples_per_window; /* Number of VCO count samples captured per DMA transaction. */
+
+    uint32_t *write_buf;       /* Buffer currently used as the DMA destination. */
+    uint32_t *completed_buf;   /* Buffer most recently completed and ready for processing. */
+
+    volatile bool window_ready; /* Set by the DMA ISR when write_buf has been filled. */
+    volatile bool overrun;      /* Set if DMA finishes a new window before SW consumed the previous one. */
+} gsr_dma_acq_t;
+
 //Controller state and configuration parameters.
 typedef struct {
     gsr_ctrl_mode_t mode;
@@ -72,7 +88,12 @@ typedef struct {
     gsr_dlc_config_t dlc_cfg;
     bool dlc_used;
     bool initialized;
+    gsr_dma_acq_t *dma;
+    bool dma_used;
+    uint8_t valid_samples;
 } gsr_controller_t;
+
+uint8_t get_valid_samples(gsr_controller_t *ctrl);
 
 // Initialize the controller state and underlying GSR front-end.
 gsr_status_t gsr_controller_init(gsr_controller_t *ctrl);
@@ -98,4 +119,6 @@ gsr_metrics_t get_metrics(gsr_controller_t *ctrl);
 //Execute one controller update step from the latest available sample.
 gsr_status_t gsr_controller_step(gsr_controller_t *ctrl);
 
+
+void dma_intr_handler_trans_done(uint8_t channel);
 #endif /* GSR_CONTROLLER_H_ */

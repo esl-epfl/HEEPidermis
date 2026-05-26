@@ -51,7 +51,6 @@
 volatile uint32_t debug __attribute__((section(".xheep_debug_mem")));
 
 
-volatile int32_t g_trans_flag   = 0;
 volatile int32_t g_window_flag  = 0;
 
 #define RAW_INPUT_SAMPLES  5U
@@ -59,15 +58,15 @@ volatile int32_t g_window_flag  = 0;
 
 static uint32_t buf_a[RAW_BUF_SIZE];
 static uint32_t buf_b[RAW_BUF_SIZE];
+static gsr_dma_acq_t gsr_dma;
 
-static volatile bool g_dma_done = false;
 
 static dma_target_t dma_src;
 static dma_target_t dma_dst;
 static dma_trans_t  dma_trans;
 
 void dma_intr_handler_trans_done(uint8_t channel) {
-    if (channel == 0U) g_dma_done = true;
+    gsr_dma_intr_handler_trans_done(channel);
 }
 
 void dma_intr_handler_window_done(uint8_t channel) {
@@ -83,59 +82,6 @@ void __attribute__((aligned(4), interrupt)) handler_irq_timer(void) {
 
 static void debug_mark(uint8_t tag, uint32_t value) {
     debug = ((uint32_t)tag << 24) | (value & 0x00FFFFFFU);
-}
-
-static int vco_dma_init(uint32_t *initial_dst_buf)
-{
-    dma_config_flags_t res;
-
-    if (initial_dst_buf == NULL) {
-        return -1;
-    }
-
-    dma_init(NULL);
-
-    dma_src.ptr       = (uint8_t *)(VCO_DECODER_START_ADDRESS +
-                                        VCO_DECODER_VCO_DECODER_CNT_REG_OFFSET);
-    dma_src.trig      = DMA_TRIG_SLOT_EXT_RX;
-    dma_src.inc_d1_du = 0;
-    dma_src.type      = DMA_DATA_TYPE_WORD;
-
-    dma_dst.ptr       = (uint8_t *)initial_dst_buf;
-    dma_dst.trig      = DMA_TRIG_MEMORY;
-    dma_dst.inc_d1_du = 1;
-    dma_dst.type      = DMA_DATA_TYPE_WORD;
-
-    dma_trans.src        = &dma_src;
-    dma_trans.dst        = &dma_dst;
-    dma_trans.dim        = DMA_DIM_CONF_1D;
-    dma_trans.channel    = 0;
-    dma_trans.size_d1_du = RAW_INPUT_SAMPLES;
-    dma_trans.win_du     = 0;
-    dma_trans.end        = DMA_TRANS_END_INTR;
-    dma_trans.mode       = DMA_TRANS_MODE_SINGLE;
-    dma_trans.hw_fifo_en = false;
-
-    dma_trans.flags = 0x0;
-
-    res = dma_validate_transaction(&dma_trans,
-                                   DMA_ENABLE_REALIGN,
-                                   DMA_PERFORM_CHECKS_INTEGRITY);
-    if (res != DMA_CONFIG_OK) {
-        return -1;
-    }
-
-    res = dma_load_transaction(&dma_trans);
-    if (res != DMA_CONFIG_OK) {
-        return -1;
-    }
-
-    res = dma_launch(&dma_trans);
-    if (res != DMA_CONFIG_OK) {
-        return -1;
-    }
-
-    return 0;
 }
 
 static int vco_dma_start_window(uint32_t *dst_buf)
@@ -200,8 +146,9 @@ static void hw_init(void) {
     timer_cycles_init();
     timer_start();
 }
+
 // Load a default controller configuration for standard GSR operation.
-static gsr_status_t set_default_settings(gsr_controller_t *ctrl) {
+static gsr_status_t set_default_settings(gsr_controller_t *ctrl, gsr_dma_acq_t *dma) {
 
     if (ctrl == 0) {
         return GSR_STATUS_INVALID_ARGUMENT;
@@ -223,15 +170,15 @@ static gsr_status_t set_default_settings(gsr_controller_t *ctrl) {
     ctrl->dlc_used = false;
 
     ctrl->dma_used = true;
+    ctrl->dma = dma;
 
     return GSR_STATUS_OK;
 }
 
-// static int init_controller(gsr_controller_t *ctrl, gsr_dlc_config_t *gsr_dlc_cfg) {
-static int init_controller(gsr_controller_t *ctrl) {
+static int init_controller(gsr_controller_t *ctrl, gsr_dma_acq_t *dma) {
     gsr_status_t st;
 
-    st = set_default_settings(ctrl);
+    st = set_default_settings(ctrl, dma);
     if (st != GSR_STATUS_OK) {
         debug_mark(0xE1U, (uint32_t)st);
         return -1;
@@ -253,9 +200,7 @@ static int init_controller(gsr_controller_t *ctrl) {
 int main(void) {
 
     gsr_controller_t ctrl;
-
-    uint32_t *write_buf = buf_a;
-    uint32_t *read_buf  = buf_b;
+    const gsr_sample_t *sample;
 
     // Clear event buffer
     memset(buf_a, 0, sizeof(buf_a));
@@ -264,48 +209,46 @@ int main(void) {
     debug = 'Init';
     hw_init();
 
-    if (init_controller(&ctrl) != 0) {
+    gsr_dma = (gsr_dma_acq_t){
+        .enabled = true,
+        .running = false,
+        .buf_a = buf_a,
+        .buf_b = buf_b,
+        .samples_per_window = RAW_BUF_SIZE,
+        .write_buf = buf_a,
+        .completed_buf = NULL,
+        .window_ready = false,
+        .overrun = false,
+    };
+
+    if (init_controller(&ctrl, &gsr_dma) != 0) {
         return -1;
     }
     debug = 'Star';
-
-    dma_init(NULL);
-
-    if (vco_dma_init(write_buf) != 0) {
-        debug_mark(0xE3U, 0U);
-        return -1;
-    }
-
-    CSR_SET_BITS(CSR_REG_MSTATUS, 0x8);
-    CSR_SET_BITS(CSR_REG_MIE, INTR_DMA_TRANS_DONE);
 
     int total_windows = 0;
     int total_samples = 0;
 
     while (total_windows < WINDOWS_TO_PROCESS) {
-        while (!g_dma_done) {
-            wait_for_interrupt();
-        }
-
-        g_dma_done = false;
-
-        uint32_t *completed_buf = write_buf;
-
-        if (write_buf == buf_a) {
-            write_buf = buf_b;
+        gsr_status_t ret = gsr_read_sample(&ctrl);
+        if (ret == GSR_STATUS_OK) {
+            total_samples++;
+            sample = gsr_get_last_sample(&ctrl);
+            if (sample == NULL || !sample->valid) {
+                debug = (0xF7 << 24);
+                return -1;
+            }
+            debug_mark(0 ,sample->G_nS);
+            debug_mark(0xE1U, get_valid_samples(&ctrl));
+        } else if (ret == GSR_STATUS_MISSED_UPDATE) {
+            debug_mark(0xE3U, (uint32_t)ret);
+        } else if (ret != GSR_STATUS_NO_NEW_SAMPLE) {
+            debug_mark(0xE4U, (uint32_t)ret);
         } else {
-            write_buf = buf_a;
+            debug_mark(0xF1U, (uint32_t)ret);
         }
-
-        if (vco_dma_start_window(write_buf) != 0) {
-            debug_mark(0xE4U, (uint32_t)total_windows);
-            break;
-        }
-
-        total_samples += process_vco_window(completed_buf);
         total_windows++;
     }
-
     iDACs_enable(false, false);
 
     debug_mark(0xFFU, total_samples);

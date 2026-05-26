@@ -12,6 +12,25 @@
 
 #include "GSR_controller.h"
 
+#define INTR_DMA_TRANS_DONE (( 1 << 19 ))
+
+
+static dma_target_t s_gsr_dma_src;
+static dma_target_t s_gsr_dma_dst;
+static dma_trans_t  s_gsr_dma_trans;
+static gsr_dma_acq_t *s_dma_acq = NULL;
+
+void gsr_dma_intr_handler_trans_done(uint8_t channel)
+{
+    if (channel == 0U && s_dma_acq != NULL) {
+        if (s_dma_acq->window_ready) {
+            s_dma_acq->overrun = true;
+        }
+
+        s_dma_acq->window_ready = true;
+    }
+}
+
 // Update the baseline estimate using a simple exponential-style moving average.
 static uint32_t calculate_baseline(uint32_t prev_baseline, uint32_t sample) {
     
@@ -200,6 +219,7 @@ gsr_status_t gsr_set_default_settings(gsr_controller_t *ctrl) {
     ctrl->recovery_count_required = 8;
 
     ctrl->dlc_used = false;
+    ctrl->dma_used = false;
 
     return GSR_STATUS_OK;
 }
@@ -225,6 +245,93 @@ gsr_status_t gsr_controller_set_config(gsr_controller_t *ctrl) {
     return ret;
 }
 
+static gsr_status_t gsr_dma_init(gsr_controller_t *ctrl)
+{
+    dma_config_flags_t res;
+
+    if (ctrl == NULL || ctrl->dma == NULL || ctrl->dma->write_buf == NULL) return GSR_STATUS_INVALID_ARGUMENT;
+
+    // assign the global pointer to the dma acquisition struct 
+    s_dma_acq = ctrl->dma;
+    ctrl->dma->window_ready = false;
+    ctrl->dma->overrun = false;
+    ctrl->dma->completed_buf = NULL;
+    ctrl->dma->running = false;
+
+    dma_init(NULL);
+
+    s_gsr_dma_src.ptr       = (uint8_t *)(VCO_DECODER_START_ADDRESS +
+                                        VCO_DECODER_VCO_DECODER_CNT_REG_OFFSET);
+    s_gsr_dma_src.trig      = DMA_TRIG_SLOT_EXT_RX;
+    s_gsr_dma_src.inc_d1_du = 0;
+    s_gsr_dma_src.type      = DMA_DATA_TYPE_WORD;
+
+    s_gsr_dma_dst.ptr       = (uint8_t *)ctrl->dma->write_buf;
+    s_gsr_dma_dst.trig      = DMA_TRIG_MEMORY;
+    s_gsr_dma_dst.inc_d1_du = 1;
+    s_gsr_dma_dst.type      = DMA_DATA_TYPE_WORD;
+
+    s_gsr_dma_trans.src        = &s_gsr_dma_src;
+    s_gsr_dma_trans.dst        = &s_gsr_dma_dst;
+    s_gsr_dma_trans.dim        = DMA_DIM_CONF_1D;
+    s_gsr_dma_trans.channel    = 0;
+    s_gsr_dma_trans.size_d1_du = ctrl->dma->samples_per_window;
+    s_gsr_dma_trans.win_du     = 0;
+    s_gsr_dma_trans.end        = DMA_TRANS_END_INTR;
+    s_gsr_dma_trans.mode       = DMA_TRANS_MODE_SINGLE;
+    s_gsr_dma_trans.hw_fifo_en = false;
+
+    s_gsr_dma_trans.flags = 0x0;
+
+    res = dma_validate_transaction(&s_gsr_dma_trans,
+                                   DMA_ENABLE_REALIGN,
+                                   DMA_PERFORM_CHECKS_INTEGRITY);
+    if (res != DMA_CONFIG_OK) return GSR_STATUS_INVALID_ARGUMENT;
+
+    res = dma_load_transaction(&s_gsr_dma_trans);
+    if (res != DMA_CONFIG_OK) return GSR_STATUS_INVALID_ARGUMENT;
+
+    CSR_SET_BITS(CSR_REG_MSTATUS, 0x8);
+    CSR_SET_BITS(CSR_REG_MIE, INTR_DMA_TRANS_DONE);
+
+    res = dma_launch(&s_gsr_dma_trans);
+    if (res != DMA_CONFIG_OK) return GSR_STATUS_INVALID_ARGUMENT;
+
+    ctrl->dma->running = true;
+
+    return GSR_STATUS_OK;
+}
+
+static gsr_status_t gsr_dma_start_window(gsr_controller_t *ctrl)
+{
+    dma_config_flags_t res;
+
+    if (ctrl == NULL || ctrl->dma == NULL || ctrl->dma->write_buf == NULL ||
+         ctrl->dma->buf_a == NULL || ctrl->dma->buf_b == NULL) {
+        return GSR_STATUS_INVALID_ARGUMENT;
+    }
+
+    ctrl->dma->window_ready = false;
+
+    ctrl->dma->completed_buf = ctrl->dma->write_buf;
+
+    if (ctrl->dma->completed_buf == ctrl->dma->buf_a) {
+        ctrl->dma->write_buf =  ctrl->dma->buf_b;
+    } else {
+        ctrl->dma->write_buf = ctrl->dma->buf_a;
+    }
+
+    s_gsr_dma_dst.ptr = (uint8_t *)ctrl->dma->write_buf;
+    s_gsr_dma_trans.flags = 0x0;
+
+    res = dma_load_transaction(&s_gsr_dma_trans);
+    if (res != DMA_CONFIG_OK) return GSR_STATUS_INVALID_ARGUMENT;
+
+    res = dma_launch(&s_gsr_dma_trans);
+    if (res != DMA_CONFIG_OK) return GSR_STATUS_INVALID_ARGUMENT;
+
+    return GSR_STATUS_OK;
+}
 
 // Initialize controller state variables and start the GSR front-end.
 gsr_status_t gsr_controller_init(gsr_controller_t *ctrl) {
@@ -258,8 +365,100 @@ gsr_status_t gsr_controller_init(gsr_controller_t *ctrl) {
     } else {
         ret = gsr_init(ctrl->config.channel, ctrl->config.baseline_refresh_rate_Hz, ctrl->config.idac_code);
     }
-    return ret;
+    if (ret != GSR_STATUS_OK) {
+        return ret;
+    }
 
+    if (ctrl->dma_used) {
+        ret = gsr_dma_init(ctrl);
+        if (ret != GSR_STATUS_OK) {
+            return ret;
+        }
+    }
+
+    return ret;
+}
+
+static gsr_status_t gsr_read_sample_dma(gsr_controller_t *ctrl)
+{
+    gsr_status_t ret = GSR_STATUS_OK;
+    int valid = 0;
+    uint32_t conductance_nS = 0;
+    uint32_t rms_conductance_nS = 0; // will be later used to compute G_RMS
+    uint32_t vin_uV = 0U;
+
+    if (ctrl == NULL || ctrl->dma == NULL) {
+        return GSR_STATUS_INVALID_ARGUMENT;
+    }
+
+    while (!ctrl->dma->window_ready) {
+        wait_for_interrupt();
+    }
+
+    if (ctrl->dma->overrun) {
+        ctrl->dma->overrun = false;
+        return GSR_STATUS_MISSED_UPDATE;
+    }
+
+    if (gsr_dma_start_window(ctrl) != GSR_STATUS_OK) {
+        return GSR_STATUS_MISSED_UPDATE; // doesn't make sense yet will be changed in the future
+    }
+
+    
+    for (uint32_t i = 0; i < ctrl->dma->samples_per_window; i++) {
+        conductance_nS = 0;
+        vin_uV = 0U;
+        uint32_t count = (uint32_t)ctrl->dma->completed_buf[i];
+
+        ret = gsr_count_to_conductance_nS(count, &conductance_nS, &vin_uV);
+        if (ret != GSR_STATUS_OK) continue; // skip invalid samples
+        
+        valid++;
+        
+        ctrl->sample.prev_G_nS = ctrl->sample.G_nS;
+        ctrl->sample.G_nS = conductance_nS;
+        ctrl->sample.vin_uV = vin_uV;
+        ctrl->sample.current_nA = gsr_current_from_idac_code_nA(ctrl->config.idac_code);
+        // update max current limit based on the new conductance measurement
+        ctrl->max_current_nA = max_current_for_conductance_nS(conductance_nS);
+
+        ctrl->sample.valid = true;
+
+        if (!ctrl->initialized) { // populate the baseline with the first valid sample
+            ctrl->sample.baseline_nS = conductance_nS;
+            ctrl->sample.prev_G_nS = conductance_nS;
+            ctrl->sample.slope_nS = 0;
+            ctrl->sample.amplitude_nS = 0;
+            ctrl->initialized = true;
+        }
+
+        // Slope is expressed in nS/s by multiplying the sample difference by fs.
+        ctrl->sample.slope_nS = ((int32_t)ctrl->sample.G_nS - (int32_t)ctrl->sample.prev_G_nS) * (int32_t)ctrl->config.current_refresh_rate_Hz;
+        
+        // Only baseline mode is allowed to slowly adapt the tonic reference.
+        if (ctrl->mode == GSR_CTRL_MODE_BASELINE) {
+            ctrl->sample.baseline_nS = calculate_baseline(ctrl->sample.baseline_nS, ctrl->sample.G_nS);
+        }
+        // compute amplitude after updating the baseline.
+        ctrl->sample.amplitude_nS = compute_amplitude_nS(ctrl);
+        rms_conductance_nS += ctrl->sample.amplitude_nS;
+    }
+
+    if (valid == 0) {
+        ctrl->sample.valid = false;
+        ctrl->valid_samples = 0;
+        return GSR_STATUS_NO_NEW_SAMPLE; // or MISSED_UPDATE
+    }
+    rms_conductance_nS = rms_conductance_nS/valid;
+    ctrl->valid_samples = valid;
+
+    return GSR_STATUS_OK;
+}
+
+uint8_t get_valid_samples(gsr_controller_t *ctrl) {
+    if (ctrl == NULL) return 0;
+
+    return ctrl->valid_samples;
 }
 
 static gsr_status_t gsr_read_sample_now(gsr_controller_t *ctrl) {
@@ -294,8 +493,6 @@ static gsr_status_t gsr_read_sample_now(gsr_controller_t *ctrl) {
         ctrl->sample.prev_G_nS = ctrl->sample.G_nS;
         ctrl->sample.slope_nS = 0;
         ctrl->sample.amplitude_nS = 0;
-        ctrl->mode = GSR_CTRL_MODE_BASELINE;
-        ctrl->config.current_refresh_rate_Hz = ctrl->config.baseline_refresh_rate_Hz;
         ctrl->initialized = true;
         return GSR_STATUS_OK;
     }
@@ -316,6 +513,10 @@ gsr_status_t gsr_read_sample(gsr_controller_t *ctrl)
 {
     if (ctrl == NULL) return GSR_STATUS_INVALID_ARGUMENT;
 
+    if (ctrl->dma_used) {
+        return gsr_read_sample_dma(ctrl);
+    }
+    
     if (ctrl->config.duty_cycle_code == 1U || ctrl->dlc_used) { // no duty cycling or event based reading 
         return gsr_read_sample_now(ctrl);
     }
