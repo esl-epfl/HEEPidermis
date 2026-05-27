@@ -17,16 +17,17 @@
 /* Status codes returned by the operating-point controller. */
 typedef enum {
     GSR_OPCTRL_OK = 0,
-    GSR_OPCTRL_INVALID_REQUEST,
-    GSR_OPCTRL_UNSATISFIABLE,
+    GSR_OPCTRL_INVALID_ARGUMENT,
     GSR_OPCTRL_NOT_INITIALIZED,
-    GSR_OPCTRL_NO_VALID_SAMPLE,
+    GSR_OPCTRL_REQUEST_INVALID,
+    GSR_OPCTRL_REQUEST_UNSATISFIABLE,
+    GSR_OPCTRL_MEASUREMENT_UNDERFLOW,
+    GSR_OPCTRL_MEASUREMENT_OVERFLOW,
     GSR_OPCTRL_MEASUREMENT_ERROR
 } gsr_opctrl_status_t;
 
 /*
- * Conductance range request. Higher range uses a higher injected current and
- * therefore consumes more power; The is a tradoff between measurable conductance range and power consumption.
+ * Conductance range request. Higher range uses a lower i_dc
  */
 typedef enum {
     LOW = 0,
@@ -41,41 +42,25 @@ typedef struct {
     request_levels_t power;              /* Power configuration. */
 } gsr_op_request_t;
 
-/* Deferred range event raised by interrupt-side logic. */
-typedef enum {
-    GSR_OPCTRL_RANGE_EVENT_NONE = 0,
-    GSR_OPCTRL_RANGE_EVENT_VIN_TOO_LOW,
-    GSR_OPCTRL_RANGE_EVENT_VIN_TOO_HIGH,
-} gsr_opctrl_range_event_t;
-
 /* Thin request layer state. The GSR controller owns measurement/config state. */
 typedef struct {
-    gsr_controller_t *controller;    /* Lower-layer controller configured by requests. */
-
-    bool has_active_op;              /* True after a successful apply/request. */
+    gsr_controller_t *operating_point;    /* Lower-layer operating point configured by requests. */
+    gsr_op_request_t current_request; /* The most recent valid request. */
+    bool request_changed;          /* True if the current request differs from the last request. (changed by automatic range adjustment) */
+    bool has_valid_op;              /* True after a successful apply/request that resulted in a valid sample. */
     bool initialized;                /* True after gsr_opctrl_init(). */
 } gsr_op_controller_t;
 
 /* Initialize the operating-point controller with the GSR controller it drives. */
-gsr_opctrl_status_t gsr_opctrl_init(gsr_op_controller_t *ctrl,
-                                    gsr_controller_t *controller);
+gsr_opctrl_status_t gsr_opctrl_init(gsr_op_controller_t *ctrl, gsr_controller_t *controller);
 
-/* Translate an application request into concrete controller configuration fields. */
-gsr_opctrl_status_t gsr_opctrl_plan(const gsr_op_request_t *request,
-                                    gsr_controller_t *operating_point);
-
-/* Apply an already planned operating point through the GSR controller. */
-gsr_opctrl_status_t gsr_opctrl_apply(gsr_op_controller_t *ctrl,
-                                     const gsr_controller_t *operating_point);
-
-/* Plan and apply a request in one call. */
+/* Plan and apply a request. */
 gsr_opctrl_status_t gsr_opctrl_request(gsr_op_controller_t *ctrl,
                                        const gsr_op_request_t *request,
                                        gsr_controller_t *operating_point);
 
 /* Read one sample through the GSR controller. */
-gsr_opctrl_status_t gsr_opctrl_read_sample(gsr_op_controller_t *ctrl,
-                                           gsr_sample_t *sample);
+gsr_opctrl_status_t gsr_opctrl_read_sample(gsr_op_controller_t *ctrl, gsr_sample_t *sample);
                                            
 /* Clear op-controller state. Hardware shutdown remains owned by lower layers. */
 void gsr_opctrl_shutdown(gsr_op_controller_t *ctrl);

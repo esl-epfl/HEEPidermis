@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include "VCO_sdk.h"
 #include "DLC_sdk.h"
+#include "VCO_dlc_sdk.h"
 
 /*
 This layer builds on top of the VCO SDK and converts reconstructed Vin
@@ -18,7 +19,8 @@ typedef enum {
     GSR_STATUS_MISSED_UPDATE,
     GSR_STATUS_NOT_INITIALIZED,
     GSR_STATUS_INVALID_ARGUMENT,
-    GSR_STATUS_OUT_OF_RANGE
+    GSR_STATUS_UNDERFLOW,
+    GSR_STATUS_OVERFLOW
 } gsr_status_t;
 
 

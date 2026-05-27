@@ -20,7 +20,7 @@ initialized with the requested channel and refresh rate.
 gsr_status_t gsr_init_dlc(vco_channel_t channel, uint32_t refresh_rate_Hz, uint8_t idac_val, const gsr_dlc_config_t *dlc_cfg){
 
     dlc_used = true;
-    current_nA = 40*idac_val;
+    current_nA = gsr_current_from_idac_code_nA(idac_val);
     iDACs_set_currents(idac_val, 0);
     s_dlc_buf      = dlc_cfg->results_buf;
     s_dlc_buf_size = dlc_cfg->buf_size;
@@ -44,7 +44,8 @@ gsr_status_t gsr_status_from_vco(vco_status_t status) {
     if (status == VCO_STATUS_NO_NEW_SAMPLE) return GSR_STATUS_NO_NEW_SAMPLE;
     if (status == VCO_STATUS_MISSED_UPDATE) return GSR_STATUS_MISSED_UPDATE;
     if (status == VCO_STATUS_INVALID_ARGUMENT) return GSR_STATUS_INVALID_ARGUMENT;
-    if (status == VCO_STATUS_OUT_OF_RANGE) return GSR_STATUS_OUT_OF_RANGE;
+    if (status == VCO_STATUS_UNDERFLOW) return GSR_STATUS_UNDERFLOW;
+    if (status == VCO_STATUS_OVERFLOW) return GSR_STATUS_OVERFLOW;
     return GSR_STATUS_NOT_INITIALIZED;
 }
 
@@ -87,9 +88,9 @@ gsr_status_t gsr_get_conductance_nS(uint32_t *conductance_nS, uint32_t* vin_uV_r
     if (dlc_used) {
         uint8_t packed_event = s_dlc_buf[s_dlc_read_idx];
         s_dlc_read_idx = (s_dlc_read_idx + 1) % s_dlc_buf_size;
-        vco_status_t st = vco_dlc_process_event(packed_event, &vin_uV);
-        if (st != VCO_STATUS_OK) return st;
-    } else {
+        gsr_status_t st = gsr_status_from_vco(vco_dlc_process_event(packed_event, &vin_uV));
+        if (st != GSR_STATUS_OK) return st;
+    } else { // Read from VCO directly if dLC is not used
         gsr_status_t st = gsr_status_from_vco(vco_get_Vin_uV(&vin_uV));
         if (st != GSR_STATUS_OK) return st;
     }

@@ -69,7 +69,8 @@ typedef struct {
     uint32_t recovery_count_required;
     uint32_t recovery_counter;
     uint32_t max_current_nA;     /* Highest injectable current supported by the iDAC model and the last measured conductance. */
-
+    gsr_dlc_config_t dlc_cfg;
+    bool dlc_used;
     bool initialized;
 } gsr_controller_t;
 
@@ -78,6 +79,9 @@ gsr_status_t gsr_controller_init(gsr_controller_t *ctrl);
 
 //Populate the controller with a default parameter set.
 gsr_status_t gsr_set_default_settings(gsr_controller_t *ctrl);
+
+// Update the idac code and apply it to the hardware.
+void gsr_controller_set_current(gsr_controller_t *ctrl, uint8_t idac_code);
 
 // Update the controller configuration and apply it to the hardware.
 gsr_status_t gsr_controller_set_config(gsr_controller_t *ctrl);

@@ -123,7 +123,7 @@ static int wait_for_read_sample_status(gsr_controller_t *ctrl,
         }
 
         if (st == GSR_STATUS_NOT_INITIALIZED ||
-            st == GSR_STATUS_NO_NEW_SAMPLE || st == GSR_STATUS_OUT_OF_RANGE) {
+            st == GSR_STATUS_NO_NEW_SAMPLE || st == GSR_STATUS_OVERFLOW || st ==GSR_STATUS_UNDERFLOW) {
             if (refresh_rate_Hz == 0U) {
                 refresh_rate_Hz = ctrl->config.baseline_refresh_rate_Hz;
             }
@@ -227,13 +227,13 @@ static int test_all()
     ctrl.mode = GSR_CTRL_MODE_BASELINE;
     ctrl.config.idac_code = ctrl.max_current_nA/40 ; // idac(max) > max - guard ==> it will trigger out of range
     st = gsr_controller_set_config(&ctrl);
-    if (st != GSR_STATUS_OUT_OF_RANGE) {
+    if (st != GSR_STATUS_UNDERFLOW) {
         debug = (0xF1 << 24 | st); 
         PRINTF("  FAIL: gsr_set_config returned %d\n", st);
         return -1;
     }
     // 2. change i_dc to pass the guard  
-    if (st == GSR_STATUS_OUT_OF_RANGE) {
+    if (st == GSR_STATUS_UNDERFLOW) {
         ctrl.config.idac_code = ctrl.max_current_nA/40 - 2; // idac(max - 80) < max - guard ==> should not trigger out of range
         st = gsr_controller_set_config(&ctrl);
     }

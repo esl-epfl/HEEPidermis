@@ -37,6 +37,7 @@ vco_status_t vco_dlc_initialize(
     uint32_t        input_samples
 );
 
+vco_status_t vco_dlc_config(vco_channel_t channel, uint32_t refresh_rate_Hz);
 
 //Decode one dLC event and return the reconstructed Vin.
 vco_status_t vco_dlc_process_event(uint8_t packed_event, uint32_t *vin_uV);

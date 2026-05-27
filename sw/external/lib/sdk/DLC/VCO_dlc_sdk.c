@@ -46,6 +46,14 @@ vco_status_t vco_dlc_initialize(
     return VCO_STATUS_OK;
 }
 
+vco_status_t vco_dlc_config(vco_channel_t channel, uint32_t refresh_rate_Hz) {
+    vco_status_t st = vco_config(channel, refresh_rate_Hz, 1U);
+    if (st != VCO_STATUS_OK) return st;
+    s_state.refresh_rate_Hz = refresh_rate_Hz;
+    s_state.channel         = channel;
+    return VCO_STATUS_OK;
+}
+
 vco_status_t vco_dlc_process_event(uint8_t packed_event, uint32_t *vin_uV) {
     if (!s_state.initialized) return VCO_STATUS_NOT_INITIALIZED;
     if (!vin_uV)               return VCO_STATUS_INVALID_ARGUMENT;
