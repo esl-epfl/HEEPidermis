@@ -112,6 +112,9 @@ gsr_status_t gsr_controller_set_config(gsr_controller_t *ctrl);
 /* Read one sample and store it in the controller. Duty-cycled reads sleep until the VCO ON window has completed. */
 gsr_status_t gsr_read_sample(gsr_controller_t *ctrl);
 
+/* Read a batch of samples using DMA and store the most recent one in the controller. Falls back to gsr_read_sample if DMA is not used. */
+gsr_status_t gsr_read_batch(gsr_controller_t *ctrl);
+
 /* Return the last valid/attempted sample stored in the context. */
 const gsr_sample_t *gsr_get_last_sample(const gsr_controller_t *ctrl);
 

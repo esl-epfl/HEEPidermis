@@ -517,10 +517,6 @@ gsr_status_t gsr_read_sample(gsr_controller_t *ctrl)
 {
     if (ctrl == NULL) return GSR_STATUS_INVALID_ARGUMENT;
 
-    if (ctrl->dma_used) {
-        return gsr_read_sample_dma(ctrl);
-    }
-    
     if (ctrl->config.duty_cycle_code == 1U || ctrl->dlc_used) { // no duty cycling or event based reading 
         return gsr_read_sample_now(ctrl);
     }
@@ -531,6 +527,17 @@ gsr_status_t gsr_read_sample(gsr_controller_t *ctrl)
         if (!vco_is_on()) {
             return gsr_read_sample_now(ctrl);
         }
+    }
+}
+
+gsr_status_t gsr_read_batch(gsr_controller_t *ctrl)
+{
+    if (ctrl == NULL) return GSR_STATUS_INVALID_ARGUMENT;
+
+    if (!ctrl->dma_used) { // batch reading is only supported with DMA, otherwise just read one sample
+        return gsr_read_sample(ctrl);
+    } else {
+        return gsr_read_sample_dma(ctrl);
     }
 }
 

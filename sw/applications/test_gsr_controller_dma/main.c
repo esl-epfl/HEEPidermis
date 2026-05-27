@@ -155,15 +155,15 @@ static int process_window(gsr_controller_t *ctrl) {
     gsr_status_t ret;
     const gsr_sample_t *sample;
 
-    ret = gsr_read_sample(ctrl);
+    ret = gsr_read_batch(ctrl);
     if (ret == GSR_STATUS_OK) {
         sample = gsr_get_last_sample(ctrl);
         if (sample == NULL || !sample->valid) {
             debug = (0xF7 << 24);
             return -1;
         }
-        debug_mark(0 ,sample->G_nS);
         debug_mark(0xE1U, get_valid_samples(ctrl));
+        debug_mark(0 ,sample->G_nS);
     } else if (ret == GSR_STATUS_MISSED_UPDATE) {
         debug_mark(0xE3U, (uint32_t)ret);
     } else if (ret != GSR_STATUS_NO_NEW_SAMPLE) {
