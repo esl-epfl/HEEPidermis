@@ -84,51 +84,6 @@ static void debug_mark(uint8_t tag, uint32_t value) {
     debug = ((uint32_t)tag << 24) | (value & 0x00FFFFFFU);
 }
 
-static int vco_dma_start_window(uint32_t *dst_buf)
-{
-    dma_config_flags_t res;
-
-    if (dst_buf == NULL) {
-        return -1;
-    }
-
-    dma_dst.ptr = (uint8_t *)dst_buf;
-    dma_trans.flags = 0x0;
-
-    res = dma_load_transaction(&dma_trans);
-    if (res != DMA_CONFIG_OK) {
-        return -1;
-    }
-
-    res = dma_launch(&dma_trans);
-    if (res != DMA_CONFIG_OK) {
-        return -1;
-    }
-
-    return 0;
-}
-
-static int process_vco_window(const uint32_t *buf)
-{
-    int valid = 0;
-
-    for (uint32_t i = 0; i < RAW_INPUT_SAMPLES; i++) {
-        uint32_t conductance_nS = 0;
-        uint32_t count = (uint32_t)buf[i];
-
-        gsr_status_t st = gsr_count_to_conductance_nS(count, &conductance_nS, 0);
-
-        if (st == GSR_STATUS_OK) {
-            debug_mark(0x00U, conductance_nS);
-            valid++;
-        } else {
-            debug_mark(0xE0U, (uint32_t)st);
-        }
-    }
-
-    return valid;
-}
-
 // Hardware init
 static void hw_init(void) {
     soc_ctrl_t soc_ctrl;
@@ -196,6 +151,28 @@ static int init_controller(gsr_controller_t *ctrl, gsr_dma_acq_t *dma) {
     return 0;
 }
 
+static int process_window(gsr_controller_t *ctrl) {
+    gsr_status_t ret;
+    const gsr_sample_t *sample;
+
+    ret = gsr_read_sample(ctrl);
+    if (ret == GSR_STATUS_OK) {
+        sample = gsr_get_last_sample(ctrl);
+        if (sample == NULL || !sample->valid) {
+            debug = (0xF7 << 24);
+            return -1;
+        }
+        debug_mark(0 ,sample->G_nS);
+        debug_mark(0xE1U, get_valid_samples(ctrl));
+    } else if (ret == GSR_STATUS_MISSED_UPDATE) {
+        debug_mark(0xE3U, (uint32_t)ret);
+    } else if (ret != GSR_STATUS_NO_NEW_SAMPLE) {
+        debug_mark(0xE4U, (uint32_t)ret);
+    } else {
+        debug_mark(0xF1U, (uint32_t)ret);
+    }
+    return 0;
+}
 
 int main(void) {
 
@@ -229,24 +206,10 @@ int main(void) {
 
     int total_windows = 0;
     int total_samples = 0;
-
+    // test 1: simple read and process window
     while (total_windows < WINDOWS_TO_PROCESS) {
-        gsr_status_t ret = gsr_read_sample(&ctrl);
-        if (ret == GSR_STATUS_OK) {
-            total_samples++;
-            sample = gsr_get_last_sample(&ctrl);
-            if (sample == NULL || !sample->valid) {
-                debug = (0xF7 << 24);
-                return -1;
-            }
-            debug_mark(0 ,sample->G_nS);
-            debug_mark(0xE1U, get_valid_samples(&ctrl));
-        } else if (ret == GSR_STATUS_MISSED_UPDATE) {
-            debug_mark(0xE3U, (uint32_t)ret);
-        } else if (ret != GSR_STATUS_NO_NEW_SAMPLE) {
-            debug_mark(0xE4U, (uint32_t)ret);
-        } else {
-            debug_mark(0xF1U, (uint32_t)ret);
+        if (process_window(&ctrl) != 0) {
+            return -1;
         }
         total_windows++;
     }
@@ -254,33 +217,20 @@ int main(void) {
     total_windows = 0;
     total_samples = 0;
 
+    // test 2: change config (refresh rate)
     ctrl.mode = GSR_CTRL_MODE_PHASIC; // switch to baseline mode at the end just to check that mode switching works correctly in this flow where DMA is used for sampling and there is no duty cycling and the reading is event based. In this case we expect the controller to switch the VCO refresh rate to the baseline refresh rate but keep the duty cycle code unchanged.
     ret = gsr_controller_set_config(&ctrl);
     if (ret != GSR_STATUS_OK) {
         debug = (0xF2 << 24 | ret); 
-        PRINTF("  FAIL: gsr_set_config returned %d\n", ret);
         return -1;
     }
     while (total_windows < WINDOWS_TO_PROCESS) {
-        ret = gsr_read_sample(&ctrl);
-        if (ret == GSR_STATUS_OK) {
-            total_samples++;
-            sample = gsr_get_last_sample(&ctrl);
-            if (sample == NULL || !sample->valid) {
-                debug = (0xF7 << 24);
-                return -1;
-            }
-            debug_mark(0 ,sample->G_nS);
-            debug_mark(0xE1U, get_valid_samples(&ctrl));
-        } else if (ret == GSR_STATUS_MISSED_UPDATE) {
-            debug_mark(0xE3U, (uint32_t)ret);
-        } else if (ret != GSR_STATUS_NO_NEW_SAMPLE) {
-            debug_mark(0xE4U, (uint32_t)ret);
-        } else {
-            debug_mark(0xF1U, (uint32_t)ret);
+        if (process_window(&ctrl) != 0) {
+            return -1;
         }
         total_windows++;
     }
+    
     iDACs_enable(false, false);
 
     debug_mark(0xFFU, total_samples);
