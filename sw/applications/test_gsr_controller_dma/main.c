@@ -158,7 +158,7 @@ static gsr_status_t set_default_settings(gsr_controller_t *ctrl, gsr_dma_acq_t *
     ctrl->config.duty_cycle_code = 1; // 100% duty cycle
     ctrl->config.M = 1; // no oversampling by default, just take one measurement per sample. This can be increased for more noisy environments at the cost of temporal resolution and power consumption.
     ctrl->config.baseline_refresh_rate_Hz = 20;
-    ctrl->config.phasic_refresh_rate_Hz = 10;
+    ctrl->config.phasic_refresh_rate_Hz = 40;
     ctrl->config.recovery_refresh_rate_Hz = 5;
     ctrl->config.idac_code = 40;
     ctrl->config.current_refresh_rate_Hz = ctrl->config.baseline_refresh_rate_Hz; // initialize the current refresh rate to the baseline rate
@@ -201,6 +201,7 @@ int main(void) {
 
     gsr_controller_t ctrl;
     const gsr_sample_t *sample;
+    gsr_status_t ret;
 
     // Clear event buffer
     memset(buf_a, 0, sizeof(buf_a));
@@ -231,6 +232,37 @@ int main(void) {
 
     while (total_windows < WINDOWS_TO_PROCESS) {
         gsr_status_t ret = gsr_read_sample(&ctrl);
+        if (ret == GSR_STATUS_OK) {
+            total_samples++;
+            sample = gsr_get_last_sample(&ctrl);
+            if (sample == NULL || !sample->valid) {
+                debug = (0xF7 << 24);
+                return -1;
+            }
+            debug_mark(0 ,sample->G_nS);
+            debug_mark(0xE1U, get_valid_samples(&ctrl));
+        } else if (ret == GSR_STATUS_MISSED_UPDATE) {
+            debug_mark(0xE3U, (uint32_t)ret);
+        } else if (ret != GSR_STATUS_NO_NEW_SAMPLE) {
+            debug_mark(0xE4U, (uint32_t)ret);
+        } else {
+            debug_mark(0xF1U, (uint32_t)ret);
+        }
+        total_windows++;
+    }
+
+    total_windows = 0;
+    total_samples = 0;
+
+    ctrl.mode = GSR_CTRL_MODE_PHASIC; // switch to baseline mode at the end just to check that mode switching works correctly in this flow where DMA is used for sampling and there is no duty cycling and the reading is event based. In this case we expect the controller to switch the VCO refresh rate to the baseline refresh rate but keep the duty cycle code unchanged.
+    ret = gsr_controller_set_config(&ctrl);
+    if (ret != GSR_STATUS_OK) {
+        debug = (0xF2 << 24 | ret); 
+        PRINTF("  FAIL: gsr_set_config returned %d\n", ret);
+        return -1;
+    }
+    while (total_windows < WINDOWS_TO_PROCESS) {
+        ret = gsr_read_sample(&ctrl);
         if (ret == GSR_STATUS_OK) {
             total_samples++;
             sample = gsr_get_last_sample(&ctrl);

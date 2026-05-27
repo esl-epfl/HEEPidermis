@@ -72,6 +72,8 @@ typedef struct {
 
     volatile bool window_ready; /* Set by the DMA ISR when write_buf has been filled. */
     volatile bool overrun;      /* Set if DMA finishes a new window before SW consumed the previous one. */
+
+    uint8_t discard_samples;     /* Number of initial samples to discard after starting DMA or any config change */
 } gsr_dma_acq_t;
 
 //Controller state and configuration parameters.

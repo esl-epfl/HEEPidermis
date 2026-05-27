@@ -257,6 +257,7 @@ static gsr_status_t gsr_dma_init(gsr_controller_t *ctrl)
     ctrl->dma->overrun = false;
     ctrl->dma->completed_buf = NULL;
     ctrl->dma->running = false;
+    ctrl->dma->discard_samples = 1U; // discard the first sample after starting DMA as it can be corrupted based on empirical observations
 
     dma_init(NULL);
 
@@ -381,7 +382,7 @@ gsr_status_t gsr_controller_init(gsr_controller_t *ctrl) {
 
 static gsr_status_t gsr_read_sample_dma(gsr_controller_t *ctrl)
 {
-    gsr_status_t ret = GSR_STATUS_OK;
+    gsr_status_t ret;
     int valid = 0;
     uint32_t conductance_nS = 0;
     uint32_t rms_conductance_nS = 0; // will be later used to compute G_RMS
@@ -400,14 +401,17 @@ static gsr_status_t gsr_read_sample_dma(gsr_controller_t *ctrl)
         return GSR_STATUS_MISSED_UPDATE;
     }
 
-    if (gsr_dma_start_window(ctrl) != GSR_STATUS_OK) {
-        return GSR_STATUS_MISSED_UPDATE; // doesn't make sense yet will be changed in the future
-    }
+    ret = gsr_dma_start_window(ctrl);
+    if (ret != GSR_STATUS_OK) return ret; 
 
     
     for (uint32_t i = 0; i < ctrl->dma->samples_per_window; i++) {
         conductance_nS = 0;
         vin_uV = 0U;
+        // if (ctrl->dma->discard_samples > 0U) {
+        //     ctrl->dma->discard_samples--;
+        //     continue;
+        // }
         uint32_t count = (uint32_t)ctrl->dma->completed_buf[i];
 
         ret = gsr_count_to_conductance_nS(count, &conductance_nS, &vin_uV);
