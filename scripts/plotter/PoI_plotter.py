@@ -6,7 +6,7 @@
 # Date: 08/04/2026
 # Description: Interactive VCO model plotter with forward/reverse optimization
 
-from ipywidgets import FloatSlider, VBox, HBox, Layout, HTML, interactive_output, ToggleButton, Button, Output
+from ipywidgets import FloatSlider, VBox, HBox, Layout, HTML, interactive_output, ToggleButton, Button, Output, Tab
 from IPython.display import display
 import matplotlib.pyplot as plt
 from pannels import *
@@ -56,24 +56,12 @@ def PoI_plotter(model, variance=1, avg_window=1):
         layout=Layout(width='300px')
     )
 
-    variance_on = ToggleButton(
-        description='avar OFF',
-        value=False,
-        layout=Layout(width='80px', height='30px')
-    )
-
     # Cache for expensive computations
     _computation_cache = {
         'last_G': G_init,
         'last_fs': 1.0,
-        'last_D': 1.0,
-        'last_variance': False
+        'last_D': 1.0
     }
-
-    def update_variance_description(change):
-        variance_on.description = 'avar ON' if change['new'] else 'avar OFF'
-
-    variance_on.observe(update_variance_description, names='value')
 
     def update_i_dc_max(change):
         """Only update i_dc max when G changes"""
@@ -84,30 +72,27 @@ def PoI_plotter(model, variance=1, avg_window=1):
             i_dc_slider.value = max_i_dc
 
     def update_delta_G_range(change=None):
-        """Update ΔG slider range when G, fs, or variance changes"""
+        """Update ΔG slider range when G, fs"""
         G_value = G_slider.value
         fs_value = fs_slider.value
         D_value = D_slider.value
-        active_variance = variance if variance_on.value else 0
 
         # Skip redundant computations
         if (_computation_cache['last_G'] == G_value and 
             _computation_cache['last_fs'] == fs_value and 
-            _computation_cache['last_D'] == D_value and
-            _computation_cache['last_variance'] == variance_on.value):
+            _computation_cache['last_D'] == D_value):
             return
 
         _computation_cache['last_G'] = G_value
         _computation_cache['last_fs'] = fs_value
         _computation_cache['last_D'] = D_value
-        _computation_cache['last_variance'] = variance_on.value
 
         f_int_Hz = fs_value / D_value
 
         min_deltaG, max_deltaG = model.compute_delta_G_range_nS(
             G_value,
             f_int_Hz=f_int_Hz,
-            variance=active_variance,
+            variance=variance,
             avg_window=avg_window
         )
         print(f"Computed ΔG range: [{min_deltaG:.4f}, {max_deltaG:.4f}] nS")
@@ -127,13 +112,12 @@ def PoI_plotter(model, variance=1, avg_window=1):
         update_delta_G_range(change)
 
     def on_control_change(change):
-        """Callback for fs and variance changes"""
+        """Callback for fs changes"""
         update_delta_G_range(change)
 
     # Single observer per slider to avoid redundant callbacks
     G_slider.observe(on_G_change, names='value')
     fs_slider.observe(on_control_change, names='value')
-    variance_on.observe(on_control_change, names='value')
 
     forward_controls = VBox(
         [
@@ -141,9 +125,7 @@ def PoI_plotter(model, variance=1, avg_window=1):
             G_slider,
             i_dc_slider,
             fs_slider,
-            D_slider,
-            HBox([variance_on], layout=Layout(justify_content='center', width='320px')),
-
+            D_slider
         ],
         layout=Layout(
             width='320px',
@@ -175,14 +157,13 @@ def PoI_plotter(model, variance=1, avg_window=1):
         )
     )
 
-    def _plot(G_uS, i_dc_uA, fs_Hz, D, delta_G_target_nS, P_tot_max_uW, variance_enabled):
-        active_variance = variance if variance_enabled else 0
+    def _plot(G_uS, i_dc_uA, fs_Hz, D, delta_G_target_nS, P_tot_max_uW):
 
         fwd_in = forward_input(G_uS=G_uS, i_dc_uA=i_dc_uA, fs_Hz=fs_Hz, D=D)
         result = forward_compute(
             model=model,
             input=fwd_in,
-            variance=active_variance,
+            variance=variance,
             avg_window=avg_window
         )
 
@@ -196,7 +177,7 @@ def PoI_plotter(model, variance=1, avg_window=1):
         reverse_result = reverse_compute(
             model=model,
             input=rev_in,
-            variance=active_variance,
+            variance=variance,
             avg_window=avg_window
         )
 
@@ -205,17 +186,23 @@ def PoI_plotter(model, variance=1, avg_window=1):
 
         plot_forward_vco_point(fig.add_subplot(gs[0, 0]), model, result)
         plot_forward_summary(fig.add_subplot(gs[0, 1]), result, model)
-        plot_forward_df_components(fig.add_subplot(gs[1, 0]), result)
-        plot_forward_outputs(fig.add_subplot(gs[1, 1]), result)
+        plot_forward_duty_tradeoff(
+            fig.add_subplot(gs[1, 0]),
+            model,
+            result,
+            variance=variance,
+            avg_window=avg_window
+        )
         plot_forward_tradeoff(
-            fig.add_subplot(gs[2, 0]),
+            fig.add_subplot(gs[1, 1]),
             model,
             result,
             D=D,
-            variance=active_variance,
+            variance=variance,
             avg_window=avg_window,
             reverse_result=reverse_result
         )
+        plot_forward_outputs(fig.add_subplot(gs[2, 0]), result)
         plot_summary(
             fig.add_subplot(gs[2, 1]),
             result,
@@ -239,71 +226,125 @@ def PoI_plotter(model, variance=1, avg_window=1):
             'fs_Hz': fs_slider,
             'D': D_slider,
             'delta_G_target_nS': delta_G_slider,
-            'P_tot_max_uW': P_tot_max_slider,
-            'variance_enabled': variance_on
+            'P_tot_max_uW': P_tot_max_slider
         }
     )
 
-    # Power analysis toggle and handler
-    power_analysis_toggle = ToggleButton(
-        description='Power Analysis: OFF',
+    # Analysis tabs and handler
+    analysis_toggle = ToggleButton(
+        description='Analysis: OFF',
         value=False,
         layout=Layout(width='200px', height='40px')
     )
 
-    def update_power_analysis_description(change):
-        power_analysis_toggle.description = 'Power Analysis: ON' if change['new'] else 'Power Analysis: OFF'
+    def update_analysis_description(change):
+        analysis_toggle.description = 'Analysis: ON' if change['new'] else 'Analysis: OFF'
 
-    power_analysis_toggle.observe(update_power_analysis_description, names='value')
+    analysis_toggle.observe(update_analysis_description, names='value')
 
-    power_analysis_output = Output()
+    analysis_outputs = [Output(), Output(), Output()]
+    analysis_tabs = Tab(children=analysis_outputs)
+    analysis_tabs.set_title(0, 'Power')
+    analysis_tabs.set_title(1, r'ΔG space')
+    analysis_tabs.set_title(2, r'ΔV space')
+    analysis_tabs.layout = Layout(width='100%')
 
-    def _plot_power_analysis(G_uS, i_dc_uA, fs_Hz, D, show_power_analysis):
-        """Power analysis plotter that updates with slider changes"""
-        if not show_power_analysis:
+    def _clear_analysis_outputs():
+        for output in analysis_outputs:
+            with output:
+                output.clear_output(wait=True)
+
+    def _plot_selected_analysis(G_uS, i_dc_uA, fs_Hz, D, show_analysis):
+        """Render the currently selected analysis tab with slider-controlled inputs."""
+        if not show_analysis:
+            _clear_analysis_outputs()
             return
-        
-        with power_analysis_output:
-            power_analysis_output.clear_output(wait=True)
-            
-            active_variance = variance if variance_on.value else 0
+
+        selected_tab = analysis_tabs.selected_index
+        if selected_tab is None:
+            selected_tab = 0
+
+        active_output = analysis_outputs[selected_tab]
+        with active_output:
+            active_output.clear_output(wait=True)
 
             fwd_in = forward_input(G_uS=G_uS, i_dc_uA=i_dc_uA, fs_Hz=fs_Hz, D=D)
             result = forward_compute(
                 model=model,
                 input=fwd_in,
-                variance=active_variance,
+                variance=variance,
                 avg_window=avg_window
             )
 
-            # Create power analysis figure
-            fig = plt.figure(figsize=(14, 6), constrained_layout=True)
-            gs = fig.add_gridspec(1, 2)
+            if selected_tab == 0:
+                fig = plt.figure(figsize=(14, 6), constrained_layout=True)
+                gs = fig.add_gridspec(1, 2)
 
-            plot_power_breakdown_stacked(fig.add_subplot(gs[0, 0]), model, result, D=D)
-            plot_power_decomposition(fig.add_subplot(gs[0, 1]), model, result, D=D)
+                plot_power_breakdown_stacked(fig.add_subplot(gs[0, 0]), model, result, D=D)
+                plot_power_decomposition(fig.add_subplot(gs[0, 1]), model, result, D=D)
 
-            fig.suptitle(
-                f'Power Analysis: G={G_uS:.2f} μS, i_dc={i_dc_uA:.4f} μA, f_s={fs_Hz:.2f} Hz',
-                fontsize=14,
-                fontweight='bold'
-            )
+                fig.suptitle(
+                    f'Power Analysis: G={G_uS:.2f} μS, i_dc={i_dc_uA:.4f} μA, f_s={fs_Hz:.2f} Hz',
+                    fontsize=14,
+                    fontweight='bold'
+                )
+
+            else:
+                output_metric = 'delta_g' if selected_tab == 1 else 'delta_v'
+                fig, axes = plt.subplots(
+                    2,
+                    2,
+                    figsize=(13, 9),
+                    constrained_layout=True,
+                )
+                plot_design_space_dashboard(
+                    fig,
+                    axes,
+                    model,
+                    output=output_metric,
+                    G_uS=G_uS,
+                    i_dc_uA=i_dc_uA,
+                    fs_Hz=fs_Hz,
+                    D=D,
+                    variance=variance,
+                    avg_window=avg_window,
+                    G_min=0.5,
+                    G_max=25.0,
+                    n_G=80,
+                    f_int_min=0.05,
+                    f_int_max=max(15.0, fwd_in.fs_Hz/fwd_in.D),
+                    f_int_num=160,
+                    df_num=160,
+                    map_log_scale=(output_metric == 'delta_v'),
+                )
+
             plt.show()
             plt.close(fig)
 
-    power_analysis_ui = interactive_output(
-        _plot_power_analysis,
+    analysis_ui = interactive_output(
+        _plot_selected_analysis,
         {
             'G_uS': G_slider,
             'i_dc_uA': i_dc_slider,
             'fs_Hz': fs_slider,
             'D': D_slider,
-            'show_power_analysis': power_analysis_toggle
+            'show_analysis': analysis_toggle
         }
     )
 
+    def _on_analysis_tab_change(change):
+        _plot_selected_analysis(
+            G_slider.value,
+            i_dc_slider.value,
+            fs_slider.value,
+            D_slider.value,
+            analysis_toggle.value,
+        )
+
+    analysis_tabs.observe(_on_analysis_tab_change, names='selected_index')
+
     button_box = VBox(
-        [power_analysis_toggle],
+        [analysis_toggle],
         layout=Layout(
             width='320px',
             padding='10px',
@@ -316,10 +357,10 @@ def PoI_plotter(model, variance=1, avg_window=1):
         layout=Layout(
             width='340px',
             min_width='340px',
-            height='1050px',
             justify_content='flex-start'
         )
     )
 
-    main_display = VBox([HBox([controls_with_button, ui], layout=Layout(align_items='flex-start')), power_analysis_output])
+    analysis_display = VBox([analysis_tabs, analysis_ui])
+    main_display = VBox([HBox([controls_with_button, ui], layout=Layout(align_items='flex-start')), analysis_display],layout=Layout(gap='0px'))
     display(main_display)
