@@ -11,6 +11,14 @@ from matplotlib.colors import LogNorm
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 
+def _digital_power_from_processing_model(fs_Hz, N):
+    N = max(int(N), 1)
+    D_compute = fs_Hz * (8.543e-3 + 8.2e-3 / N)
+    D_compute = float(np.clip(D_compute, 0.0, 1.0))
+    P_digital_uW = D_compute * 19 + (1 - D_compute) * 8
+    return D_compute, P_digital_uW
+
+
 def plot_forward_vco_point(ax, model, result):
     vin_plot = model.params.vin_range
     fosc_plot = model.fosc_from_vin(vin_plot)
@@ -44,8 +52,10 @@ def plot_forward_summary(ax, result, model=None):
     txt = (
         f"G:        {result.input.G_uS:.2f} μS\n"
         f"i_dc:     {result.input.i_dc_uA:.2f} μA\n"
-        f"f_s:      {result.input.fs_Hz:.0f} Hz\n"
-        f"D:        {result.input.D * 100:.0f}%\n\n"
+        f"f_s:      {result.input.fs_Hz:.1f} Hz\n"
+        f"D:        {result.input.D * 100:.0f}%\n"
+        f"N:        {result.input.N:.0f} samples\n"
+        f"D_compute:{result.intermediate.D_compute * 100:.2f}%\n\n"
         f"V_in:     {result.intermediate.vin_mV:.4f} mV\n"
         f"ΔV_in:    {result.intermediate.dVin_mV*1000:.4f} μV\n"
         f"f_osc:    {result.intermediate.f_osc_kHz:.4f} kHz\n"
@@ -132,7 +142,7 @@ def plot_forward_duty_tradeoff(ax, model, result, variance=1, avg_window=1, D_mi
         p_idc = model.idc_power_uW(vin_mV, i_dc_uA, D)
         p_vco = model.pvco_from_vin(vin_mV, D)
         p_cnt = model.pcnt_from_vin(vin_mV, D)
-        ptot_vals.append(p_idc + p_vco + p_cnt)
+        ptot_vals.append(p_idc + p_vco + p_cnt + result.output.P_digital_uW)
 
     D_vals = np.asarray(D_vals, dtype=float)
     deltaG_vals_nS = np.asarray(deltaG_vals_nS, dtype=float)
@@ -192,11 +202,12 @@ def plot_forward_outputs(ax, result):
     delta_G_nS = result.output.delta_G_uS * 1000
     
     # Power metrics in μW
-    power_labels = [r'$P_{iDC}$', r'$P_{VCO}$', r'$P_{CNT}$', r'$P_{TOT}$']
+    power_labels = [r'$P_{iDC}$', r'$P_{VCO}$', r'$P_{CNT}$', r'$P_{DIGITAL}$', r'$P_{TOT}$']
     power_values = [
         result.output.P_idc_uW,
         result.output.P_vco_uW,
         result.output.P_cnt_uW,
+        result.output.P_digital_uW,
         result.output.P_tot_uW
     ]
     
@@ -245,7 +256,7 @@ def plot_forward_tradeoff(ax, model, result, D, variance=1, avg_window=1, revers
         p_idc = model.idc_power_uW(vin_mV, i_dc, D)
         p_vco = model.pvco_from_vin(vin_mV, D)
         p_cnt = model.pcnt_from_vin(vin_mV, D)
-        ptot_vals.append(p_idc + p_vco + p_cnt)
+        ptot_vals.append(p_idc + p_vco + p_cnt + result.output.P_digital_uW)
 
     deltaG_vals_nS = np.asarray(deltaG_vals_uS, dtype=float) * 1000  # Convert to nS
     ptot_vals = np.asarray(ptot_vals, dtype=float)
@@ -313,7 +324,9 @@ def plot_summary(ax, result, model, variance=1, avg_window=1,reverse_result=None
     min_G_uS = model.conductance(model.params.vin_min_mV, result.input.i_dc_uA)
     txt = (
         f"ΔG:        {result.output.delta_G_uS * 1000:.4f} nS\n"
+        f"P_DIGITAL: {result.output.P_digital_uW:.4f} μW\n"
         f"P_TOT:     {result.output.P_tot_uW:.4f} μW\n"
+        f"D_compute: {result.intermediate.D_compute * 100:.2f}%\n"
         f"─────────────\n"
         f"i_dc range: [0, {max_i_dc:.4f}] μA"
         f"\nG range: [{min_G_uS:.4f}, +∞] μS"
@@ -358,7 +371,7 @@ def plot_power_decomposition(ax, model, result, D=1.0):
         p_idc = model.idc_power_uW(vin_mV, i_dc, D)
         p_vco = model.pvco_from_vin(vin_mV, D)
         p_cnt = model.pcnt_from_vin(vin_mV, D)
-        p_tot_vals.append(p_idc + p_vco + p_cnt)
+        p_tot_vals.append(p_idc + p_vco + p_cnt + result.output.P_digital_uW)
         valid_i_vals.append(i_dc)
 
     if valid_i_vals:
@@ -375,7 +388,7 @@ def plot_power_decomposition(ax, model, result, D=1.0):
 
     ax.set_xlabel(r'$i_{dc}$ (μA)')
     ax.set_ylabel(r'$P_{tot}$ (μW)')
-    ax.set_title(r'region breakdown: $P_{vco+cnt}$ vs $P_{idc}$ dominance')
+    ax.set_title(r'$P_{tot}$ decomposition: $P_{idc}$ vs $P_{vco+cnt}$ dominance')
     ax.grid(True, alpha=0.3, zorder=0)
     ax.legend(title='region description', ncol=2)
 
@@ -391,6 +404,7 @@ def plot_power_breakdown_stacked(ax, model, result, D=1.0):
     p_idc_vals = []
     p_vco_vals = []
     p_cnt_vals = []
+    p_digital_vals = []
     valid_i_vals = []
     
     for i_dc in i_vals:
@@ -401,27 +415,125 @@ def plot_power_breakdown_stacked(ax, model, result, D=1.0):
         p_idc_vals.append(p_idc)
         p_vco_vals.append(p_vco)
         p_cnt_vals.append(p_cnt)
+        p_digital_vals.append(result.output.P_digital_uW)
         valid_i_vals.append(i_dc)
 
     if valid_i_vals:
-        ax.stackplot(valid_i_vals, p_idc_vals, p_vco_vals, p_cnt_vals,
-                     labels=[r'$P_{idc}$', r'$P_{vco}$', r'$P_{cnt}$'],
-                     colors=['#1f77b4', '#2ca02c', '#ff7f0e'], alpha=0.7)
+        ax.stackplot(valid_i_vals, p_idc_vals, p_vco_vals, p_cnt_vals, p_digital_vals,
+                     labels=[r'$P_{idc}$', r'$P_{vco}$', r'$P_{cnt}$', r'$P_{digital}$'],
+                     colors=['#1f77b4', '#2ca02c', '#ff7f0e', '#9467bd'], alpha=0.7)
         
         # Mark current operating point
-        vin_current = model.vin_from_G(G_uS, result.input.i_dc_uA)
-        p_idc_current = model.idc_power_uW(vin_current, result.input.i_dc_uA, D)
-        p_vco_current = model.pvco_from_vin(vin_current, D)
-        p_cnt_current = model.pcnt_from_vin(vin_current, D)
-        p_tot_current = p_idc_current + p_vco_current + p_cnt_current
-        
-        ax.plot(result.input.i_dc_uA, p_tot_current, 'r*', markersize=15, zorder=5, label='Operating point')
+        ax.plot(result.input.i_dc_uA, result.output.P_tot_uW, 'r*', markersize=15, zorder=5, label='Operating point')
 
     ax.set_xlabel(r'$i_{dc}$ (μA)')
-    ax.set_ylabel(r'Power (μW)')
-    ax.set_title(r'Power contributions vs $i_{dc}$ (stacked)')
+    ax.set_ylabel(r'AFE Power (μW)')
+    ax.set_title(r'AFE Power contributions vs $i_{dc}$ (stacked)')
     ax.grid(True, alpha=0.3, axis='y')
     ax.legend(loc='upper left', fontsize=9)
+
+
+def plot_digital_power_vs_fs(ax, result, fs_min=0.1, fs_max=None, n_fs=160):
+    N = result.input.N
+    fs_current = result.input.fs_Hz
+    if fs_max is None:
+        fs_max = max(20.0, fs_current * 1.5)
+
+    fs_vals = np.linspace(fs_min, fs_max, n_fs)
+    D_compute_vals = []
+    P_digital_vals = []
+
+    for fs_Hz in fs_vals:
+        D_compute, P_digital = _digital_power_from_processing_model(fs_Hz, N)
+        D_compute_vals.append(D_compute)
+        P_digital_vals.append(P_digital)
+
+    P_digital_vals = np.asarray(P_digital_vals, dtype=float)
+    D_compute_vals = np.asarray(D_compute_vals, dtype=float)
+
+    ax.plot(fs_vals, P_digital_vals, linewidth=2.5, color='#9467bd', label=r'$P_{digital}$')
+    ax.plot(fs_current, result.output.P_digital_uW, 'ko', markersize=6, zorder=5, label='Operating point')
+    ax.axvline(fs_current, color='black', linestyle='--', alpha=0.45)
+
+    saturated = D_compute_vals >= 1.0
+    if np.any(saturated):
+        ax.fill_between(
+            fs_vals,
+            np.nanmin(P_digital_vals),
+            np.nanmax(P_digital_vals),
+            where=saturated,
+            color='tab:red',
+            alpha=0.10,
+            label=r'$D_{compute}=1$',
+        )
+
+    ax.text(
+        0.04,
+        0.94,
+        rf"$N={N:.0f}$ samples" "\n"
+        r"$P_{digital}=D_{compute}P_{active}+(1-D_{compute})P_{sleep}$",
+        transform=ax.transAxes,
+        ha='left',
+        va='top',
+        fontsize=9,
+        bbox=dict(boxstyle='round,pad=0.35', facecolor='white', edgecolor='0.7', alpha=0.9),
+    )
+    
+    ax.text(
+        0.96,
+        0.94,
+        rf"$f_s={fs_Hz:.2f}$ Hz" "\n"
+        r"$D_{compute}=f_s\left(a+\dfrac{b}{N}\right)$",
+        transform=ax.transAxes,
+        ha='right',
+        va='top',
+        fontsize=10,
+        bbox=dict(boxstyle='round,pad=0.35', facecolor='white', edgecolor='0.7', alpha=0.9),
+    )
+    ax.set_xlabel(r'$f_s$ (Hz)')
+    ax.set_ylabel(r'$P_{digital}$ (μW)')
+    ax.set_title(r'Digital power vs $f_s$')
+    ax.grid(True, alpha=0.25)
+    ax.legend(fontsize=9, loc='best')
+
+
+def plot_digital_power_vs_N(ax, result, N_min=1, N_max=100, n_N=100):
+    fs_Hz = result.input.fs_Hz
+    N_current = result.input.N
+
+    N_vals = np.linspace(N_min, N_max, n_N)
+    D_compute_vals = []
+    P_digital_vals = []
+
+    for N in N_vals:
+        D_compute, P_digital = _digital_power_from_processing_model(fs_Hz, N)
+        D_compute_vals.append(D_compute)
+        P_digital_vals.append(P_digital)
+
+    P_digital_vals = np.asarray(P_digital_vals, dtype=float)
+    D_compute_vals = np.asarray(D_compute_vals, dtype=float)
+
+    ax.plot(N_vals, P_digital_vals, linewidth=2.5, color='#9467bd', label=r'$P_{digital}$')
+    ax.plot(N_current, result.output.P_digital_uW, 'ko', markersize=6, zorder=5, label='Operating point')
+    ax.axvline(N_current, color='black', linestyle='--', alpha=0.45)
+
+    saturated = D_compute_vals >= 1.0
+    if np.any(saturated):
+        ax.fill_between(
+            N_vals,
+            np.nanmin(P_digital_vals),
+            np.nanmax(P_digital_vals),
+            where=saturated,
+            color='tab:red',
+            alpha=0.10,
+            label=r'$D_{compute}=1$',
+        )
+
+    ax.set_xlabel(r'$N$ (samples per DMA window)')
+    ax.set_ylabel(r'$P_{digital}$ (μW)')
+    ax.set_title(r'Digital power vs $N$')
+    ax.grid(True, alpha=0.25)
+    ax.legend(fontsize=9, loc='best')
 
 
 DESIGN_SPACE_SPECS = {

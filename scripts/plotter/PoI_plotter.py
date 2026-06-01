@@ -42,6 +42,13 @@ def PoI_plotter(model, variance=1, avg_window=1):
         layout=Layout(width='300px')
     )
 
+    N_slider = FloatSlider(
+        value=5, min=1, max=100, step=1,
+        description='N:',
+        continuous_update=False,
+        layout=Layout(width='300px')
+    )
+
     delta_G_slider = FloatSlider(
         value=0.10, min=0.0, max=1.0, step=0.01,
         description='ΔG tgt (nS):',
@@ -60,7 +67,8 @@ def PoI_plotter(model, variance=1, avg_window=1):
     _computation_cache = {
         'last_G': G_init,
         'last_fs': 1.0,
-        'last_D': 1.0
+        'last_D': 1.0,
+        'last_N': 5
     }
 
     def update_i_dc_max(change):
@@ -76,16 +84,19 @@ def PoI_plotter(model, variance=1, avg_window=1):
         G_value = G_slider.value
         fs_value = fs_slider.value
         D_value = D_slider.value
+        N_value = N_slider.value
 
         # Skip redundant computations
         if (_computation_cache['last_G'] == G_value and 
             _computation_cache['last_fs'] == fs_value and 
-            _computation_cache['last_D'] == D_value):
+            _computation_cache['last_D'] == D_value and
+            _computation_cache['last_N'] == N_value):
             return
 
         _computation_cache['last_G'] = G_value
         _computation_cache['last_fs'] = fs_value
         _computation_cache['last_D'] = D_value
+        _computation_cache['last_N'] = N_value
 
         f_int_Hz = fs_value / D_value
 
@@ -125,7 +136,8 @@ def PoI_plotter(model, variance=1, avg_window=1):
             G_slider,
             i_dc_slider,
             fs_slider,
-            D_slider
+            D_slider,
+            N_slider
         ],
         layout=Layout(
             width='320px',
@@ -157,9 +169,9 @@ def PoI_plotter(model, variance=1, avg_window=1):
         )
     )
 
-    def _plot(G_uS, i_dc_uA, fs_Hz, D, delta_G_target_nS, P_tot_max_uW):
+    def _plot(G_uS, i_dc_uA, fs_Hz, D, N, delta_G_target_nS, P_tot_max_uW):
 
-        fwd_in = forward_input(G_uS=G_uS, i_dc_uA=i_dc_uA, fs_Hz=fs_Hz, D=D)
+        fwd_in = forward_input(G_uS=G_uS, i_dc_uA=i_dc_uA, fs_Hz=fs_Hz, D=D, N=N)
         result = forward_compute(
             model=model,
             input=fwd_in,
@@ -171,6 +183,7 @@ def PoI_plotter(model, variance=1, avg_window=1):
             G_uS=G_uS,
             fs_Hz=fs_Hz,
             D=D,
+            N=N,
             delta_G_target_nS=delta_G_target_nS,
             P_tot_max_uW=P_tot_max_uW
         )
@@ -225,6 +238,7 @@ def PoI_plotter(model, variance=1, avg_window=1):
             'i_dc_uA': i_dc_slider,
             'fs_Hz': fs_slider,
             'D': D_slider,
+            'N': N_slider,
             'delta_G_target_nS': delta_G_slider,
             'P_tot_max_uW': P_tot_max_slider
         }
@@ -254,7 +268,7 @@ def PoI_plotter(model, variance=1, avg_window=1):
             with output:
                 output.clear_output(wait=True)
 
-    def _plot_selected_analysis(G_uS, i_dc_uA, fs_Hz, D, show_analysis):
+    def _plot_selected_analysis(G_uS, i_dc_uA, fs_Hz, D, N, show_analysis):
         """Render the currently selected analysis tab with slider-controlled inputs."""
         if not show_analysis:
             _clear_analysis_outputs()
@@ -268,7 +282,7 @@ def PoI_plotter(model, variance=1, avg_window=1):
         with active_output:
             active_output.clear_output(wait=True)
 
-            fwd_in = forward_input(G_uS=G_uS, i_dc_uA=i_dc_uA, fs_Hz=fs_Hz, D=D)
+            fwd_in = forward_input(G_uS=G_uS, i_dc_uA=i_dc_uA, fs_Hz=fs_Hz, D=D, N=N)
             result = forward_compute(
                 model=model,
                 input=fwd_in,
@@ -277,11 +291,13 @@ def PoI_plotter(model, variance=1, avg_window=1):
             )
 
             if selected_tab == 0:
-                fig = plt.figure(figsize=(14, 6), constrained_layout=True)
-                gs = fig.add_gridspec(1, 2)
+                fig = plt.figure(figsize=(14, 10), constrained_layout=True)
+                gs = fig.add_gridspec(2, 2)
 
                 plot_power_breakdown_stacked(fig.add_subplot(gs[0, 0]), model, result, D=D)
                 plot_power_decomposition(fig.add_subplot(gs[0, 1]), model, result, D=D)
+                plot_digital_power_vs_fs(fig.add_subplot(gs[1, 0]), result)
+                plot_digital_power_vs_N(fig.add_subplot(gs[1, 1]), result)
 
                 fig.suptitle(
                     f'Power Analysis: G={G_uS:.2f} μS, i_dc={i_dc_uA:.4f} μA, f_s={fs_Hz:.2f} Hz',
@@ -328,6 +344,7 @@ def PoI_plotter(model, variance=1, avg_window=1):
             'i_dc_uA': i_dc_slider,
             'fs_Hz': fs_slider,
             'D': D_slider,
+            'N': N_slider,
             'show_analysis': analysis_toggle
         }
     )
@@ -338,6 +355,7 @@ def PoI_plotter(model, variance=1, avg_window=1):
             i_dc_slider.value,
             fs_slider.value,
             D_slider.value,
+            N_slider.value,
             analysis_toggle.value,
         )
 

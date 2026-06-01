@@ -17,6 +17,7 @@ class forward_input:
     i_dc_uA: float
     fs_Hz: float
     D: float
+    N: int
 
 @dataclass
 class forward_output:
@@ -25,6 +26,7 @@ class forward_output:
     P_idc_uW: float
     P_vco_uW: float
     P_cnt_uW: float
+    P_digital_uW: float
     P_tot_uW: float
 
 @dataclass
@@ -37,6 +39,8 @@ class forward_intermediate_variables:
     df_osc_adev_Hz: float
     df_osc_Hz: float
     dVin_mV: float
+
+    D_compute: float
 
     delta_G_range_nS: Tuple[float, float]
 
@@ -51,6 +55,7 @@ class reverse_input:
     G_uS: float
     fs_Hz: float
     D: float
+    N: int
     delta_G_target_nS: float
     P_tot_max_uW: float
 
@@ -72,6 +77,15 @@ class ReverseResult:
     delta_G_grid_uS: np.ndarray
     P_tot_grid_uW: np.ndarray
     feasible_mask: np.ndarray
+
+
+def digital_power_from_processing_model(fs_Hz: float, N: int):
+    """Return computation duty cycle and digital power from the fitted CPU model."""
+    N = max(int(N), 1)
+    D_compute = fs_Hz * (8.543e-3 + 8.2e-3 / N)
+    D_compute = float(np.clip(D_compute, 0.0, 1.0))
+    P_digital_uW = D_compute * 19 + (1 - D_compute) * 8
+    return D_compute, P_digital_uW
 
 
 def forward_compute(model, input: forward_input, variance=1, avg_window=1):
@@ -98,7 +112,8 @@ def forward_compute(model, input: forward_input, variance=1, avg_window=1):
         P_idc_uW = model.idc_power_uW(vin_mV, input.i_dc_uA, input.D)
         P_vco_uW = model.pvco_from_vin(vin_mV, input.D)
         P_cnt_uW = model.pcnt_from_vin(vin_mV, input.D)
-        P_tot_uW = P_idc_uW + P_vco_uW + P_cnt_uW
+        D_compute, P_digital_uW = digital_power_from_processing_model(input.fs_Hz, input.N)
+        P_tot_uW = P_idc_uW + P_vco_uW + P_cnt_uW + P_digital_uW
 
         return ForwardPointResult(
 
@@ -110,6 +125,7 @@ def forward_compute(model, input: forward_input, variance=1, avg_window=1):
                 df_osc_sampling_Hz=df_osc_sampling_Hz,
                 df_osc_adev_Hz=df_osc_adev_Hz,
                 df_osc_Hz=df_osc_Hz,
+                D_compute=D_compute,
                 dVin_mV=dVin_mV,
                 delta_G_range_nS=(min_delta_G_nS,max_delta_G_nS)
             ),
@@ -118,6 +134,7 @@ def forward_compute(model, input: forward_input, variance=1, avg_window=1):
                 P_idc_uW=P_idc_uW,
                 P_vco_uW=P_vco_uW,
                 P_cnt_uW=P_cnt_uW,
+                P_digital_uW=P_digital_uW,
                 P_tot_uW=P_tot_uW
             )
         )
@@ -146,7 +163,7 @@ def reverse_compute(model, input: reverse_input, variance=1, avg_window=1):
             valid_mask.append(False)
             continue
 
-        fwd_in = forward_input(G_uS=input.G_uS, i_dc_uA=i_dc, fs_Hz=input.fs_Hz, D=input.D)
+        fwd_in = forward_input(G_uS=input.G_uS, i_dc_uA=i_dc, fs_Hz=input.fs_Hz, D=input.D, N=input.N)
         result = forward_compute(model, fwd_in, variance=variance, avg_window=avg_window)
 
         dG = result.output.delta_G_uS
