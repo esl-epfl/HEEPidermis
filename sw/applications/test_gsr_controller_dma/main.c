@@ -43,7 +43,7 @@
 #define VREF_DEFAULT_CAL   0b1111111111U
 
 // Stop after this many transactions
-#define WINDOWS_TO_PROCESS 6
+#define WINDOWS_TO_PROCESS 4
 
 #define INTR_DMA_TRANS_DONE  (1 << 19)
 #define INTR_DMA_WINDOW_DONE (1 << 30)
@@ -67,6 +67,7 @@ static dma_trans_t  dma_trans;
 
 void dma_intr_handler_trans_done(uint8_t channel) {
     gsr_dma_intr_handler_trans_done(channel);
+    debug = 'wake';
 }
 
 void dma_intr_handler_window_done(uint8_t channel) {
@@ -155,7 +156,7 @@ static int process_window(gsr_controller_t *ctrl) {
     gsr_status_t ret;
     const gsr_sample_t *sample;
 
-    ret = gsr_read_batch(ctrl);
+    ret = gsr_read(ctrl);
     if (ret == GSR_STATUS_OK) {
         sample = gsr_get_last_sample(ctrl);
         if (sample == NULL || !sample->valid) {
@@ -179,6 +180,7 @@ int main(void) {
     gsr_controller_t ctrl;
     const gsr_sample_t *sample;
     gsr_status_t ret;
+    gsr_metrics_t metrics;
 
     // Clear event buffer
     memset(buf_a, 0, sizeof(buf_a));
@@ -212,6 +214,10 @@ int main(void) {
             return -1;
         }
         total_windows++;
+        metrics = get_metrics(&ctrl);
+        debug_mark(0xE2U, metrics.conductance_sensitivity_pS);
+        debug_mark(0xE3U, metrics.resolution_dB);
+
     }
 
     total_windows = 0;
@@ -229,6 +235,9 @@ int main(void) {
             return -1;
         }
         total_windows++;
+        metrics = get_metrics(&ctrl);
+        debug_mark(0xE2U, metrics.conductance_sensitivity_pS);
+        debug_mark(0xE3U, metrics.resolution_dB);
     }
     
     iDACs_enable(false, false);

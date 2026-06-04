@@ -26,7 +26,7 @@
 /* Hardware configuration required by the measurement layer. */
 typedef struct {
     vco_channel_t channel;       /* VCO path used to reconstruct Vin. */
-    uint8_t  duty_cycle_code;                 /* is the VCO duty cycle inverse (1/D) (2 is 50% Duty Cycle, 4 is 25% Duty Cycle, 1 is 100% Duty cycle)) */
+    uint8_t  duty_cycle_code;                 /* is the VCO duty cycle inverse (1/D) (4 is 25% Duty Cycle, 2 is 50% Duty Cycle, 1 is 100% Duty cycle)) */
     uint32_t baseline_refresh_rate_Hz;
     uint32_t phasic_refresh_rate_Hz;
     uint32_t recovery_refresh_rate_Hz;
@@ -40,6 +40,8 @@ typedef struct {
     uint32_t G_nS;          /* Conductance computed from current_nA and vin_uV. */
     uint32_t prev_G_nS;     /* Previous conductance value. */
     uint32_t vin_uV;        /* Reconstructed front-end voltage from the VCO readout. */
+    uint32_t vin_baseline_uV;
+    uint32_t vin_rms_uV;
     uint32_t baseline_nS;
     int32_t slope_nS;
     uint32_t amplitude_nS;        /* Absolute change in conductance compared to the baseline. */
@@ -54,7 +56,7 @@ typedef struct {
 } gsr_sample_t;
 
 typedef struct{
-    uint32_t conductance_sensitivity_nS; /* Estimated conductance sensitivity (delta G) in nS around the current operation point */
+    uint32_t conductance_sensitivity_pS; /* Estimated conductance sensitivity (delta G) in pS around the current operation point */
     uint32_t resolution_dB;     /* Estimated conductance resolution in dB around the current operation point, used as QoS metric. */
     // uint32_t power_nW;                   /* Estimated power consumption of the measurement, used for control decisions. */
 } gsr_metrics_t;
@@ -113,7 +115,7 @@ gsr_status_t gsr_controller_set_config(gsr_controller_t *ctrl);
 gsr_status_t gsr_read_sample(gsr_controller_t *ctrl);
 
 /* Read a batch of samples using DMA and store the most recent one in the controller. Falls back to gsr_read_sample if DMA is not used. */
-gsr_status_t gsr_read_batch(gsr_controller_t *ctrl);
+gsr_status_t gsr_read(gsr_controller_t *ctrl);
 
 /* Return the last valid/attempted sample stored in the context. */
 const gsr_sample_t *gsr_get_last_sample(const gsr_controller_t *ctrl);
