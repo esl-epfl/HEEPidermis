@@ -157,7 +157,7 @@ static int init_controller(gsr_controller_t *ctrl, gsr_dma_acq_t *dma) {
 }
 
 static int process_window(gsr_controller_t *ctrl) {
-    gsr_status_t ret = gsr_read_batch(ctrl);
+    gsr_status_t ret = gsr_read(ctrl);
 
     if (ret == GSR_STATUS_OK) {
         const gsr_sample_t *sample = gsr_get_last_sample(ctrl);

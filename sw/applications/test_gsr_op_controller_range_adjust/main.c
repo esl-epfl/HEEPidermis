@@ -137,7 +137,7 @@ int main(void) {
     reads_done = 0U;
     attempts = 0U;
     while (reads_done < N_READ_STEPS && attempts < SAMPLE_ATTEMPT_LIMIT) {
-        opst = gsr_opctrl_read_sample(&opctrl, &sample);
+        opst = gsr_opctrl_read(&opctrl, &sample);
         if (opst == GSR_OPCTRL_OK) {
             debug_mark(0, sample.G_nS);
             reads_done++;
@@ -170,7 +170,7 @@ int main(void) {
     reads_done = 0U;
     attempts = 0U;
     while (reads_done < N_READ_STEPS && attempts < SAMPLE_ATTEMPT_LIMIT) {
-        opst = gsr_opctrl_read_sample(&opctrl, &sample);
+        opst = gsr_opctrl_read(&opctrl, &sample);
         if (opst == GSR_OPCTRL_OK) {
             debug_mark(0, sample.G_nS);
             reads_done++;
@@ -203,7 +203,7 @@ int main(void) {
     reads_done = 0U;
     attempts = 0U;
     while (reads_done < N_READ_STEPS && attempts < SAMPLE_ATTEMPT_LIMIT) {
-        opst = gsr_opctrl_read_sample(&opctrl, &sample);
+        opst = gsr_opctrl_read(&opctrl, &sample);
         if (opst == GSR_OPCTRL_OK) {
             debug_mark(0, sample.G_nS);
             reads_done++;
