@@ -324,16 +324,14 @@ def plot_summary(ax, result, model, variance=1, avg_window=1,reverse_result=None
     min_G_uS = model.conductance(model.params.vin_min_mV, result.input.i_dc_uA)
     txt = (
         f"ΔG:        {result.output.delta_G_uS * 1000:.4f} nS\n"
-        f"P_DIGITAL: {result.output.P_digital_uW:.4f} μW\n"
         f"P_TOT:     {result.output.P_tot_uW:.4f} μW\n"
-        f"D_compute: {result.intermediate.D_compute * 100:.2f}%\n"
+        f"ΔV: {result.intermediate.dVin_mV * 1000:.2f} μV\n"
         f"─────────────\n"
         f"i_dc range: [0, {max_i_dc:.4f}] μA"
         f"\nG range: [{min_G_uS:.4f}, +∞] μS"
-        f"\nΔG range: [{result.intermediate.delta_G_range_nS[0]:.4f}, {result.intermediate.delta_G_range_nS[1]:.4f}] nS"
+        f"\nΔG range: [{result.intermediate.delta_G_range_nS[0]:.4f}, {result.intermediate.delta_G_range_nS[1]:.4f}] nS\n"
     )
     if reverse_result is not None:
-        txt += f"\n─────────────\nOptimal i_dc search...\n"
         if reverse_result.output.feasible:
             txt += (
                 f"i_delta_G_opt:    {reverse_result.output.i_dc_delta_G_opt_uA:.4f} μA\n"
@@ -371,7 +369,7 @@ def plot_power_decomposition(ax, model, result, D=1.0):
         p_idc = model.idc_power_uW(vin_mV, i_dc, D)
         p_vco = model.pvco_from_vin(vin_mV, D)
         p_cnt = model.pcnt_from_vin(vin_mV, D)
-        p_tot_vals.append(p_idc + p_vco + p_cnt + result.output.P_digital_uW)
+        p_tot_vals.append(p_idc + p_vco + p_cnt)
         valid_i_vals.append(i_dc)
 
     if valid_i_vals:
@@ -387,8 +385,8 @@ def plot_power_decomposition(ax, model, result, D=1.0):
         ax.axvline(min_i_dc, color='gray', linestyle=':', linewidth=1.5, alpha=0.5, zorder=2)
 
     ax.set_xlabel(r'$i_{dc}$ (μA)')
-    ax.set_ylabel(r'$P_{tot}$ (μW)')
-    ax.set_title(r'$P_{tot}$ decomposition: $P_{idc}$ vs $P_{vco+cnt}$ dominance')
+    ax.set_ylabel(r'$P_{AFE}$ (μW)')
+    ax.set_title(r'$P_{AFE}$ decomposition: $P_{idc}$ vs $P_{vco+cnt}$ dominance')
     ax.grid(True, alpha=0.3, zorder=0)
     ax.legend(title='region description', ncol=2)
 
@@ -427,8 +425,8 @@ def plot_power_breakdown_stacked(ax, model, result, D=1.0):
         ax.plot(result.input.i_dc_uA, result.output.P_tot_uW, 'r*', markersize=15, zorder=5, label='Operating point')
 
     ax.set_xlabel(r'$i_{dc}$ (μA)')
-    ax.set_ylabel(r'AFE Power (μW)')
-    ax.set_title(r'AFE Power contributions vs $i_{dc}$ (stacked)')
+    ax.set_ylabel(r'Total Power (μW)')
+    ax.set_title(r'Power contributions vs $i_{dc}$ (stacked)')
     ax.grid(True, alpha=0.3, axis='y')
     ax.legend(loc='upper left', fontsize=9)
 
@@ -478,7 +476,7 @@ def plot_digital_power_vs_fs(ax, result, fs_min=0.1, fs_max=None, n_fs=160):
         fontsize=9,
         bbox=dict(boxstyle='round,pad=0.35', facecolor='white', edgecolor='0.7', alpha=0.9),
     )
-    
+
     ax.text(
         0.96,
         0.94,
@@ -807,10 +805,26 @@ def plot_design_space_dashboard(
         label=spec["title"],
     )
     _plot_design_space_selected_point(ax_fint, f_int_Hz, selected_value, selected_label)
+    F_INT_QUANTIZATION = 100.0
     ax_fint.axvspan(f_int_vals[0], F_INT_MIN, alpha=0.12, color="tab:red")
-    ax_fint.axvspan(F_INT_MAX, f_int_vals[-1], alpha=0.12, color="tab:red")
+    ax_fint.axvspan(F_INT_MAX, F_INT_QUANTIZATION, alpha=0.12, color="tab:red")
     ax_fint.axvline(F_INT_MIN, color="tab:red", linewidth=1.0, alpha=0.6)
     ax_fint.axvline(F_INT_MAX, color="tab:red", linewidth=1.0, alpha=0.6)
+
+
+    if f_int_vals[-1] >= F_INT_QUANTIZATION:
+        ax_fint.axvspan(
+            max(F_INT_QUANTIZATION, f_int_vals[0]),
+            f_int_vals[-1],
+            alpha=0.10,
+            color="tab:blue",
+        )
+        ax_fint.axvline(
+            F_INT_QUANTIZATION,
+            color="tab:blue",
+            linewidth=1.0,
+            alpha=0.7,
+        )
     ax_fint.text(
         0.9,
         0.5,
@@ -827,8 +841,25 @@ def plot_design_space_dashboard(
     ax_fint.grid(True, alpha=0.3)
     ax_fint.legend(
         handles=[
-            Line2D([0], [0], color="#8E6AA5", linewidth=2.5, label=spec["title"]),
-            Patch(facecolor="tab:red", alpha=0.12, edgecolor="tab:red", label="extrapolated region"),
+            Line2D(
+                [0],
+                [0],
+                color="#8E6AA5",
+                linewidth=2.5,
+                label=spec["title"],
+            ),
+            Patch(
+                facecolor="tab:red",
+                alpha=0.12,
+                edgecolor="tab:red",
+                label="Allan Dev extrapolated region",
+            ),
+            Patch(
+                facecolor="tab:blue",
+                alpha=0.10,
+                edgecolor="tab:blue",
+                label="Counter quantization-error dominated region",
+            ),
         ],
         fontsize=9,
         loc="best",

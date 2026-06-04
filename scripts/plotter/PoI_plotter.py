@@ -29,7 +29,7 @@ def PoI_plotter(model, variance=1, avg_window=1):
     )
 
     fs_slider = FloatSlider(
-        value=1.0, min=0.5, max=20.0, step=0.5,
+        value=2.0, min=0.5, max=20.0, step=0.5,
         description='fs (Hz):',
         continuous_update=False,
         layout=Layout(width='300px')
@@ -50,14 +50,14 @@ def PoI_plotter(model, variance=1, avg_window=1):
     )
 
     delta_G_slider = FloatSlider(
-        value=0.10, min=0.0, max=1.0, step=0.01,
+        value=50, min=0.0, max=100, step=0.1,
         description='ΔG tgt (nS):',
         continuous_update=False,
         layout=Layout(width='300px')
     )
 
     P_tot_max_slider = FloatSlider(
-        value=10.0, min=0.1, max=20.0, step=0.1,
+        value=20.0, min=0.1, max=20.0, step=0.1,
         description='Pmax (μW):',
         continuous_update=False,
         layout=Layout(width='300px')
