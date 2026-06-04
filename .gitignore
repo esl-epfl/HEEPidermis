@@ -58,3 +58,4 @@ hw/vendor/x-heep/tb/ext_bus.sv
 sw/applications/test_dsm_exploration/out*
 scripts/plotter/explore.ipynb
 scripts/plotter/evaluation/*.png
+scripts/plotter/evaluation/*.gtkw

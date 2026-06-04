@@ -10,7 +10,7 @@
 
 #include <stddef.h>
 #define GSR_IDAC_LSB_NA              40U
-#define GUARD_IDC_NA                 (GSR_IDAC_LSB_NA * 2) // guard i_dc to prevent going out of range in the next conductance measurement; 80nA corresponds to 170 nS of change in conductance
+#define GUARD_IDC_NA                 (GSR_IDAC_LSB_NA * 1) // guard i_dc to prevent going out of range in the next conductance measurement; 80nA corresponds to 170 nS of change in conductance
 #define GSR_IDAC_MAX_CODE            255U
 #define MAX_OUT_OF_RANGE_EVENTS      2U
 
