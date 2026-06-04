@@ -29,7 +29,7 @@ def PoI_plotter(model, variance=1):
     )
 
     fs_slider = FloatSlider(
-        value=2.0, min=0.5, max=20.0, step=0.5,
+        value=2.0, min=0.5, max=50.0, step=1.0,
         description='fs (Hz):',
         continuous_update=False,
         layout=Layout(width='300px')

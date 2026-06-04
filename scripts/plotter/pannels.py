@@ -772,10 +772,12 @@ def plot_design_space_dashboard(
 
     f_int_vals = np.linspace(f_int_min, f_int_max, f_int_num)
     output_fint = []
-
+    first = True
+    F_INT_QUANTIZATION = f_int_max
     for f_int in f_int_vals:
         try:
-            value_f, *_ = _design_space_metric_at(
+            
+            value_f, _, df_sampling, df_adev, _ = _design_space_metric_at(
                 model,
                 output,
                 G_uS,
@@ -784,6 +786,9 @@ def plot_design_space_dashboard(
                 variance=variance,
             )
             output_fint.append(value_f)
+            if df_sampling > df_adev and first:
+                F_INT_QUANTIZATION = f_int
+                first = False
         except Exception:
             output_fint.append(np.nan)
 
@@ -796,7 +801,6 @@ def plot_design_space_dashboard(
         label=spec["title"],
     )
     _plot_design_space_selected_point(ax_fint, f_int_Hz, selected_value, selected_label)
-    F_INT_QUANTIZATION = 100.0
     ax_fint.axvspan(f_int_vals[0], F_INT_MIN, alpha=0.12, color="tab:red")
     ax_fint.axvspan(F_INT_MAX, F_INT_QUANTIZATION, alpha=0.12, color="tab:red")
     ax_fint.axvline(F_INT_MIN, color="tab:red", linewidth=1.0, alpha=0.6)
