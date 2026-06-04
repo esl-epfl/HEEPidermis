@@ -109,7 +109,7 @@ def plot_forward_df_components(ax, result):
     ax.set_title("Frequency error contributions")
     ax.grid(True, axis='y', alpha=0.3)
 
-def plot_forward_duty_tradeoff(ax, model, result, variance=1, avg_window=1, D_min=0.1, D_max=1.0, n_D=80):
+def plot_forward_duty_tradeoff(ax, model, result, variance=1, D_min=0.1, D_max=1.0, n_D=80):
     G_uS = result.input.G_uS
     i_dc_uA = result.input.i_dc_uA
     fs_Hz = result.input.fs_Hz
@@ -132,8 +132,7 @@ def plot_forward_duty_tradeoff(ax, model, result, variance=1, avg_window=1, D_mi
                     vin_mV=vin_mV,
                     i_dc_uA=i_dc_uA,
                     f_int_Hz=f_int_Hz,
-                    variance=variance,
-                    avg_window=avg_window
+                    variance=variance
                 ) * 1000
             )
         except Exception:
@@ -228,7 +227,7 @@ def plot_forward_outputs(ax, result):
     ax.set_title("Output metrics")
     ax.grid(True, axis='y', alpha=0.3)
 
-def plot_forward_tradeoff(ax, model, result, D, variance=1, avg_window=1, reverse_result=None):
+def plot_forward_tradeoff(ax, model, result, D, variance=1, reverse_result=None):
     G_uS = result.input.G_uS
     fs_Hz = result.input.fs_Hz
     max_i_dc = model.i_dc_max(result.input.G_uS)
@@ -248,8 +247,7 @@ def plot_forward_tradeoff(ax, model, result, D, variance=1, avg_window=1, revers
                 vin_mV=vin_mV,
                 i_dc_uA=i_dc,
                 f_int_Hz=f_int_Hz,
-                variance=variance,
-                avg_window=avg_window
+                variance=variance
             )
         )
 
@@ -318,7 +316,7 @@ def plot_forward_tradeoff(ax, model, result, D, variance=1, avg_window=1, revers
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax.legend(lines1 + lines2, labels1 + labels2, fontsize=9, loc='best')
 
-def plot_summary(ax, result, model, variance=1, avg_window=1,reverse_result=None):
+def plot_summary(ax, result, model, reverse_result=None):
     ax.axis("off")
     max_i_dc = model.i_dc_max(result.input.G_uS)
     min_G_uS = model.conductance(model.params.vin_min_mV, result.input.i_dc_uA)
@@ -580,10 +578,9 @@ def _design_space_metric_from_df(model, output, G_uS, i_dc_uA, vin_mV, df_osc_Hz
     raise ValueError(f"Unsupported output '{output}'. Use 'delta_g' or 'delta_v'.")
 
 
-def _df_osc_total_Hz(model, vin_mV, f_int_Hz, variance=3, avg_window=1):
+def _df_osc_total_Hz(model, vin_mV, f_int_Hz, variance=3):
     df_sampling = model.df_osc_sampling_Hz(
         f_int_Hz=f_int_Hz,
-        avg_window=avg_window,
     )
     df_adev = variance * model.df_osc_adev_Hz(
         vin_mV=vin_mV,
@@ -592,14 +589,13 @@ def _df_osc_total_Hz(model, vin_mV, f_int_Hz, variance=3, avg_window=1):
     return max(df_sampling, df_adev), df_sampling, df_adev
 
 
-def _design_space_metric_at(model, output, G_uS, i_dc_uA, f_int_Hz, variance=3, avg_window=1):
+def _design_space_metric_at(model, output, G_uS, i_dc_uA, f_int_Hz, variance=3):
     vin_mV = model.vin_from_G(G_uS, i_dc_uA)
     df_total, df_sampling, df_adev = _df_osc_total_Hz(
         model,
         vin_mV,
         f_int_Hz,
-        variance=variance,
-        avg_window=avg_window,
+        variance=variance
     )
     value = _design_space_metric_from_df(
         model,
@@ -639,7 +635,6 @@ def plot_design_space_dashboard(
     fs_Hz=5,
     D=1.0,
     variance=3,
-    avg_window=1,
     G_min=1,
     G_max=25,
     n_G=80,
@@ -665,7 +660,6 @@ def plot_design_space_dashboard(
         i_dc_uA,
         f_int_Hz,
         variance=variance,
-        avg_window=avg_window,
     )
     selected_label = spec["selected_fmt"].format(value=float(selected_value))
 
@@ -714,7 +708,6 @@ def plot_design_space_dashboard(
                 i_dc,
                 f_int_Hz,
                 variance=variance,
-                avg_window=avg_window,
             )
             output_idc.append(value_i)
         except Exception:
@@ -746,7 +739,6 @@ def plot_design_space_dashboard(
                     i_dc,
                     f_int_Hz,
                     variance=variance,
-                    avg_window=avg_window,
                 )
                 Z[gi, ii] = value_grid
             except Exception:
@@ -790,7 +782,6 @@ def plot_design_space_dashboard(
                 i_dc_uA,
                 f_int,
                 variance=variance,
-                avg_window=avg_window,
             )
             output_fint.append(value_f)
         except Exception:

@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 from pannels import *
 from workflow import *
 
-def PoI_plotter(model, variance=1, avg_window=1):
+def PoI_plotter(model, variance=1):
     G_init = 20.0
     G_slider = FloatSlider(
         value=G_init, min=0.5, max=25.0, step=0.5,
@@ -104,7 +104,6 @@ def PoI_plotter(model, variance=1, avg_window=1):
             G_value,
             f_int_Hz=f_int_Hz,
             variance=variance,
-            avg_window=avg_window
         )
         print(f"Computed ΔG range: [{min_deltaG:.4f}, {max_deltaG:.4f}] nS")
 
@@ -175,8 +174,7 @@ def PoI_plotter(model, variance=1, avg_window=1):
         result = forward_compute(
             model=model,
             input=fwd_in,
-            variance=variance,
-            avg_window=avg_window
+            variance=variance
         )
 
         rev_in = reverse_input(
@@ -190,8 +188,7 @@ def PoI_plotter(model, variance=1, avg_window=1):
         reverse_result = reverse_compute(
             model=model,
             input=rev_in,
-            variance=variance,
-            avg_window=avg_window
+            variance=variance
         )
 
         fig = plt.figure(figsize=(13, 10), constrained_layout=True)
@@ -203,8 +200,7 @@ def PoI_plotter(model, variance=1, avg_window=1):
             fig.add_subplot(gs[1, 0]),
             model,
             result,
-            variance=variance,
-            avg_window=avg_window
+            variance=variance
         )
         plot_forward_tradeoff(
             fig.add_subplot(gs[1, 1]),
@@ -212,7 +208,6 @@ def PoI_plotter(model, variance=1, avg_window=1):
             result,
             D=D,
             variance=variance,
-            avg_window=avg_window,
             reverse_result=reverse_result
         )
         plot_forward_outputs(fig.add_subplot(gs[2, 0]), result)
@@ -286,8 +281,7 @@ def PoI_plotter(model, variance=1, avg_window=1):
             result = forward_compute(
                 model=model,
                 input=fwd_in,
-                variance=variance,
-                avg_window=avg_window
+                variance=variance
             )
 
             if selected_tab == 0:
@@ -323,7 +317,6 @@ def PoI_plotter(model, variance=1, avg_window=1):
                     fs_Hz=fs_Hz,
                     D=D,
                     variance=variance,
-                    avg_window=avg_window,
                     G_min=0.5,
                     G_max=25.0,
                     n_G=80,
