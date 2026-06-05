@@ -28,6 +28,12 @@ DOWNSAMPLE_FACTOR = 2
 DOWNSAMPLE_MODE = "pick"   # "pick" or "mean"
 DOWNSAMPLE_OFFSET = 0      # source samples to skip before downsampling
 
+# Optional pre-FE oversampling. Applied after optional downsampling. For
+# example, factor 10 inserts 9 held/interpolated samples between each pair of
+# input samples and records sample_step = DOWNSAMPLE_FACTOR / 10.
+OVERSAMPLE_FACTOR = 1
+OVERSAMPLE_MODE = "hold"   # "hold"/"zoh" or "linear"
+
 ARRAY_NAME = "signal"
 
 C_TYPE = "static int"
@@ -69,6 +75,17 @@ def read_numbers(txt_path):
     return [float(v) for v in values]
 
 
+def format_number(value):
+    if isinstance(value, int):
+        return str(value)
+
+    value = float(value)
+    if value.is_integer():
+        return str(int(value))
+
+    return f"{value:.12g}"
+
+
 def format_c_array(values, array_name=ARRAY_NAME, length_name=LENGTH_NAME,
                    line_start=None, line_end=None, sample_step=1):
     signal_length = len(values)
@@ -82,10 +99,10 @@ def format_c_array(values, array_name=ARRAY_NAME, length_name=LENGTH_NAME,
 
     lines.append(f"#define {length_name} {signal_length}")
     if line_start is not None:
-        lines.append(f"#define signal_line_start {line_start}")
+        lines.append(f"#define signal_line_start {format_number(line_start)}")
     if line_end is not None:
-        lines.append(f"#define signal_line_end {line_end}")
-    lines.append(f"#define signal_sample_step {sample_step}")
+        lines.append(f"#define signal_line_end {format_number(line_end)}")
+    lines.append(f"#define signal_sample_step {format_number(sample_step)}")
     lines.append("")
 
     lines.append(f"{C_TYPE} {array_name}[{length_name}] =")
@@ -147,6 +164,18 @@ def parse_args():
         default=DOWNSAMPLE_OFFSET,
         help="Skip this many selected source samples before downsampling.",
     )
+    parser.add_argument(
+        "--oversample-factor",
+        type=int,
+        default=OVERSAMPLE_FACTOR,
+        help="Insert N-1 FE input samples between adjacent selected samples.",
+    )
+    parser.add_argument(
+        "--oversample-mode",
+        choices=("hold", "zoh", "linear"),
+        default=OVERSAMPLE_MODE,
+        help="Use zero-order hold or linear interpolation for inserted samples.",
+    )
     return parser.parse_args()
 
 
@@ -178,6 +207,39 @@ def downsample_values(values, factor, mode, offset):
     return sampled, offset, last_source_offset
 
 
+def rounded_sample(value):
+    return int(round(value)) if ROUND_DECIMALS_TO_INT else value
+
+
+def oversample_values(values, factor, mode):
+    if factor < 1:
+        raise ValueError("OVERSAMPLE_FACTOR must be >= 1")
+    if not values:
+        raise ValueError("No samples to oversample")
+    if factor == 1 or len(values) == 1:
+        return values
+
+    sampled = []
+    use_hold = mode in ("hold", "zoh")
+
+    for idx in range(len(values) - 1):
+        current = values[idx]
+        nxt = values[idx + 1]
+        for sub in range(factor):
+            if use_hold:
+                value = current
+            elif mode == "linear":
+                alpha = sub / factor
+                value = current + (nxt - current) * alpha
+            else:
+                raise ValueError(f"Unsupported oversample mode: {mode}")
+
+            sampled.append(rounded_sample(value))
+
+    sampled.append(values[-1])
+    return sampled
+
+
 def main():
     args = parse_args()
     numbers = read_numbers(args.input)
@@ -205,9 +267,15 @@ def main():
         args.downsample_mode,
         args.downsample_offset,
     )
+    selected = oversample_values(
+        selected,
+        args.oversample_factor,
+        args.oversample_mode,
+    )
 
     line_start = args.start + first_source_offset + 1
     line_end = args.start + last_source_offset + 1
+    sample_step = args.downsample_factor / args.oversample_factor
 
     c_code = format_c_array(
         selected,
@@ -215,7 +283,7 @@ def main():
         args.length_name,
         line_start=line_start,
         line_end=line_end,
-        sample_step=args.downsample_factor,
+        sample_step=sample_step,
     )
 
     Path(args.output).write_text(c_code)
@@ -229,6 +297,9 @@ def main():
     print(f"Downsample factor: {args.downsample_factor}")
     print(f"Downsample mode: {args.downsample_mode}")
     print(f"Downsample offset: {args.downsample_offset}")
+    print(f"Oversample factor: {args.oversample_factor}")
+    print(f"Oversample mode: {args.oversample_mode}")
+    print(f"Effective sample step: {format_number(sample_step)}")
     print(f"Line start: {line_start}")
     print(f"Line end: {line_end}")
     print(f"Number of samples written: {len(selected)}")

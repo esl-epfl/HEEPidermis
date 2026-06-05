@@ -45,8 +45,9 @@ int main(void)
              EDA_L_mult_1, EDA_L_mult_2);
 
     /* Metadata header so compare.py can parse parameters */
-    PRINTF("# signal_length=%d line_start=%d line_end=%d sample_step=%d units=nS\n",
-           signal_length, signal_line_start, signal_line_end, signal_sample_step);
+    PRINTF("# signal_length=%d line_start=%g line_end=%g sample_step=%g units=nS\n",
+           signal_length, (double)signal_line_start, (double)signal_line_end,
+           (double)signal_sample_step);
     PRINTF("idx,signal_nS,tonic,phasic\n");
     for (int i = 0; i < signal_length; i++)
         PRINTF("%d,%d,%d,%d\n", i, signal[i], tonic[i], phasic[i]);

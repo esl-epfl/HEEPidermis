@@ -112,6 +112,29 @@ measurement averages over the interval. The generated CSV header includes
 `Nominal GT step/sample` printed by the old high-rate comparison as the
 downsample factor when it is an integer.
 
+To test the opposite assumption, oversample a slower input before FE. This is
+useful for checking the alternative where the reconstructed or simulated
+waveform is expanded up to the GT rate:
+
+```bash
+python3 txt_to_c_array.py \
+  --input sim.txt \
+  --start 0 \
+  --end none \
+  --divisor 1 \
+  --downsample-factor 1 \
+  --oversample-factor 10 \
+  --oversample-mode hold
+make clean
+make run
+cp fe_output_xHz.csv sim_fe_output_20Hz_oversampled_hold.csv
+```
+
+Use `--oversample-mode hold` or `zoh` for zero-order hold, and
+`--oversample-mode linear` for linear interpolation. Oversampling writes a
+fractional `sample_step` such as `0.1`; `compare.py` uses this metadata when
+mapping simulation FE rows back to GT rows.
+
 ## 3. Produce the Simulation FE CSV
 
 Now run the same native FE code on the reconstructed conductance samples from

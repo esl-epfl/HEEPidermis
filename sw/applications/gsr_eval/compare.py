@@ -10,8 +10,10 @@ Ground truth (gt_fe_output.csv) — produced by gsr_eval native build:
 
 Simulation (sim_fe_output.csv) — produced by test_reconstruction sim:
   Header:  # SAMPLING_FREQ=F GT_LINE_START=L GT_CHANGE_RATE_HZ=R
+  Native gsr_eval CSVs may also include sample_step=S, which defaults to 1.
   Columns: k, g_nS, tonic, phasic
-  Sample k maps to GT line: GT_LINE_START + k * (GT_CHANGE_RATE_HZ / (SAMPLING_FREQ * 100))
+  Sample k maps to GT line:
+    GT_LINE_START + k * (GT_CHANGE_RATE_HZ / ((SAMPLING_FREQ / S) * 100))
 
 Usage:
   python3 compare.py gt_fe_output.csv sim_fe_output.csv [--plot] [--save-plot[=PATH]]
@@ -285,10 +287,16 @@ def main():
         print("ERROR: GT sample_step must be > 0.")
         sys.exit(1)
 
+    sim_sample_step = parse_number(sim_params.get('sample_step'), 1)
+    if sim_sample_step <= 0:
+        print("ERROR: simulation sample_step must be > 0.")
+        sys.exit(1)
+
     # Raw conductance.txt rows per simulation sample:
     #   sim fires at SAMPLING_FREQ * 100 Hz in simulation;
+    #   an oversampled native FE CSV has sample_step < 1 sim rows/FE row;
     #   conductance.txt updates at GT_CHANGE_RATE_HZ in simulation.
-    sim_rate_sim_hz    = sampling_freq * args.sim_rate_multiplier
+    sim_rate_sim_hz    = (sampling_freq / sim_sample_step) * args.sim_rate_multiplier
     nominal_raw_gt_step = gt_change_rate_hz / sim_rate_sim_hz
     # GT FE rows per simulation sample. For a high-rate GT FE CSV this is the
     # raw step. For a pre-FE downsampled GT CSV, divide by the GT sample step.
@@ -301,6 +309,7 @@ def main():
     print(f"SAMPLING_FREQ          : {sampling_freq} Hz")
     print(f"GT_LINE_START          : {gt_line_start}")
     print(f"GT sample step         : {gt_sample_step:.6g} raw rows/GT FE row")
+    print(f"Sim sample step        : {sim_sample_step:.6g} sim rows/sim FE row")
     print(f"Raw GT step/sample     : {nominal_raw_gt_step:.6g} raw rows/sim sample")
     print(f"Nominal GT step/sample : {nominal_gt_step:.6g} GT FE rows/sim sample")
     print(f"GT skip                : {gt_skip} GT FE rows")
