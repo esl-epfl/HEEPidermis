@@ -285,7 +285,7 @@ def PoI_plotter(model, variance=1):
             )
 
             if selected_tab == 0:
-                fig = plt.figure(figsize=(14, 10), constrained_layout=True)
+                fig = plt.figure(figsize=(12, 8), constrained_layout=True)
                 gs = fig.add_gridspec(2, 2)
 
                 plot_power_breakdown_stacked(fig.add_subplot(gs[0, 0]), model, result, D=D)
@@ -304,7 +304,7 @@ def PoI_plotter(model, variance=1):
                 fig, axes = plt.subplots(
                     2,
                     2,
-                    figsize=(13, 9),
+                    figsize=(12, 8),
                     constrained_layout=True,
                 )
                 plot_design_space_dashboard(

@@ -42,18 +42,23 @@
 #define IDAC_DEFAULT_CAL   15
 #define VREF_DEFAULT_CAL   0b1111111111U
 
-// Stop after this many transactions
-#define WINDOWS_TO_PROCESS 10
+// #define TEST_DUTY // uncomment if you want to test duty cycling
+
+#ifndef TEST_DUTY
+    #define WINDOWS_TO_PROCESS 10
+    #define RAW_INPUT_SAMPLES  3U
+#else
+    #define WINDOWS_TO_PROCESS 6
+    #define RAW_INPUT_SAMPLES  5U
+#endif
 
 #define INTR_DMA_TRANS_DONE  (1 << 19)
 #define INTR_DMA_WINDOW_DONE (1 << 30)
 
 volatile uint32_t debug __attribute__((section(".xheep_debug_mem")));
 
-
 volatile int32_t g_window_flag  = 0;
 
-#define RAW_INPUT_SAMPLES  3U
 #define RAW_BUF_SIZE       RAW_INPUT_SAMPLES
 
 static uint32_t buf_a[RAW_BUF_SIZE];
@@ -77,7 +82,7 @@ void dma_intr_handler_window_done(uint8_t channel) {
 uint8_t dma_window_ratio_warning_threshold(void) { return 0; }
 
 void __attribute__((aligned(4), interrupt)) handler_irq_timer(void) {
-    timer_irq_clear();
+    vco_handle_timer_irq();
 }
 
 static void debug_mark(uint8_t tag, uint32_t value) {
@@ -162,6 +167,7 @@ static int process_window(gsr_op_controller_t *opctrl, gsr_sample_t *sample) {
             debug = (0xF7 << 24);
             return -1;
         }
+        debug_mark(0xA1 , get_valid_samples(opctrl->operating_point));
         debug_mark(0 ,sample->G_nS);
     } else if (opst == GSR_OPCTRL_NOT_INITIALIZED ||
                    opst == GSR_OPCTRL_MEASUREMENT_ERROR ||
@@ -184,8 +190,8 @@ int main(void) {
     uint32_t attempts;
 
     gsr_op_request_t request_range_low = { .range = LOW, .resolution = LOW, .power = HIGH };
-    gsr_op_request_t request_range_mid = { .range = MEDIUM, .resolution = LOW, .power = HIGH };
     gsr_op_request_t request_range_high = { .range = HIGH, .resolution = LOW, .power = HIGH };
+    gsr_op_request_t request_power_low = { .range = HIGH, .resolution = LOW, .power = LOW };
 
     gsr_controller_t ctrl;
     gsr_status_t ret;
@@ -224,11 +230,11 @@ int main(void) {
         if (process_window(&opctrl, &sample) != 0) {
             return -1;
         }
+        total_samples += get_valid_samples(opctrl.operating_point);
         total_windows++;
     }
 
     total_windows = 0;
-    total_samples = 0;
     /* Request 2: high range */
     opst = gsr_opctrl_request(&opctrl, &request_range_high, &planned);
     if (opst != GSR_OPCTRL_OK) {
@@ -239,8 +245,26 @@ int main(void) {
         if (process_window(&opctrl, &sample) != 0) {
             return -1;
         }
+        total_samples += get_valid_samples(opctrl.operating_point);
         total_windows++;
     }
+
+    #ifdef TEST_DUTY 
+        total_windows = 0;
+        /* Request 3: low power */
+        opst = gsr_opctrl_request(&opctrl, &request_power_low, &planned);
+        if (opst != GSR_OPCTRL_OK) {
+            debug_mark(0xEAU, (uint32_t)opst);
+            return -1;
+        }
+        while (total_windows < WINDOWS_TO_PROCESS) {
+            if (process_window(&opctrl, &sample) != 0) {
+                return -1;
+            }
+            total_samples += get_valid_samples(opctrl.operating_point);
+            total_windows++;
+        }
+    #endif
     
     iDACs_enable(false, false);
 

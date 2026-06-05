@@ -18,8 +18,8 @@
 // clock cycles compensations 
 #define OFF_COMPENSATION_CC                216U  // +10 +28
 #define ON_COMPENSATION_CC                 146U  // -10   
-#define FIRST_CONF_CHANGE_COMPENSATION_CC  217U  // +30
-#define CONF_CHANGE_COMPENSATION_CC        174U  // +30
+#define FIRST_CONF_CHANGE_COMPENSATION_CC  208U  // +30 - 9
+#define CONF_CHANGE_COMPENSATION_CC        154U  // +30 -20
 
 // TODO: check if 320mV is accurate + we can discard 820 mV point
 const uint32_t _table_Vin_uV[TABLE_SIZE] ={

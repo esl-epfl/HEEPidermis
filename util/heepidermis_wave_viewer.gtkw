@@ -1,15 +1,15 @@
 [*]
 [*] GTKWave Analyzer v3.3.104 (w)1999-2020 BSI
-[*] Thu Jun  4 19:58:35 2026
+[*] Fri Jun  5 08:41:43 2026
 [*]
 [dumpfile] "/home/ismailessaidi11/ESL/HEEPidermis/build/epfl_cheep_cheep_0.3.0/sim-verilator/logs/waves.fst"
-[dumpfile_mtime] "Thu Jun  4 19:58:05 2026"
-[dumpfile_size] 14966083
+[dumpfile_mtime] "Thu Jun  4 22:52:31 2026"
+[dumpfile_size] 25414716
 [savefile] "/home/ismailessaidi11/ESL/HEEPidermis/util/heepidermis_wave_viewer.gtkw"
 [timestart] 0
-[size] 1920 1011
-[pos] -115 -232
-*-20.684652 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
+[size] 1908 999
+[pos] 2409 -114
+*-23.684652 1600000 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
 [treeopen] TOP.
 [treeopen] TOP.tb_system.
 [treeopen] TOP.tb_system.u_cheep_top.
@@ -29,10 +29,10 @@
 [treeopen] TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.memory_subsystem_i.ram1_i.tc_ram_i.gen_read_lat.
 [treeopen] TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.memory_subsystem_i.ram1_i.tc_ram_i.gen_read_lat.unnamedblk3.
 [treeopen] TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.memory_subsystem_i.ram1_i.tc_ram_i.proc_sram_init.
-[sst_width] 365
-[signals_width] 340
-[sst_expanded] 1
-[sst_vpaned_height] 685
+[sst_width] 42
+[signals_width] 299
+[sst_expanded] 0
+[sst_vpaned_height] 675
 @c00820
 [color] 3
 +{DEBUG (ASCII)} TOP.tb_system.u_cheep_top.u_core_v_mini_mcu.memory_subsystem_i.ram1_i.tc_ram_i.debug_section[31:0]

@@ -270,9 +270,16 @@ static gsr_status_t gsr_dma_init(gsr_controller_t *ctrl)
 
     if (ctrl == NULL || ctrl->dma == NULL || ctrl->dma->write_buf == NULL || ctrl->dma->samples_per_window == 0) return GSR_STATUS_INVALID_ARGUMENT;
     
-    if (ctrl->dma->samples_per_window > (ctrl->config.current_refresh_rate_Hz >> 1U)){
-        ctrl->dma->samples_per_window = (ctrl->config.current_refresh_rate_Hz >> 1U); // ensure we don't miss any changes in the input without being able to react (apply the range adjustment)
-    } 
+    // if (ctrl->dma->samples_per_window > (ctrl->config.current_refresh_rate_Hz >> 1U)){
+    //     ctrl->dma->samples_per_window = (ctrl->config.current_refresh_rate_Hz >> 1U); // ensure we don't miss any changes in the input without being able to react (apply the range adjustment)
+    // } 
+
+    /* We need at least more than 1/D samples to get 1 valid per window
+    * because during one DMA window we will get no valid samples (because DMA trigger is HW linked to REFRESH signal)   
+    */
+    // if (ctrl->dma->samples_per_window <= (k_power_profiles[0].duty_cycle_code)){ // initialize to lowest duty cycle 
+    //     ctrl->dma->samples_per_window = (k_power_profiles[0].duty_cycle_code + 1U);
+    // } 
 
     // assign the global pointer to the dma acquisition struct 
     s_dma_acq = ctrl->dma;
