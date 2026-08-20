@@ -9,7 +9,7 @@
 #include "soc_ctrl.h"
 
 #define VCO_FS_HZ 1
-#define SYS_FCLK_HZ 10000000
+#define SYS_FCLK_HZ 1000000
 #define VCO_UPDATE_CC (SYS_FCLK_HZ/VCO_FS_HZ)
 
 #define VCO_SUPPLY_FROM_LDO 1
@@ -42,45 +42,45 @@ uint32_t compute_freq_Hz( diff_p ){
     return freq_p_Hz;
 }
 
-uint32_t interpolate_Vin_uV(uint32_t f_target) {
-    // 1. Handle Out-of-Bounds
-    if (f_target <= table_fosc_Hz[0]) return table_Vin_uV[0];
-    if (f_target >= table_fosc_Hz[TABLE_SIZE - 1]) return table_Vin_uV[TABLE_SIZE - 1];
+// uint32_t interpolate_Vin_uV(uint32_t f_target) {
+//     // 1. Handle Out-of-Bounds
+//     if (f_target <= table_fosc_Hz[0]) return table_Vin_uV[0];
+//     if (f_target >= table_fosc_Hz[TABLE_SIZE - 1]) return table_Vin_uV[TABLE_SIZE - 1];
 
-    // 2. Binary Search to find the interval [low, high]
-    int low = 0;
-    int high = TABLE_SIZE - 1;
-    while (low <= high) {
-        int mid = low + (high - low) / 2;
-        if (table_fosc_Hz[mid] < f_target) {
-            low = mid + 1;
-        } else {
-            high = mid - 1;
-        }
-    }
+//     // 2. Binary Search to find the interval [low, high]
+//     int low = 0;
+//     int high = TABLE_SIZE - 1;
+//     while (low <= high) {
+//         int mid = low + (high - low) / 2;
+//         if (table_fosc_Hz[mid] < f_target) {
+//             low = mid + 1;
+//         } else {
+//             high = mid - 1;
+//         }
+//     }
 
-    // After search, table_fosc_Hz[high] < f_target < table_fosc_Hz[low]
-    uint32_t f0 = table_fosc_Hz[high];
-    uint32_t f1 = table_fosc_Hz[low];
-    uint32_t v0 = table_Vin_uV[high];
-    uint32_t v1 = table_Vin_uV[low];
+//     // After search, table_fosc_Hz[high] < f_target < table_fosc_Hz[low]
+//     uint32_t f0 = table_fosc_Hz[high];
+//     uint32_t f1 = table_fosc_Hz[low];
+//     uint32_t v0 = table_Vin_uV[high];
+//     uint32_t v1 = table_Vin_uV[low];
 
-    // 3. Linear Interpolation Formula
-    // V = v0 + (f_target - f0) * (v1 - v0) / (f1 - f0)
+//     // 3. Linear Interpolation Formula
+//     // V = v0 + (f_target - f0) * (v1 - v0) / (f1 - f0)
 
-    uint32_t delta_f_target = f_target - f0;
-    uint32_t delta_v_table = v1 - v0;
-    uint32_t delta_f_table = f1 - f0;
+//     uint32_t delta_f_target = f_target - f0;
+//     uint32_t delta_v_table = v1 - v0;
+//     uint32_t delta_f_table = f1 - f0;
 
-    // We multiply before dividing to keep precision.
-    // Result fits in uint32_t because 20,000 * ~106,000 < 2^32
-    uint32_t result_uV = v0 + ((delta_f_target * delta_v_table) / delta_f_table);
-    #if VCO_SUPPLY_FROM_LDO
-        result_uV += VCO_CAL_FROM_LDO_ADD_uV;
-    #endif
+//     // We multiply before dividing to keep precision.
+//     // Result fits in uint32_t because 20,000 * ~106,000 < 2^32
+//     uint32_t result_uV = v0 + ((delta_f_target * delta_v_table) / delta_f_table);
+//     #if VCO_SUPPLY_FROM_LDO
+//         result_uV += VCO_CAL_FROM_LDO_ADD_uV;
+//     #endif
 
-    return result_uV;
-}
+//     return result_uV;
+// }
 
 int main() {
 

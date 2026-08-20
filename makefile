@@ -114,11 +114,11 @@ TEST_FLAGS=
 # Dummy target to force software rebuild
 PARAMS = $(PROJECT)
 
-PLL_FREQ ?= 10000000
+PLL_FREQ ?= 1000000
 
 # ----- UART CONFIGURATION ----- #
 # For this computation check hw/vendor/x-heep/sw/target/sim/x-heep.h
-UART_BAUD := $(shell echo "$(PLL_FREQ) / 390.625" | bc | xargs printf "%.0f")
+UART_BAUD := $(shell echo "$(PLL_FREQ) / 20" | bc | xargs printf "%.0f")
 UART_TERMINAL ?= xterm
 UART_PORT = /dev/serial/by-id/usb-FTDI_Quad_RS232-HS-if02-port0
 PICO_FLAGS = -b $(UART_BAUD) --echo --imap lfcrlf --omap crcrlf --flow n -g uart.log
