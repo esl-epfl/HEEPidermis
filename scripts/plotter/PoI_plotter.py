@@ -6,7 +6,7 @@
 # Date: 08/04/2026
 # Description: Interactive VCO model plotter with forward/reverse optimization
 
-from ipywidgets import FloatSlider, VBox, HBox, Layout, HTML, interactive_output, ToggleButton
+from ipywidgets import FloatSlider, VBox, HBox, Layout, HTML, interactive_output, ToggleButton, Button, Output
 from IPython.display import display
 import matplotlib.pyplot as plt
 from pannels import *
@@ -244,4 +244,82 @@ def PoI_plotter(model, variance=1, avg_window=1):
         }
     )
 
-    display(HBox([controls_wrapper, ui], layout=Layout(align_items='center')))
+    # Power analysis toggle and handler
+    power_analysis_toggle = ToggleButton(
+        description='Power Analysis: OFF',
+        value=False,
+        layout=Layout(width='200px', height='40px')
+    )
+
+    def update_power_analysis_description(change):
+        power_analysis_toggle.description = 'Power Analysis: ON' if change['new'] else 'Power Analysis: OFF'
+
+    power_analysis_toggle.observe(update_power_analysis_description, names='value')
+
+    power_analysis_output = Output()
+
+    def _plot_power_analysis(G_uS, i_dc_uA, fs_Hz, D, show_power_analysis):
+        """Power analysis plotter that updates with slider changes"""
+        if not show_power_analysis:
+            return
+        
+        with power_analysis_output:
+            power_analysis_output.clear_output(wait=True)
+            
+            active_variance = variance if variance_on.value else 0
+
+            fwd_in = forward_input(G_uS=G_uS, i_dc_uA=i_dc_uA, fs_Hz=fs_Hz, D=D)
+            result = forward_compute(
+                model=model,
+                input=fwd_in,
+                variance=active_variance,
+                avg_window=avg_window
+            )
+
+            # Create power analysis figure
+            fig = plt.figure(figsize=(14, 6), constrained_layout=True)
+            gs = fig.add_gridspec(1, 2)
+
+            plot_power_breakdown_stacked(fig.add_subplot(gs[0, 0]), model, result, D=D)
+            plot_power_decomposition(fig.add_subplot(gs[0, 1]), model, result, D=D)
+
+            fig.suptitle(
+                f'Power Analysis: G={G_uS:.2f} μS, i_dc={i_dc_uA:.4f} μA, f_s={fs_Hz:.2f} Hz',
+                fontsize=14,
+                fontweight='bold'
+            )
+            plt.show()
+            plt.close(fig)
+
+    power_analysis_ui = interactive_output(
+        _plot_power_analysis,
+        {
+            'G_uS': G_slider,
+            'i_dc_uA': i_dc_slider,
+            'fs_Hz': fs_slider,
+            'D': D_slider,
+            'show_power_analysis': power_analysis_toggle
+        }
+    )
+
+    button_box = VBox(
+        [power_analysis_toggle],
+        layout=Layout(
+            width='320px',
+            padding='10px',
+            border='1px solid #ddd'
+        )
+    )
+
+    controls_with_button = VBox(
+        [forward_controls, reverse_controls, button_box],
+        layout=Layout(
+            width='340px',
+            min_width='340px',
+            height='1050px',
+            justify_content='flex-start'
+        )
+    )
+
+    main_display = VBox([HBox([controls_with_button, ui], layout=Layout(align_items='flex-start')), power_analysis_output])
+    display(main_display)

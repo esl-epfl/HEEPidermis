@@ -3,7 +3,7 @@
 #define GSR_MAX_CURRENT_NA           ((uint32_t)GSR_IDAC_MAX_CODE * GSR_IDAC_LSB_NA)
 #define GSR_VCO_SUPPLY_VOLTAGE_UV    800000U
 #define GSR_VIN_MIN_UV               330000U
-#define GUARD_IDC_NA                 50U // guard i_dc to prevent going out of range in the next conductance measurement; 500nA corresponds to 1 uS of change in conductance
+#define GUARD_IDC_NA                 50U // guard i_dc to prevent going out of range in the next conductance measurement; 50nA corresponds to 0.1 uS of change in conductance
 #define VCO_VARIANCE                 3U // variance in the VCO frequency-to-voltage conversion, used for sensitivity estimation
 #define F_NYQ_HZ                     2U // Nyquist frequency for the GSR measurement
 #define RESOLUTION_DB_SCALE      100U   // Return value in dB * 100
@@ -14,31 +14,17 @@
 
 // Update the baseline estimate using a simple exponential-style moving average.
 static uint32_t calculate_baseline(uint32_t prev_baseline, uint32_t sample) {
-
+    
     return (uint32_t)(((uint64_t)7U * prev_baseline + sample) / 8U);
 }
 
 // Reconfigure the iDAC current used for conductance measurement, with range checking based on the current limits.
-static gsr_status_t controller_set_current(gsr_controller_t *ctrl, uint8_t idac_code) {
-    uint32_t current_nA;
-
-    if (ctrl == NULL) return GSR_STATUS_INVALID_ARGUMENT;
-    current_nA = gsr_current_from_idac_code_nA(idac_code);
-    // if (ctrl->max_current_nA < GUARD_IDC_NA) { // TODO: handle that differently in the future
-    //     return GSR_STATUS_OUT_OF_RANGE; // current limits are too low to safely update, this is a protective check to prevent underflow in the next check
-    // }
-    // // check validity of current range.
-    // if (current_nA > ctrl->max_current_nA - GUARD_IDC_NA) { 
-    //     return GSR_STATUS_OUT_OF_RANGE;
-    // }
-
-    // current configuration
+void gsr_controller_set_current(gsr_controller_t *ctrl, uint8_t idac_code) {
+    // current configuration 
     ctrl->config.idac_code = idac_code;
-
+    
     // Delegate actual hardware/current model update to the clean SDK
     gsr_update_current(idac_code);
-
-    return GSR_STATUS_OK;
 }
 
 static gsr_status_t controller_set_vco(gsr_controller_t *ctrl, gsr_ctrl_mode_t mode, uint8_t duty_cycle_code) {
@@ -59,7 +45,11 @@ static gsr_status_t controller_set_vco(gsr_controller_t *ctrl, gsr_ctrl_mode_t m
             return GSR_STATUS_INVALID_ARGUMENT;
     }
     ctrl->config.current_refresh_rate_Hz = new_rate_Hz; // keep track of the current refresh rate in the controller state for reference
-    ret = gsr_status_from_vco(vco_config(ctrl->config.channel, new_rate_Hz, duty_cycle_code));
+    if(!ctrl->dlc_used) {
+        ret = gsr_status_from_vco(vco_config(ctrl->config.channel, new_rate_Hz, duty_cycle_code));
+    } else {
+        ret = gsr_status_from_vco(vco_dlc_config(ctrl->config.channel, new_rate_Hz));
+    }
     return ret;
 }
 
@@ -67,14 +57,14 @@ static uint32_t max_current_for_conductance_nS(uint32_t conductance_nS) {
     const uint32_t delta_v_min_uV = GSR_VCO_SUPPLY_VOLTAGE_UV - GSR_VIN_MIN_UV;
     uint32_t max_current_nA = (uint32_t)(((uint64_t)conductance_nS * delta_v_min_uV) / 1000000ULL);
 
-    return min(max_current_nA, GSR_MAX_CURRENT_NA);
+    return min(max_current_nA, GSR_MAX_CURRENT_NA); 
 }
 
 // TODO: Compute the frequency error of the VCO (based on allen deviation measurements)
 static uint32_t compute_frequency_error_Hz(uint32_t vin_uV, uint32_t integration_rate_Hz, uint8_t variance)
 {
 
-    // We use a fixed value for the frequency error based on the Allen deviation measurements of the VCO.
+    // We use a fixed value for the frequency error based on the Allen deviation measurements of the VCO. 
     #ifdef ADEV_VAR
         return 250; // approximated by 100Hz (see report and hw/vendor/analog-library/VCO/VCO_characteristics/figs/frequency_uncertainty_vs_vin.svg plot for justification)
     #else
@@ -94,11 +84,11 @@ static uint32_t compute_conductance_sensitivity_nS(uint32_t conductance_nS, uint
     // frequency_error_Hz < 10'000 Hz (based on measurements in scripts/plotter)
     // conductance_nS < 500'000 nS (very conservative upper bound for skin conductance)
     // worst case denom = 7 * 10^10  = 2^37 < 2^63, so the 64-bit intermediate is safe from overflow
-    // worst case numer = 10'000 * 500'000 * 500'000 = 2.5 * 10^15 = 2^51 < 2^63, so the 64-bit intermediate is safe from overflow
+    // worst case numer = 10'000 * 500'000 * 500'000 = 2.5 * 10^15 = 2^51 < 2^63, so the 64-bit intermediate is safe from overflow 
     uint64_t denom = kvco_Hz_per_V * current_nA + frequency_error_Hz * conductance_nS;
 
     if (denom == 0ULL) return 0; // avoid division by zero, sensitivity is effectively zero if the VCO frequency doesn't change with voltage or if there is no current
-
+    
     uint64_t numer = frequency_error_Hz * conductance_nS * conductance_nS;
 
     uint32_t delta_G_nS = (uint32_t)(numer / denom);
@@ -151,8 +141,8 @@ static uint32_t compute_conductance_resolution_dB(const gsr_controller_t *ctrl, 
 
     if (resolution_dB_q1 <= 0) return 0U;
 
-    /* Convert from Q1 dB to integer dB by dividing by 2 (Q1 means value / 2)
-     * and multiplying by 100 to return resolution in dB * 100 for better precision.
+    /* Convert from Q1 dB to integer dB by dividing by 2 (Q1 means value / 2)  
+     * and multiplying by 100 to return resolution in dB * 100 for better precision. 
      */
     return ((uint32_t)resolution_dB_q1 * RESOLUTION_DB_SCALE) >> 1;
 }
@@ -202,21 +192,23 @@ gsr_status_t gsr_set_default_settings(gsr_controller_t *ctrl) {
     ctrl->config.baseline_refresh_rate_Hz = 2;
     ctrl->config.phasic_refresh_rate_Hz = 10;
     ctrl->config.recovery_refresh_rate_Hz = 5;
-    ctrl->config.idac_code = 20; // 0.8 uA
+    ctrl->config.idac_code = 20; // 0.8 uA 
     ctrl->config.current_refresh_rate_Hz = ctrl->config.baseline_refresh_rate_Hz; // initialize the current refresh rate to the baseline rate
     ctrl->amplitude_threshold_nS = 80;
     ctrl->slope_threshold_nS = 40;
     ctrl->settle_threshold_nS = 25;
     ctrl->recovery_count_required = 8;
 
+    ctrl->dlc_used = false;
+
     return GSR_STATUS_OK;
 }
 
-// Update the controller configuration and apply it to the hardware.
+// Update the controller configuration and apply it to the hardware. 
 gsr_status_t gsr_controller_set_config(gsr_controller_t *ctrl) {
-
+    
     if (ctrl == NULL) return GSR_STATUS_INVALID_ARGUMENT;
-
+    
     gsr_status_t ret;
     gsr_config_t *config = &ctrl->config;
     if (config->baseline_refresh_rate_Hz == 0U || config->phasic_refresh_rate_Hz == 0U || config->recovery_refresh_rate_Hz == 0U || config->idac_code == 0U) {
@@ -224,9 +216,8 @@ gsr_status_t gsr_controller_set_config(gsr_controller_t *ctrl) {
     }
 
     // setup the config of the iDAC Hardware registers
-    ret = controller_set_current(ctrl, config->idac_code);
-    if (ret != GSR_STATUS_OK) return ret;
-
+    gsr_controller_set_current(ctrl, config->idac_code);
+    
     // setup the config of the VCO Hardware registers
     ret = controller_set_vco(ctrl, ctrl->mode, config->duty_cycle_code);
     if (ret != GSR_STATUS_OK) return ret;
@@ -237,12 +228,13 @@ gsr_status_t gsr_controller_set_config(gsr_controller_t *ctrl) {
 
 // Initialize controller state variables and start the GSR front-end.
 gsr_status_t gsr_controller_init(gsr_controller_t *ctrl) {
-
+    
+    gsr_status_t ret;
     if (ctrl == 0) {
         return GSR_STATUS_INVALID_ARGUMENT;
     }
 
-    ctrl->mode = GSR_CTRL_MODE_INIT;
+    ctrl->mode = GSR_CTRL_MODE_BASELINE;
     gsr_sample_t init_sample = {
         .G_nS = 0U,
         .prev_G_nS = 0U,
@@ -261,7 +253,12 @@ gsr_status_t gsr_controller_init(gsr_controller_t *ctrl) {
     ctrl->initialized = false;
 
     // initialize with the baseline refresh rate
-    return gsr_init(ctrl->config.channel, ctrl->config.baseline_refresh_rate_Hz, ctrl->config.idac_code);
+    if (ctrl->dlc_used) {
+        ret = gsr_init_dlc(ctrl->config.channel, ctrl->config.baseline_refresh_rate_Hz, ctrl->config.idac_code, &ctrl->dlc_cfg);
+    } else {
+        ret = gsr_init(ctrl->config.channel, ctrl->config.baseline_refresh_rate_Hz, ctrl->config.idac_code);
+    }
+    return ret;
 
 }
 
@@ -277,8 +274,8 @@ static gsr_status_t gsr_read_sample_now(gsr_controller_t *ctrl) {
     } else {
         ret = gsr_get_conductance_nS(&new_conductance_nS, &new_vin_uV);
     }
-    if (ret != GSR_STATUS_OK) { // OUT_OF_RANGE or NOT_INITIALIZED or MISSED_UPDATE or NO_NEW_SAMPLE
-        // Need to implememt correct strategy in gcase OUT_OF_RANGE or NO_NEW_SAMPLE or MISSED_UPDATE
+    if (ret != GSR_STATUS_OK) { // UNDERFLOW or OVERFLOW or NOT_INITIALIZED or MISSED_UPDATE or NO_NEW_SAMPLE
+        // Need to implememt correct strategy in gcase UNDERFLOW or OVERFLOW or NO_NEW_SAMPLE or MISSED_UPDATE
         ctrl->sample.valid = false;
         return ret;
     }
@@ -291,7 +288,7 @@ static gsr_status_t gsr_read_sample_now(gsr_controller_t *ctrl) {
     ctrl->max_current_nA = max_current_for_conductance_nS(new_conductance_nS);
 
     ctrl->sample.valid = true;
-
+    
     if (!ctrl->initialized) {
         ctrl->sample.baseline_nS = ctrl->sample.G_nS;
         ctrl->sample.prev_G_nS = ctrl->sample.G_nS;
@@ -304,7 +301,7 @@ static gsr_status_t gsr_read_sample_now(gsr_controller_t *ctrl) {
     }
     // Slope is expressed in nS/s by multiplying the sample difference by fs.
     ctrl->sample.slope_nS = ((int32_t)ctrl->sample.G_nS - (int32_t)ctrl->sample.prev_G_nS) * (int32_t)ctrl->config.current_refresh_rate_Hz;
-
+    
     // Only baseline mode is allowed to slowly adapt the tonic reference.
     if (ctrl->mode == GSR_CTRL_MODE_BASELINE) {
         ctrl->sample.baseline_nS = calculate_baseline(ctrl->sample.baseline_nS, ctrl->sample.G_nS);
@@ -319,7 +316,7 @@ gsr_status_t gsr_read_sample(gsr_controller_t *ctrl)
 {
     if (ctrl == NULL) return GSR_STATUS_INVALID_ARGUMENT;
 
-    if (ctrl->config.duty_cycle_code == 1U) { // no duty cycling 
+    if (ctrl->config.duty_cycle_code == 1U || ctrl->dlc_used) { // no duty cycling or event based reading 
         return gsr_read_sample_now(ctrl);
     }
 
@@ -340,7 +337,7 @@ const gsr_sample_t *gsr_get_last_sample(const gsr_controller_t *ctrl) {
 
 gsr_metrics_t get_metrics(gsr_controller_t *ctrl) {
     gsr_metrics_t metrics;
-    metrics.conductance_sensitivity_nS = compute_conductance_sensitivity_nS(ctrl->sample.G_nS , ctrl->sample.vin_uV,
+    metrics.conductance_sensitivity_nS = compute_conductance_sensitivity_nS(ctrl->sample.G_nS , ctrl->sample.vin_uV, 
                                                                             ctrl->sample.current_nA, ctrl->config.current_refresh_rate_Hz);
     metrics.resolution_dB = compute_conductance_resolution_dB(ctrl, metrics.conductance_sensitivity_nS);
     return metrics;
@@ -388,7 +385,7 @@ gsr_status_t gsr_controller_step(gsr_controller_t *ctrl) {
                 ctrl->recovery_counter = 0;
             }
             break;
-
+        
         // Phasic mode increases sampling rate to better capture fast events.
         case GSR_CTRL_MODE_PHASIC:
             if (signal_settled(ctrl)) {

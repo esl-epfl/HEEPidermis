@@ -25,8 +25,9 @@
 #include "iDAC_ctrl.h"
 #include "GSR_sdk.h"
 #include "DLC_sdk.h"
+#include "GSR_controller.h"
 
-
+#define TARGET_SIM 1
 #define PRINTF_IN_SIM  0
 #define PRINTF_IN_FPGA 0
 
@@ -41,13 +42,11 @@
 
 
 #define SYS_FCLK_HZ        10000000
-#define VCO_FS_HZ          500          // VCO sampling rate
-#define IDAC_DEFAULT_CODE  7            // iDAC code → I = 40×7 = 280 nA
 #define IREF_DEFAULT_CAL   255
 #define IDAC_DEFAULT_CAL   15
-
+#define VREF_DEFAULT_CAL   0b1111111111U
 // dLC configuration
-#define DLC_LOG_LVL_W      1            // level width = 128 counts
+#define DLC_LOG_LVL_W      5            // level width = 128 counts
 #define DLC_INPUT_SAMPLES  100          // samples per transaction → 200 ms
 #define DLC_BUF_SIZE       DLC_INPUT_SAMPLES
 
@@ -72,10 +71,6 @@ void dma_intr_handler_window_done(uint8_t channel) {
     if (channel == 0) g_window_flag++;
 }
 
-static void debug_mark(uint8_t tag, uint32_t value) {
-    debug = ((uint32_t)tag << 24) | (value & 0x00FFFFFFU);
-}
-
 // Suppress the DMA window-ratio warning
 uint8_t dma_window_ratio_warning_threshold(void) { return 0; }
 
@@ -85,34 +80,75 @@ void __attribute__((aligned(4), interrupt)) handler_irq_timer(void) {
     // timer_start();
 }
 
+static void debug_mark(uint8_t tag, uint32_t value) {
+    debug = ((uint32_t)tag << 24) | (value & 0x00FFFFFFU);
+}
+
 // Hardware init
 static void hw_init(void) {
     soc_ctrl_t soc_ctrl;
     soc_ctrl.base_addr = mmio_region_from_addr((uintptr_t)SOC_CTRL_START_ADDRESS);
     soc_ctrl_set_frequency(&soc_ctrl, SYS_FCLK_HZ);
 
-    timer_cycles_init();
-
     REFs_calibrate(IREF_DEFAULT_CAL, IREF1);
-    REFs_calibrate(0b1111111111, VREF);
+    REFs_calibrate(VREF_DEFAULT_CAL, VREF);
 
     iDACs_enable(true, false);
     iDAC1_calibrate(IDAC_DEFAULT_CAL);
 
     enable_timer_interrupt();
     timer_irq_enable();
+    timer_cycles_init();
     timer_start();
 }
 
+static int init_controller(gsr_controller_t *ctrl, gsr_dlc_config_t *gsr_dlc_cfg) {
+    gsr_status_t st;
+
+    st = gsr_set_default_settings(ctrl);
+    if (st != GSR_STATUS_OK) {
+        debug_mark(0xE1U, (uint32_t)st);
+        return -1;
+    }
+    
+    // we use dlc
+    ctrl->dlc_used = true;
+    ctrl->dlc_cfg = *gsr_dlc_cfg;
+
+    st = gsr_controller_init(ctrl);
+    if (st != GSR_STATUS_OK) {
+        debug_mark(0xE2U, (uint32_t)st);
+        return -1;
+    }
+
+    // ctrl->mode = GSR_CTRL_MODE_BASELINE;
+    // st = gsr_controller_set_config(ctrl);
+    // if (st != GSR_STATUS_OK) {
+    //     debug_mark(0xE3U, (uint32_t)st);
+    //     return -1;
+    // }
+
+    return 0;
+}
+
 // Process one transaction window.
-static int process_window(void) {
+static int process_window(gsr_controller_t *ctrl) {
     int valid = 0;
+    const gsr_sample_t *sample;
+    gsr_status_t st;
 
     for (int i = 0; i < DLC_BUF_SIZE; i++) {
         uint32_t conductance_nS = 0;
+        // st = gsr_read_sample(ctrl);  // attempt tap/read after event
         gsr_status_t st = gsr_get_conductance_nS(&conductance_nS, 0);
 
         if (st == GSR_STATUS_OK) {
+            // sample = gsr_get_last_sample(ctrl);
+            // if (sample == NULL || !sample->valid) {
+            //     debug_mark((uint8_t)(0xE1), 0U);
+            //     return -1;
+            // }
+            // debug_mark(0, sample->G_nS);
             debug_mark(0, conductance_nS);
             valid++;
         }
@@ -124,6 +160,9 @@ static int process_window(void) {
 
 int main(void) {
 
+    gsr_controller_t ctrl;
+
+    debug = 'Init';
     hw_init();
 
     // Clear event buffer
@@ -142,11 +181,9 @@ int main(void) {
         .input_samples = DLC_INPUT_SAMPLES,
     };
 
-    gsr_status_t st = gsr_init_dlc(VCO_CHANNEL_P, VCO_FS_HZ, IDAC_DEFAULT_CODE, &gsr_dlc_cfg);
 
-    if (st != GSR_STATUS_OK) {
-        debug_mark(0xF0U, (uint32_t)st);
-        return EXIT_FAILURE;
+    if (init_controller(&ctrl, &gsr_dlc_cfg) != 0) {
+        return -1;
     }
 
     // Enable interrupts and run the processing loop.
@@ -163,7 +200,7 @@ int main(void) {
 
         if (g_trans_flag > 0) {
             g_trans_flag--;
-            total_samples += process_window();
+            total_samples += process_window(&ctrl);
             total_windows++;
             memset(dlc_buf, 0, sizeof(dlc_buf));
         }

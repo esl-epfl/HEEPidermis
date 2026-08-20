@@ -249,3 +249,85 @@ def plot_summary(ax, result, model, variance=1, avg_window=1,reverse_result=None
         bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.25)
     )
     ax.set_title("Summary", fontweight='bold')
+
+
+def plot_power_decomposition(ax, model, result, D=1.0):
+
+    G_uS = result.input.G_uS
+    max_i_dc = model.i_dc_max(result.input.G_uS)
+
+    i_vals = np.asarray(model.params.i_dc_range, dtype=float)
+    i_vals = i_vals[(i_vals > 0.0) & (i_vals <= max_i_dc)]
+
+    p_tot_vals = []
+    valid_i_vals = []
+    for i_dc in i_vals:
+        vin_mV = model.vin_from_G(G_uS, i_dc)
+
+        p_idc = model.idc_power_uW(vin_mV, i_dc, D)
+        p_vco = model.pvco_from_vin(vin_mV, D)
+        p_cnt = model.pcnt_from_vin(vin_mV, D)
+        p_tot_vals.append(p_idc + p_vco + p_cnt)
+        valid_i_vals.append(i_dc)
+
+    if valid_i_vals:
+        ax.plot(valid_i_vals, p_tot_vals, marker='o', markersize=3, linewidth=1.5, alpha=0.75, zorder=3)
+        
+        # Find minimum P_tot and add shaded regions
+        min_idx = np.argmin(p_tot_vals)
+        min_i_dc = valid_i_vals[min_idx]
+        
+        # Add shaded regions separated by minimum
+        ax.axvspan(min(valid_i_vals), min_i_dc, alpha=0.12, color='blue', label='P_vco + P_cnt dominated', zorder=1)
+        ax.axvspan(min_i_dc, max(valid_i_vals), alpha=0.12, color='orange', label='P_idc dominated', zorder=1)
+        ax.axvline(min_i_dc, color='gray', linestyle=':', linewidth=1.5, alpha=0.5, zorder=2)
+
+    ax.set_xlabel(r'$i_{dc}$ (μA)')
+    ax.set_ylabel(r'$P_{tot}$ (μW)')
+    ax.set_title(r'region breakdown: $P_{vco+cnt}$ vs $P_{idc}$ dominance')
+    ax.grid(True, alpha=0.3, zorder=0)
+    ax.legend(title='region description', ncol=2)
+
+def plot_power_breakdown_stacked(ax, model, result, D=1.0):
+    """Stacked area plot showing P_idc, P_vco, P_cnt contributions vs i_dc"""
+    
+    G_uS = result.input.G_uS
+    max_i_dc = model.i_dc_max(result.input.G_uS)
+
+    i_vals = np.asarray(model.params.i_dc_range, dtype=float)
+    i_vals = i_vals[(i_vals > 0.0) & (i_vals <= max_i_dc)]
+
+    p_idc_vals = []
+    p_vco_vals = []
+    p_cnt_vals = []
+    valid_i_vals = []
+    
+    for i_dc in i_vals:
+        vin_mV = model.vin_from_G(G_uS, i_dc)
+        p_idc = model.idc_power_uW(vin_mV, i_dc, D)
+        p_vco = model.pvco_from_vin(vin_mV, D)
+        p_cnt = model.pcnt_from_vin(vin_mV, D)
+        p_idc_vals.append(p_idc)
+        p_vco_vals.append(p_vco)
+        p_cnt_vals.append(p_cnt)
+        valid_i_vals.append(i_dc)
+
+    if valid_i_vals:
+        ax.stackplot(valid_i_vals, p_idc_vals, p_vco_vals, p_cnt_vals,
+                     labels=[r'$P_{idc}$', r'$P_{vco}$', r'$P_{cnt}$'],
+                     colors=['#1f77b4', '#2ca02c', '#ff7f0e'], alpha=0.7)
+        
+        # Mark current operating point
+        vin_current = model.vin_from_G(G_uS, result.input.i_dc_uA)
+        p_idc_current = model.idc_power_uW(vin_current, result.input.i_dc_uA, D)
+        p_vco_current = model.pvco_from_vin(vin_current, D)
+        p_cnt_current = model.pcnt_from_vin(vin_current, D)
+        p_tot_current = p_idc_current + p_vco_current + p_cnt_current
+        
+        ax.plot(result.input.i_dc_uA, p_tot_current, 'r*', markersize=15, zorder=5, label='Operating point')
+
+    ax.set_xlabel(r'$i_{dc}$ (μA)')
+    ax.set_ylabel(r'Power (μW)')
+    ax.set_title(r'Power contributions vs $i_{dc}$ (stacked)')
+    ax.grid(True, alpha=0.3, axis='y')
+    ax.legend(loc='upper left', fontsize=9)
