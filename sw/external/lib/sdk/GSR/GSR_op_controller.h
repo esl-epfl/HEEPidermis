@@ -60,7 +60,7 @@ gsr_opctrl_status_t gsr_opctrl_request(gsr_op_controller_t *ctrl,
                                        gsr_controller_t *operating_point);
 
 /* Read one sample through the GSR controller. */
-gsr_opctrl_status_t gsr_opctrl_read_sample(gsr_op_controller_t *ctrl, gsr_sample_t *sample);
+gsr_opctrl_status_t gsr_opctrl_read(gsr_op_controller_t *ctrl, gsr_sample_t *sample);
                                            
 /* Clear op-controller state. Hardware shutdown remains owned by lower layers. */
 void gsr_opctrl_shutdown(gsr_op_controller_t *ctrl);

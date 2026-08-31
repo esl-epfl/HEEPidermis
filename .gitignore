@@ -57,4 +57,5 @@ hw/vendor/x-heep/tb/ext_bus.sv
 # Decimated outputs of the DSM
 sw/applications/test_dsm_exploration/out*
 scripts/plotter/explore.ipynb
-scripts/plotter/evaluation/*
+scripts/plotter/evaluation/*.png
+scripts/plotter/evaluation/*.gtkw

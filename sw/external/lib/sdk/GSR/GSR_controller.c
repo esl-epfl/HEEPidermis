@@ -4,13 +4,32 @@
 #define GSR_VCO_SUPPLY_VOLTAGE_UV    800000U
 #define GSR_VIN_MIN_UV               330000U
 #define GUARD_IDC_NA                 50U // guard i_dc to prevent going out of range in the next conductance measurement; 50nA corresponds to 0.1 uS of change in conductance
-#define VCO_VARIANCE                 3U // variance in the VCO frequency-to-voltage conversion, used for sensitivity estimation
 #define F_NYQ_HZ                     2U // Nyquist frequency for the GSR measurement
-#define RESOLUTION_DB_SCALE      100U   // Return value in dB * 100
-#define ADEV_VAR
+#define RESOLUTION_DB_SCALE          100U   // Return value in dB * 100
+#define ADEV_UPPER                   200U   // upper bound on the Allan deviation of the VCO frequency in Hz, based on measurements in scripts/plotter
 #define min(a, b) (((a) < (b)) ? (a) : (b))
+#define max(a, b) (((a) > (b)) ? (a) : (b))
 
 #include "GSR_controller.h"
+
+#define INTR_DMA_TRANS_DONE (( 1 << 19 ))
+
+
+static dma_target_t s_gsr_dma_src;
+static dma_target_t s_gsr_dma_dst;
+static dma_trans_t  s_gsr_dma_trans;
+static gsr_dma_acq_t *s_dma_acq = NULL;
+
+void gsr_dma_intr_handler_trans_done(uint8_t channel)
+{
+    if (channel == 0U && s_dma_acq != NULL && s_dma_acq->running) {
+        if (s_dma_acq->window_ready) {
+            s_dma_acq->overrun = true;
+        }
+
+        s_dma_acq->window_ready = true;
+    }
+}
 
 // Update the baseline estimate using a simple exponential-style moving average.
 static uint32_t calculate_baseline(uint32_t prev_baseline, uint32_t sample) {
@@ -60,22 +79,19 @@ static uint32_t max_current_for_conductance_nS(uint32_t conductance_nS) {
     return min(max_current_nA, GSR_MAX_CURRENT_NA); 
 }
 
-// TODO: Compute the frequency error of the VCO (based on allen deviation measurements)
-static uint32_t compute_frequency_error_Hz(uint32_t vin_uV, uint32_t integration_rate_Hz, uint8_t variance)
+static uint32_t compute_frequency_error_Hz(uint32_t integration_rate_Hz)
 {
+    /* We use a fixed value for the frequency error based on the Allen deviation measurements of the VCO. 
+    The Allan Dev is upper bounded by 200Hz until quantization error takes over.
+    */
+    return max(ADEV_UPPER, integration_rate_Hz); // approximated by 200Hz (see report and hw/vendor/analog-library/VCO/VCO_characteristics/figs/frequency_uncertainty_vs_vin.svg plot for justification)
 
-    // We use a fixed value for the frequency error based on the Allen deviation measurements of the VCO. 
-    #ifdef ADEV_VAR
-        return 250; // approximated by 100Hz (see report and hw/vendor/analog-library/VCO/VCO_characteristics/figs/frequency_uncertainty_vs_vin.svg plot for justification)
-    #else
-        return integration_rate_Hz;
-    #endif
 }
 
 // Compute the conductance sensitivity (delta G) of the VCO around a given Vin, based on the i_dc and refresh rate.
-static uint32_t compute_conductance_sensitivity_nS(uint32_t conductance_nS, uint32_t vin_uV, uint32_t current_nA, uint32_t integration_rate_Hz)
+static uint32_t compute_conductance_sensitivity_pS(uint32_t conductance_nS, uint32_t vin_uV, uint32_t current_nA, uint32_t integration_rate_Hz)
 {
-    uint32_t frequency_error_Hz = compute_frequency_error_Hz(vin_uV, integration_rate_Hz, VCO_VARIANCE);
+    uint32_t frequency_error_Hz = compute_frequency_error_Hz(integration_rate_Hz);
     uint32_t kvco_Hz_per_V = vco_get_kvco_Hz_per_V(vin_uV);
 
     // Note: 32-bit arithmetic is safe from overflow because
@@ -91,9 +107,16 @@ static uint32_t compute_conductance_sensitivity_nS(uint32_t conductance_nS, uint
     
     uint64_t numer = frequency_error_Hz * conductance_nS * conductance_nS;
 
-    uint32_t delta_G_nS = (uint32_t)(numer / denom);
+    uint32_t delta_G_pS = (uint32_t)((numer * 1000UL)/ denom) ; // convert from nS to pS
 
-    return delta_G_nS;
+    return delta_G_pS;
+}
+
+static uint32_t compute_Vin_uncertainty_uV(uint32_t integration_rate_Hz, uint32_t vin_uV) {
+    uint32_t frequency_error_Hz = compute_frequency_error_Hz(integration_rate_Hz);
+    uint32_t kvco_Hz_per_V = vco_get_kvco_Hz_per_V(vin_uV);
+    if (kvco_Hz_per_V == 0U) return 0U; // avoid division by zero, Vin uncertainty is effectively zero if the VCO frequency doesn't change with voltage
+    return (frequency_error_Hz * 1000000ULL) / kvco_Hz_per_V;
 }
 
 /*
@@ -117,27 +140,33 @@ static uint32_t approx_log2_q1_u32(uint32_t x)
     return log2_q1;
 }
 
-static uint32_t compute_conductance_resolution_dB(const gsr_controller_t *ctrl, uint32_t sensitivity_nS)
+static uint32_t compute_resolution_dB(const gsr_controller_t *ctrl)
 {
+    /*
+    *   resolution[dB] = 10 * (log10(OSR) + 2log10(Vin_RMS) - 2log10(DeltaVin_baseline))
+    */
+    uint32_t integration_rate_Hz = ctrl->config.current_refresh_rate_Hz * ctrl->config.duty_cycle_code;
     uint32_t OSR = ctrl->config.current_refresh_rate_Hz >> 1U; // because F_NYQ_HZ = 2Hz
-    uint32_t amplitude_nS = ctrl->sample.amplitude_nS;
+    uint32_t vin_rms_uV = ctrl->sample.vin_rms_uV;
 
-    if (sensitivity_nS == 0U || amplitude_nS == 0U || OSR == 0U) return 0;
+    uint32_t dVin_baseline_uV = compute_Vin_uncertainty_uV(integration_rate_Hz, ctrl->sample.vin_baseline_uV);
 
-    uint32_t log2_A_q1 = approx_log2_q1_u32(amplitude_nS);
+    if (dVin_baseline_uV == 0U || vin_rms_uV == 0U || OSR == 0U) return 0;
+
+    uint32_t log2_Vin_RMS_q1 = approx_log2_q1_u32(vin_rms_uV);
     uint32_t log2_OSR_q1 = approx_log2_q1_u32(OSR);
-    uint32_t log2_dG_q1 = approx_log2_q1_u32(sensitivity_nS);
+    uint32_t log2_dVin_baseline_q1 = approx_log2_q1_u32(dVin_baseline_uV);
 
     /*
-     * resolution[dB] = 10 * (log10(OSR) + 2log10(A) - 2log10(DeltaG))
-     *                ≈ 3 * (log2(OSR) + 2log2(A) - 2log2(DeltaG))
+     * resolution[dB] = 10 * (log10(OSR) + 2log10(Vin_RMS) - 2log10(DeltaVin_baseline))
+     *                ≈ 3 * (log2(OSR) + 2log2(Vin_RMS) - 2log2(DeltaVin_baseline))
      *
      * All log2 values are Q1, so result is also Q1 dB. (Q1 means value / 2.)
      */
     int32_t resolution_dB_q1 =
-    3 * (((int32_t)log2_A_q1 << 1)
+    3 * (((int32_t)log2_Vin_RMS_q1) // don't square Vin_RMS because it is already squared by not taking any square root
         + (int32_t)log2_OSR_q1
-        - ((int32_t)log2_dG_q1 << 1));
+        - ((int32_t)log2_dVin_baseline_q1 << 1));
 
     if (resolution_dB_q1 <= 0) return 0U;
 
@@ -150,11 +179,20 @@ static uint32_t compute_conductance_resolution_dB(const gsr_controller_t *ctrl, 
 /*
 Compute the amplitude of the current sample relative to the baseline in nS.
 */
-static uint32_t compute_amplitude_nS(const gsr_controller_t *ctrl) {
+static uint32_t compute_amplitude_nS(const gsr_controller_t *ctrl, uint32_t sample_nS) {
     if (ctrl->sample.baseline_nS == 0U) return 0U; // this can happen at the very beginning when no baseline has been established yet.
-    return (ctrl->sample.G_nS >= ctrl->sample.baseline_nS)
-             ? (ctrl->sample.G_nS - ctrl->sample.baseline_nS)
-             : (ctrl->sample.baseline_nS - ctrl->sample.G_nS);
+    return (sample_nS >= ctrl->sample.baseline_nS)
+             ? (sample_nS - ctrl->sample.baseline_nS)
+             : (ctrl->sample.baseline_nS - sample_nS);
+}
+/*
+Compute the amplitude of the current V_in relative to the V_in baseline in uV.
+*/
+static uint32_t compute_amplitude_uV(uint32_t baseline_uV, uint32_t sample_uV) {
+    if (baseline_uV == 0U) return 0U; // this can happen at the very beginning when no baseline has been established yet.
+    return (sample_uV >= baseline_uV)
+             ? (sample_uV - baseline_uV)
+             : (baseline_uV - sample_uV);
 }
 /*
 Detect whether the current sample indicates the onset of a phasic event using either
@@ -162,7 +200,7 @@ deviation from the baseline or slope magnitude
 */
 static bool event_detected(const gsr_controller_t *ctrl){
 
-    uint32_t amp = compute_amplitude_nS(ctrl);
+    uint32_t amp = compute_amplitude_nS(ctrl, ctrl->sample.G_nS);
     uint32_t slope_abs = (ctrl->sample.slope_nS >= 0) ? (uint32_t)ctrl->sample.slope_nS : (uint32_t)(-ctrl->sample.slope_nS);
 
     return (amp >= ctrl->amplitude_threshold_nS) || (slope_abs >= ctrl->slope_threshold_nS);
@@ -172,7 +210,7 @@ static bool event_detected(const gsr_controller_t *ctrl){
 // Check whether the signal has returned close enough to baseline
 static bool signal_settled(const gsr_controller_t *ctrl) {
 
-    uint32_t amp = compute_amplitude_nS(ctrl);
+    uint32_t amp = compute_amplitude_nS(ctrl, ctrl->sample.G_nS);
     uint32_t slope_abs = (ctrl->sample.slope_nS >= 0) ? (uint32_t)ctrl->sample.slope_nS : (uint32_t)(-ctrl->sample.slope_nS);
 
     return (amp <= ctrl->settle_threshold_nS) && (slope_abs <= ctrl->settle_threshold_nS);
@@ -200,6 +238,7 @@ gsr_status_t gsr_set_default_settings(gsr_controller_t *ctrl) {
     ctrl->recovery_count_required = 8;
 
     ctrl->dlc_used = false;
+    ctrl->dma_used = false;
 
     return GSR_STATUS_OK;
 }
@@ -225,6 +264,105 @@ gsr_status_t gsr_controller_set_config(gsr_controller_t *ctrl) {
     return ret;
 }
 
+static gsr_status_t gsr_dma_init(gsr_controller_t *ctrl)
+{
+    dma_config_flags_t res;
+
+    if (ctrl == NULL || ctrl->dma == NULL || ctrl->dma->write_buf == NULL || ctrl->dma->samples_per_window == 0) return GSR_STATUS_INVALID_ARGUMENT;
+    
+    // if (ctrl->dma->samples_per_window > (ctrl->config.current_refresh_rate_Hz >> 1U)){
+    //     ctrl->dma->samples_per_window = (ctrl->config.current_refresh_rate_Hz >> 1U); // ensure we don't miss any changes in the input without being able to react (apply the range adjustment)
+    // } 
+
+    /* We need at least more than 1/D samples to get 1 valid per window
+    * because during one DMA window we will get no valid samples (because DMA trigger is HW linked to REFRESH signal)   
+    */
+    // if (ctrl->dma->samples_per_window <= (k_power_profiles[0].duty_cycle_code)){ // initialize to lowest duty cycle 
+    //     ctrl->dma->samples_per_window = (k_power_profiles[0].duty_cycle_code + 1U);
+    // } 
+
+    // assign the global pointer to the dma acquisition struct 
+    s_dma_acq = ctrl->dma;
+    ctrl->dma->window_ready = false;
+    ctrl->dma->overrun = false;
+    ctrl->dma->completed_buf = NULL;
+    ctrl->dma->running = false;
+    ctrl->dma->discard_samples = 1U; // discard the first sample after starting DMA as it can be corrupted based on empirical observations
+
+    dma_init(NULL);
+
+    s_gsr_dma_src.ptr       = (uint8_t *)(VCO_DECODER_START_ADDRESS +
+                                        VCO_DECODER_VCO_DECODER_CNT_REG_OFFSET);
+    s_gsr_dma_src.trig      = DMA_TRIG_SLOT_EXT_RX;
+    s_gsr_dma_src.inc_d1_du = 0;
+    s_gsr_dma_src.type      = DMA_DATA_TYPE_WORD;
+
+    s_gsr_dma_dst.ptr       = (uint8_t *)ctrl->dma->write_buf;
+    s_gsr_dma_dst.trig      = DMA_TRIG_MEMORY;
+    s_gsr_dma_dst.inc_d1_du = 1;
+    s_gsr_dma_dst.type      = DMA_DATA_TYPE_WORD;
+
+    s_gsr_dma_trans.src        = &s_gsr_dma_src;
+    s_gsr_dma_trans.dst        = &s_gsr_dma_dst;
+    s_gsr_dma_trans.dim        = DMA_DIM_CONF_1D;
+    s_gsr_dma_trans.channel    = 0;
+    s_gsr_dma_trans.size_d1_du = ctrl->dma->samples_per_window;
+    s_gsr_dma_trans.win_du     = 0;
+    s_gsr_dma_trans.end        = DMA_TRANS_END_INTR;
+    s_gsr_dma_trans.mode       = DMA_TRANS_MODE_SINGLE;
+    s_gsr_dma_trans.hw_fifo_en = false;
+
+    s_gsr_dma_trans.flags = 0x0;
+
+    res = dma_validate_transaction(&s_gsr_dma_trans,
+                                   DMA_ENABLE_REALIGN,
+                                   DMA_PERFORM_CHECKS_INTEGRITY);
+    if (res != DMA_CONFIG_OK) return GSR_STATUS_INVALID_ARGUMENT;
+
+    res = dma_load_transaction(&s_gsr_dma_trans);
+    if (res != DMA_CONFIG_OK) return GSR_STATUS_INVALID_ARGUMENT;
+
+    res = dma_launch(&s_gsr_dma_trans);
+    if (res != DMA_CONFIG_OK) return GSR_STATUS_INVALID_ARGUMENT;
+
+    ctrl->dma->running = true;
+
+    CSR_SET_BITS(CSR_REG_MSTATUS, 0x8);
+    CSR_SET_BITS(CSR_REG_MIE, INTR_DMA_TRANS_DONE);
+
+    return GSR_STATUS_OK;
+}
+
+static gsr_status_t gsr_dma_start_window(gsr_controller_t *ctrl)
+{
+    dma_config_flags_t res;
+
+    if (ctrl == NULL || ctrl->dma == NULL || ctrl->dma->write_buf == NULL ||
+         ctrl->dma->buf_a == NULL || ctrl->dma->buf_b == NULL) {
+        return GSR_STATUS_INVALID_ARGUMENT;
+    }
+
+    ctrl->dma->window_ready = false;
+
+    ctrl->dma->completed_buf = ctrl->dma->write_buf;
+
+    if (ctrl->dma->completed_buf == ctrl->dma->buf_a) {
+        ctrl->dma->write_buf =  ctrl->dma->buf_b;
+    } else {
+        ctrl->dma->write_buf = ctrl->dma->buf_a;
+    }
+
+    s_gsr_dma_dst.ptr = (uint8_t *)ctrl->dma->write_buf;
+    s_gsr_dma_trans.flags = 0x0;
+
+    res = dma_load_transaction(&s_gsr_dma_trans);
+    if (res != DMA_CONFIG_OK) return GSR_STATUS_INVALID_ARGUMENT;
+
+    res = dma_launch(&s_gsr_dma_trans);
+    if (res != DMA_CONFIG_OK) return GSR_STATUS_INVALID_ARGUMENT;
+
+    return GSR_STATUS_OK;
+}
 
 // Initialize controller state variables and start the GSR front-end.
 gsr_status_t gsr_controller_init(gsr_controller_t *ctrl) {
@@ -239,6 +377,8 @@ gsr_status_t gsr_controller_init(gsr_controller_t *ctrl) {
         .G_nS = 0U,
         .prev_G_nS = 0U,
         .vin_uV = 0U,
+        .vin_baseline_uV = 0U,
+        .vin_rms_uV = 0U,
         .baseline_nS = 0U,
         .amplitude_nS = 0U,
         .slope_nS = 0,
@@ -258,8 +398,121 @@ gsr_status_t gsr_controller_init(gsr_controller_t *ctrl) {
     } else {
         ret = gsr_init(ctrl->config.channel, ctrl->config.baseline_refresh_rate_Hz, ctrl->config.idac_code);
     }
-    return ret;
+    if (ret != GSR_STATUS_OK) {
+        return ret;
+    }
 
+    if (ctrl->dma_used) {
+        ret = gsr_dma_init(ctrl);
+        if (ret != GSR_STATUS_OK) {
+            return ret;
+        }
+    }
+
+    return ret;
+}
+
+static gsr_status_t gsr_read_sample_dma(gsr_controller_t *ctrl)
+{
+    gsr_status_t ret;
+    int valid = 0;
+    uint32_t conductance_nS = 0;
+    uint32_t vin_uV = 0U;
+    uint32_t samples_since_last_valid = 0U;
+
+    if (ctrl == NULL || ctrl->dma == NULL) {
+        return GSR_STATUS_INVALID_ARGUMENT;
+    }
+
+    while (!ctrl->dma->window_ready) {
+        wait_for_interrupt();
+    }
+
+    if (ctrl->dma->overrun) {
+        ctrl->dma->overrun = false;
+        return GSR_STATUS_MISSED_UPDATE;
+    }
+
+    ret = gsr_dma_start_window(ctrl);
+    if (ret != GSR_STATUS_OK) return ret; 
+
+    /* 
+    * DESIGN NOTE: When using the DMA, ctrl->sample will hold the latest valid sample of the window
+    */
+    gsr_status_t last_sample_status = GSR_STATUS_NO_NEW_SAMPLE;
+    for (uint32_t i = 0; i < ctrl->dma->samples_per_window; i++) {
+        samples_since_last_valid++;
+        conductance_nS = 0;
+        vin_uV = 0U;
+        // if (ctrl->dma->discard_samples > 0U) {
+        //     ctrl->dma->discard_samples--;
+        //     continue;
+        // }
+        uint32_t count = (uint32_t)ctrl->dma->completed_buf[i];
+
+        last_sample_status = gsr_count_to_conductance_nS(count, &conductance_nS, &vin_uV);
+        if (last_sample_status != GSR_STATUS_OK) continue; // skip invalid sample
+
+        valid++;
+        uint32_t dt_samples = samples_since_last_valid;
+        samples_since_last_valid = 0;
+
+        ctrl->sample.prev_G_nS = ctrl->sample.G_nS;
+        ctrl->sample.G_nS = conductance_nS;
+        ctrl->sample.vin_uV = vin_uV;
+        ctrl->sample.current_nA = gsr_current_from_idac_code_nA(ctrl->config.idac_code);
+
+        if (!ctrl->initialized) { // populate the baseline with the first valid sample
+            ctrl->sample.baseline_nS = conductance_nS;
+            ctrl->sample.prev_G_nS = ctrl->sample.G_nS;
+            ctrl->sample.slope_nS = 0;
+            ctrl->sample.amplitude_nS = 0;
+            ctrl->sample.vin_rms_uV = 0;
+            ctrl->sample.vin_baseline_uV = vin_uV;
+            ctrl->max_current_nA = max_current_for_conductance_nS(ctrl->sample.baseline_nS);
+            
+            ctrl->initialized = true;
+            continue;
+        }
+        /* Slope is expressed in nS/s by multiplying the sample difference by fs.
+        * Slope is computed between the current valid sample and the last valid sample
+        */
+
+        if (dt_samples > 0) ctrl->sample.slope_nS = (((int32_t)conductance_nS - (int32_t)ctrl->sample.prev_G_nS) * (int32_t)ctrl->config.current_refresh_rate_Hz) / (int32_t)dt_samples;
+
+        /* Only baseline mode is allowed to slowly adapt the tonic reference. 
+        *  We compute the baseline across the window 
+        */
+        if (ctrl->mode == GSR_CTRL_MODE_BASELINE) { 
+            ctrl->sample.baseline_nS = calculate_baseline(ctrl->sample.baseline_nS, conductance_nS);
+            ctrl->sample.vin_baseline_uV = calculate_baseline(ctrl->sample.vin_baseline_uV, vin_uV);
+        }
+        // compute amplitude after updating the baseline.
+        ctrl->sample.amplitude_nS = compute_amplitude_nS(ctrl, conductance_nS);
+        uint32_t vin_amplitude_uV = compute_amplitude_uV(ctrl->sample.vin_baseline_uV, vin_uV);
+        ctrl->sample.vin_rms_uV += vin_amplitude_uV * vin_amplitude_uV; // accumulate sum of squares to compute RMS at the end of the window
+
+        // update max current limit based on the baseline conductance measurement from the window
+        ctrl->max_current_nA = max_current_for_conductance_nS(ctrl->sample.baseline_nS);
+
+    }
+
+    ctrl->sample.valid = valid > 0;
+    
+    if (valid == 0) {
+        ctrl->valid_samples = 0;
+        return last_sample_status; 
+    }
+    ctrl->sample.vin_rms_uV = ctrl->sample.vin_rms_uV/valid;
+    ctrl->valid_samples = valid;
+
+    return GSR_STATUS_OK;
+}
+
+uint8_t get_valid_samples(gsr_controller_t *ctrl) {
+    if (ctrl == NULL) return 0;
+
+    return ctrl->valid_samples;
 }
 
 static gsr_status_t gsr_read_sample_now(gsr_controller_t *ctrl) {
@@ -294,8 +547,6 @@ static gsr_status_t gsr_read_sample_now(gsr_controller_t *ctrl) {
         ctrl->sample.prev_G_nS = ctrl->sample.G_nS;
         ctrl->sample.slope_nS = 0;
         ctrl->sample.amplitude_nS = 0;
-        ctrl->mode = GSR_CTRL_MODE_BASELINE;
-        ctrl->config.current_refresh_rate_Hz = ctrl->config.baseline_refresh_rate_Hz;
         ctrl->initialized = true;
         return GSR_STATUS_OK;
     }
@@ -307,7 +558,7 @@ static gsr_status_t gsr_read_sample_now(gsr_controller_t *ctrl) {
         ctrl->sample.baseline_nS = calculate_baseline(ctrl->sample.baseline_nS, ctrl->sample.G_nS);
     }
     // compute amplitude after updating the baseline.
-    ctrl->sample.amplitude_nS = compute_amplitude_nS(ctrl);
+    ctrl->sample.amplitude_nS = compute_amplitude_nS(ctrl, ctrl->sample.G_nS);
 
     return ret;
 }
@@ -329,6 +580,17 @@ gsr_status_t gsr_read_sample(gsr_controller_t *ctrl)
     }
 }
 
+gsr_status_t gsr_read(gsr_controller_t *ctrl)
+{
+    if (ctrl == NULL) return GSR_STATUS_INVALID_ARGUMENT;
+
+    if (!ctrl->dma_used) { // batch reading is only supported with DMA, otherwise just read one sample
+        return gsr_read_sample(ctrl);
+    } else {
+        return gsr_read_sample_dma(ctrl);
+    }
+}
+
 const gsr_sample_t *gsr_get_last_sample(const gsr_controller_t *ctrl) {
     if (ctrl == NULL) return NULL;
 
@@ -337,9 +599,9 @@ const gsr_sample_t *gsr_get_last_sample(const gsr_controller_t *ctrl) {
 
 gsr_metrics_t get_metrics(gsr_controller_t *ctrl) {
     gsr_metrics_t metrics;
-    metrics.conductance_sensitivity_nS = compute_conductance_sensitivity_nS(ctrl->sample.G_nS , ctrl->sample.vin_uV, 
+    metrics.conductance_sensitivity_pS = compute_conductance_sensitivity_pS(ctrl->sample.G_nS , ctrl->sample.vin_uV, 
                                                                             ctrl->sample.current_nA, ctrl->config.current_refresh_rate_Hz);
-    metrics.resolution_dB = compute_conductance_resolution_dB(ctrl, metrics.conductance_sensitivity_nS);
+    metrics.resolution_dB = compute_resolution_dB(ctrl);
     return metrics;
 }
 

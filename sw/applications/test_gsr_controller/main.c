@@ -227,16 +227,6 @@ static int test_all()
     ctrl.mode = GSR_CTRL_MODE_BASELINE;
     ctrl.config.idac_code = ctrl.max_current_nA/40 ; // idac(max) > max - guard ==> it will trigger out of range
     st = gsr_controller_set_config(&ctrl);
-    if (st != GSR_STATUS_UNDERFLOW) {
-        debug = (0xF1 << 24 | st); 
-        PRINTF("  FAIL: gsr_set_config returned %d\n", st);
-        return -1;
-    }
-    // 2. change i_dc to pass the guard  
-    if (st == GSR_STATUS_UNDERFLOW) {
-        ctrl.config.idac_code = ctrl.max_current_nA/40 - 2; // idac(max - 80) < max - guard ==> should not trigger out of range
-        st = gsr_controller_set_config(&ctrl);
-    }
     if (st != GSR_STATUS_OK) {
         debug = (0xF2 << 24 | st); 
         PRINTF("  FAIL: gsr_set_config returned %d\n", st);

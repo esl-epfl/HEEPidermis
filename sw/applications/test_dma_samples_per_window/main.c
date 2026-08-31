@@ -2,7 +2,7 @@
 // Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 //
-// File: test_gsr_controller_dlc/main.c
+// File: test_dma_samples_per_window/main.c
 // Author: Ismail Essaidi
 // Description: 
 
@@ -21,7 +21,6 @@
 #include "REFs_ctrl.h"
 #include "iDAC_ctrl.h"
 #include "GSR_sdk.h"
-#include "DLC_sdk.h"
 #include "GSR_controller.h"
 
 #define TARGET_SIM 1
@@ -42,26 +41,37 @@
 #define IREF_DEFAULT_CAL   255
 #define IDAC_DEFAULT_CAL   15
 #define VREF_DEFAULT_CAL   0b1111111111U
-// dLC configuration
-#define DLC_LOG_LVL_W      7            // level width = 128 counts
-#define DLC_INPUT_SAMPLES  20         // samples per transaction → 200 ms
-#define DLC_BUF_SIZE       DLC_INPUT_SAMPLES
 
 // Stop after this many transactions
-#define WINDOWS_TO_PROCESS 3
+#define WINDOWS_TO_PROCESS 2
 
 #define INTR_DMA_TRANS_DONE  (1 << 19)
 #define INTR_DMA_WINDOW_DONE (1 << 30)
 
 volatile uint32_t debug __attribute__((section(".xheep_debug_mem")));
 
-static uint8_t dlc_buf[DLC_BUF_SIZE];
 
-volatile int32_t g_trans_flag   = 0;
 volatile int32_t g_window_flag  = 0;
 
+#define NUM_EXPERIMENT_DATA_POINTS 6U
+#define RAW_INPUT_SAMPLES  5U
+#define RAW_BUF_SIZE       (NUM_EXPERIMENT_DATA_POINTS * RAW_INPUT_SAMPLES)
+
+#define DBG_N_TAG         0xA0U
+#define DBG_PROC_END_TAG  0xA2U
+
+static uint32_t buf_a[RAW_BUF_SIZE];
+static uint32_t buf_b[RAW_BUF_SIZE];
+static gsr_dma_acq_t gsr_dma;
+
+
+static dma_target_t dma_src;
+static dma_target_t dma_dst;
+static dma_trans_t  dma_trans;
+
 void dma_intr_handler_trans_done(uint8_t channel) {
-    if (channel == 0) g_trans_flag++;
+    gsr_dma_intr_handler_trans_done(channel);
+    debug = 'wake';
 }
 
 void dma_intr_handler_window_done(uint8_t channel) {
@@ -72,9 +82,7 @@ void dma_intr_handler_window_done(uint8_t channel) {
 uint8_t dma_window_ratio_warning_threshold(void) { return 0; }
 
 void __attribute__((aligned(4), interrupt)) handler_irq_timer(void) {
-    // timer_arm_stop();
     timer_irq_clear();
-    // timer_start();
 }
 
 static void debug_mark(uint8_t tag, uint32_t value) {
@@ -98,8 +106,9 @@ static void hw_init(void) {
     timer_cycles_init();
     timer_start();
 }
+
 // Load a default controller configuration for standard GSR operation.
-static gsr_status_t set_default_settings(gsr_controller_t *ctrl) {
+static gsr_status_t set_default_settings(gsr_controller_t *ctrl, gsr_dma_acq_t *dma) {
 
     if (ctrl == 0) {
         return GSR_STATUS_INVALID_ARGUMENT;
@@ -108,10 +117,10 @@ static gsr_status_t set_default_settings(gsr_controller_t *ctrl) {
     ctrl->config.channel = VCO_CHANNEL_P;
     ctrl->config.duty_cycle_code = 1; // 100% duty cycle
     ctrl->config.M = 1; // no oversampling by default, just take one measurement per sample. This can be increased for more noisy environments at the cost of temporal resolution and power consumption.
-    ctrl->config.baseline_refresh_rate_Hz = 100;
-    ctrl->config.phasic_refresh_rate_Hz = 10;
+    ctrl->config.baseline_refresh_rate_Hz = 20;
+    ctrl->config.phasic_refresh_rate_Hz = 40;
     ctrl->config.recovery_refresh_rate_Hz = 5;
-    ctrl->config.idac_code = 7;
+    ctrl->config.idac_code = 40;
     ctrl->config.current_refresh_rate_Hz = ctrl->config.baseline_refresh_rate_Hz; // initialize the current refresh rate to the baseline rate
     ctrl->amplitude_threshold_nS = 80;
     ctrl->slope_threshold_nS = 40;
@@ -120,124 +129,116 @@ static gsr_status_t set_default_settings(gsr_controller_t *ctrl) {
 
     ctrl->dlc_used = false;
 
+    ctrl->dma_used = true;
+    ctrl->dma = dma;
+
     return GSR_STATUS_OK;
 }
 
-static int init_controller(gsr_controller_t *ctrl, gsr_dlc_config_t *gsr_dlc_cfg) {
+static int init_controller(gsr_controller_t *ctrl, gsr_dma_acq_t *dma) {
     gsr_status_t st;
 
-    st = set_default_settings(ctrl);
+    st = set_default_settings(ctrl, dma);
     if (st != GSR_STATUS_OK) {
         debug_mark(0xE1U, (uint32_t)st);
         return -1;
     }
     
-    // we use dlc
-    ctrl->dlc_used = true;
-    ctrl->dlc_cfg = *gsr_dlc_cfg;
+    debug = 'Cfg0';
 
     st = gsr_controller_init(ctrl);
     if (st != GSR_STATUS_OK) {
         debug_mark(0xE2U, (uint32_t)st);
         return -1;
     }
+    debug = 'Dma0';
 
     return 0;
 }
 
-// Process one transaction window.
 static int process_window(gsr_controller_t *ctrl) {
-    int valid = 0;
-    const gsr_sample_t *sample;
-    gsr_status_t st;
-    uint32_t no_new = 0, missed = 0, other = 0;
+    gsr_status_t ret = gsr_read(ctrl);
 
-    for (int i = 0; i < DLC_BUF_SIZE; i++) {
-        uint32_t conductance_nS = 0;
-        // st = gsr_read_sample(ctrl);  // attempt tap/read after event
-        gsr_status_t st = gsr_get_conductance_nS(&conductance_nS, 0);
-
-        if (st == GSR_STATUS_OK) {
-            // sample = gsr_get_last_sample(ctrl);
-            // if (sample == NULL || !sample->valid) {
-            //     debug_mark((uint8_t)(0xE1), 0U);
-            //     return -1;
-            // }
-            // debug_mark(0, sample->G_nS);
-            debug_mark(0, conductance_nS);
-            debug_mark(0xA0U, valid);
-            valid++;
-        }else if (st == GSR_STATUS_NO_NEW_SAMPLE) {
-            no_new++;
-            // debug_mark(0xA1U, no_new);
-        } else if (st == GSR_STATUS_MISSED_UPDATE) {
-            missed++;
-            // debug_mark(0xA2U, missed);
-        } else {
-            other++;
-            // debug_mark(0xA3U, other);
+    if (ret == GSR_STATUS_OK) {
+        const gsr_sample_t *sample = gsr_get_last_sample(ctrl);
+        if (sample == NULL || !sample->valid) {
+            debug = (0xF7 << 24);
+            return -1;
         }
-        // NO_NEW_SAMPLE and MISSED_UPDATE skipped
+
+        debug_mark(0x00U, sample->G_nS);
+        debug_mark(DBG_PROC_END_TAG, get_valid_samples(ctrl));
+        return 1;
     }
 
-    return valid;
+    if (ret == GSR_STATUS_NO_NEW_SAMPLE) {
+        return 0;
+    }
+
+    if (ret == GSR_STATUS_MISSED_UPDATE) {
+        debug_mark(0xE3U, (uint32_t)ret);
+        return 0;
+    }
+
+    debug_mark(0xE4U, (uint32_t)ret);
+    return -1;
 }
 
 int main(void) {
 
     gsr_controller_t ctrl;
+    const gsr_sample_t *sample;
+    gsr_status_t ret;
+    uint8_t samples_per_window = RAW_INPUT_SAMPLES;
+
+    // Clear event buffer
+    memset(buf_a, 0, sizeof(buf_a));
+    memset(buf_b, 0, sizeof(buf_b));
 
     debug = 'Init';
     hw_init();
 
-    // Clear event buffer
-    memset(dlc_buf, 0, sizeof(dlc_buf));
-
-    dlc_config_t dlc_cfg = {
-        .log_level_width = DLC_LOG_LVL_W,
-        .dlvl_format     = 0,            /* sign-magnitude */
-        .hysteresis_en   = 1,
-    };
-
-    gsr_dlc_config_t gsr_dlc_cfg = {
-        .dlc_cfg       = &dlc_cfg,
-        .results_buf   = dlc_buf,
-        .buf_size      = DLC_BUF_SIZE,
-        .input_samples = DLC_INPUT_SAMPLES,
-    };
-
-
-    if (init_controller(&ctrl, &gsr_dlc_cfg) != 0) {
-        return -1;
-    }
-    debug = 'Star';
-
-    // Enable interrupts and run the processing loop.
-    CSR_SET_BITS(CSR_REG_MSTATUS, 0x8);
-    CSR_SET_BITS(CSR_REG_MIE, INTR_DMA_TRANS_DONE); // disabled the window done interrupt (for testing)
-
     int total_windows = 0;
-    int total_samples = 0;
 
-    while (total_windows < WINDOWS_TO_PROCESS) {
-        CSR_CLEAR_BITS(CSR_REG_MSTATUS, 0x8);
-        if (g_trans_flag == 0) wait_for_interrupt();
-        // CSR_SET_BITS(CSR_REG_MSTATUS, 0x8);
+    for (int i = 0; i < NUM_EXPERIMENT_DATA_POINTS; i++) {
+        // increase samples_per_window and measure processing time
+        debug_mark(DBG_N_TAG, samples_per_window);
+        gsr_dma = (gsr_dma_acq_t){
+            .enabled = true,
+            .running = false,
+            .buf_a = buf_a,
+            .buf_b = buf_b,
+            .samples_per_window = samples_per_window,
+            .write_buf = buf_a,
+            .completed_buf = NULL,
+            .window_ready = false,
+            .overrun = false,
+        };
 
-        if (g_trans_flag > 0) {
-            g_trans_flag--;
-            total_samples += process_window(&ctrl);
-            total_windows++;
-            memset(dlc_buf, 0, sizeof(dlc_buf));
+        if (init_controller(&ctrl, &gsr_dma) != 0) {
+            return -1;
         }
 
-        if (g_window_flag > 0) g_window_flag--;
+        while (total_windows < WINDOWS_TO_PROCESS) {
+            int processed = process_window(&ctrl);
+            if (processed < 0) {
+                return -1;
+            }
+            if (processed > 0) {
+                total_windows++;
+            }
+        }
+
+        total_windows = 0;
+        samples_per_window += RAW_INPUT_SAMPLES;
+        g_window_flag = 0;
+        memset(buf_a, 0, sizeof(buf_a));
+        memset(buf_b, 0, sizeof(buf_b));
+        memset(&ctrl, 0, sizeof(ctrl));
+
     }
 
-    dma_stop_circular(0);
-    iDACs_enable(false, false);
-
-    debug_mark(0xFFU, total_samples);
+    
 
     return EXIT_SUCCESS;
 }

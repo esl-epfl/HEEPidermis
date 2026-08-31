@@ -10,7 +10,7 @@
 
 #include <stddef.h>
 #define GSR_IDAC_LSB_NA              40U
-#define GUARD_IDC_NA                 (GSR_IDAC_LSB_NA * 2) // guard i_dc to prevent going out of range in the next conductance measurement; 80nA corresponds to 170 nS of change in conductance
+#define GUARD_IDC_NA                 (GSR_IDAC_LSB_NA * 1) // guard i_dc to prevent going out of range in the next conductance measurement; 80nA corresponds to 170 nS of change in conductance
 #define GSR_IDAC_MAX_CODE            255U
 #define MAX_OUT_OF_RANGE_EVENTS      2U
 
@@ -328,13 +328,13 @@ static void gsr_opctrl_adjust_range(gsr_op_controller_t *ctrl)
     ctrl->current_request.range = target_range;
 }
 
-gsr_opctrl_status_t gsr_opctrl_read_sample(gsr_op_controller_t *ctrl, gsr_sample_t *sample) {
+gsr_opctrl_status_t gsr_opctrl_read(gsr_op_controller_t *ctrl, gsr_sample_t *sample) {
     gsr_opctrl_status_t status;
 
     if (ctrl == NULL || sample == NULL) return GSR_OPCTRL_INVALID_ARGUMENT;
     if (!ctrl->initialized || ctrl->operating_point == NULL) return GSR_OPCTRL_NOT_INITIALIZED;
 
-    status = gsr_opctrl_status_from_gsr(gsr_read_sample(ctrl->operating_point)); 
+    status = gsr_opctrl_status_from_gsr(gsr_read(ctrl->operating_point)); 
     
     if (status == GSR_OPCTRL_MEASUREMENT_UNDERFLOW) { // VIN too low ==> decrease i_dc
         ctrl->has_valid_op = false;

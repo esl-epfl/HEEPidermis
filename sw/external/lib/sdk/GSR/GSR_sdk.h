@@ -50,6 +50,8 @@ void gsr_update_current(uint8_t idac_val);
 //Read one conductance sample in nS and optionally return the corresponding Vin.
 gsr_status_t gsr_get_conductance_nS(uint32_t *conductance_nS, uint32_t *vin_uV_ret);
 
+gsr_status_t gsr_count_to_conductance_nS(uint32_t decoder_count, uint32_t *conductance_nS, uint32_t *vin_uV_ret);
+
 //Average multiple valid conductance samples to reduce noise.
 gsr_status_t gsr_get_conductance_oversampled(uint32_t *conductance_nS, uint32_t *vin_uV_ret, int M);
 
