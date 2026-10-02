@@ -19,6 +19,7 @@ filesets:
     - epfl:cheep:packages
     - epfl:cheep:bus
     - epfl:cheep:peripherals
+    - example:ip:esa
     - epfl:cheep:analog_subsystem
     - epfl:cheep:pad-ring
     files:

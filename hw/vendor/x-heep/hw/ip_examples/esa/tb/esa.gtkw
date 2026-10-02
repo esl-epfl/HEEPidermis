@@ -1,0 +1,87 @@
+[*]
+[*] GTKWave Analyzer v3.3.104 (w)1999-2020 BSI
+[*] Thu Oct  1 19:24:45 2026
+[*]
+[dumpfile] "/home/juan/Desktop/ESL/HEEPidermis/test_dma_esa/hw/vendor/x-heep/hw/ip_examples/esa/build/esa.vcd"
+[dumpfile_mtime] "Thu Oct  1 19:20:30 2026"
+[dumpfile_size] 4213642
+[savefile] "/home/juan/Desktop/ESL/HEEPidermis/test_dma_esa/hw/vendor/x-heep/hw/ip_examples/esa/tb/esa.gtkw"
+[timestart] 24000000
+[size] 1920 1011
+[pos] -1 -1
+*-27.342836 567510000 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1 -1
+[treeopen] TOP.
+[treeopen] TOP.esa_tb.
+[sst_width] 333
+[signals_width] 404
+[sst_expanded] 1
+[sst_vpaned_height] 277
+@28
+TOP.esa_tb.push_i
+@8421
+[color] 1
+TOP.esa_tb.dut.input_data_hold_q[31:0]
+@20000
+-
+-
+@8023
+[color] 2
+TOP.esa_tb.dut.hpf_output_data[31:0]
+@20000
+-
+-
+@8023
+[color] 3
+TOP.esa_tb.dut.abs_output_data[31:0]
+@20000
+-
+-
+@8023
+[color] 4
+TOP.esa_tb.dut.esa_output_data[31:0]
+@20000
+-
+-
+@8023
+[color] 5
+TOP.esa_tb.dut.feature_output_data[31:0]
+@20000
+-
+-
+@8023
+[color] 6
+TOP.esa_tb.dut.output_data_hold_q[31:0]
+@20000
+-
+-
+@28
+TOP.esa_tb.pop_i
+TOP.esa_tb.clk_i
+TOP.esa_tb.rst_ni
+@22
+TOP.esa_tb.phase_i[2:0]
+@28
+TOP.esa_tb.full_o
+TOP.esa_tb.alm_full_o
+TOP.esa_tb.empty_o
+@22
+TOP.esa_tb.data_i[31:0]
+TOP.esa_tb.data_o[31:0]
+@28
+TOP.esa_tb.done_o
+TOP.esa_tb.reg_valid_i
+TOP.esa_tb.reg_write_i
+TOP.esa_tb.reg_addr_i[31:0]
+TOP.esa_tb.reg_wdata_i[31:0]
+TOP.esa_tb.reg_error_o
+TOP.esa_tb.dut.enable_q
+TOP.esa_tb.dut.hpf_enable_q
+TOP.esa_tb.dut.esa_window_shift_q[4:0]
+TOP.esa_tb.dut.esa_input_gain_shift_q[4:0]
+TOP.esa_tb.dut.feature_window_shift_q[4:0]
+TOP.esa_tb.dut.feature_input_gain_shift_q[4:0]
+TOP.esa_tb.dut.output_decimation_rate_q[31:0]
+@28
+TOP.esa_tb.dut.esa_done_o
+[pattern_trace] 1
+[pattern_trace] 0
