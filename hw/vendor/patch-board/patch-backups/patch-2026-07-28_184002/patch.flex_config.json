@@ -1,0 +1,10 @@
+{
+  "flex_thickness": 0.1,
+  "marker_layer": "User.2",
+  "stiffener_layer_top": "",
+  "stiffener_layer_bottom": "User.1",
+  "stiffener_thickness": 0.8,
+  "show_thickness": true,
+  "min_bend_radius_factor": 6.0,
+  "bend_subdivisions": 8
+}
