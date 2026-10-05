@@ -120,6 +120,7 @@ PLL_FREQ ?= 1000000
 # For this computation check hw/vendor/x-heep/sw/target/sim/x-heep.h
 UART_BAUD := $(shell echo "$(PLL_FREQ) / 20" | bc | xargs printf "%.0f")
 UART_TERMINAL ?= xterm
+GUI_SERIAL ?= 0
 UART_PORT = /dev/serial/by-id/usb-FTDI_Quad_RS232-HS-if02-port0
 PICO_FLAGS = -b $(UART_BAUD) --echo --imap lfcrlf --omap crcrlf --flow n -g uart.log
 XTERM_CMD = xterm -hold -e "picocom $(PICO_FLAGS) $(UART_PORT)"
@@ -428,36 +429,50 @@ plotter:
 # Open openOCD
 .PHONY: openocd
 openocd:
-	(xterm -hold -e "openocd -f hw/vendor/x-heep/tb/core-v-mini-mcu-pynq-z2-esl-programmer.cfg; exec bash" & \
+ifeq ($(GUI_SERIAL),1)
+	(openocd -f hw/vendor/x-heep/tb/core-v-mini-mcu-pynq-z2-esl-programmer.cfg </dev/null >.openocd.log 2>&1 & \
 	echo $$! > .openocd.pid )
+else
+	(xterm -hold -e "openocd -f hw/vendor/x-heep/tb/core-v-mini-mcu-pynq-z2-esl-programmer.cfg; exec bash" </dev/null >/dev/null 2>&1 & \
+	echo $$! > .openocd.pid )
+endif
 
 # Open UART
 .PHONY: uart
 uart:
 	@echo "Starting UART terminal using $(UART_TERMINAL)..."
-	($(TERM_EXEC) & echo $$! > .uart.pid)
+	($(TERM_EXEC) </dev/null >/dev/null 2>&1 & echo $$! > .uart.pid)
 
 # Open openOCD and uart
 .PHONY: jtag_open
-jtag_open: openocd uart
+jtag_open: openocd $(if $(filter 1,$(GUI_SERIAL)),,uart)
 
 # Close the generated terminals
 .PHONY: jtag_close
 jtag_close:
-	kill `cat .openocd.pid` 2>/dev/null
-	kill `cat .uart.pid`     2>/dev/null
-	rm -f .openocd.pid .uart.pid
+	@if [ -f .openocd.pid ]; then kill "$$(cat .openocd.pid)" 2>/dev/null || true; fi
+	@if [ -f .uart.pid ]; then kill "$$(cat .uart.pid)" 2>/dev/null || true; fi
+	@rm -f .openocd.pid .uart.pid
 
 # Open GDB
 .PHONY: jtag_run
 jtag_run:
+ifeq ($(GUI_MODE),1)
+	$(RISCV_XHEEP)/bin/riscv32-unknown-elf-gdb -q -batch -ex "set pagination off" sw/build/main.elf -x scripts/asic/gdbInit
+else
 	$(RISCV_XHEEP)/bin/riscv32-unknown-elf-gdb sw/build/main.elf -x scripts/asic/gdbInit || true
+endif
 
 # Compile an app with all the requirements to work for jtag configuration
 .PHONY: jtag_build
 jtag_build:
 	$(MAKE) app BOOT_MODE=jtag
 #COMPILER_FLAGS="-DUART_BAUDRATE=$(UART_BAUD) -DREFERENCE_CLOCK_Hz=$(PLL_FREQ)"
+
+## Launch the Python VCO measurement GUI
+.PHONY: gui
+gui:
+	python3 sw/gui/gui.py
 
 ## @section CHEEP boards control
 

@@ -5,12 +5,14 @@
 // Description: Test application for the VCO counter in the VCO decoder
 
 #include "VCO_decoder.h"
+#include "VCO_sdk.h"
 #include "timer_sdk.h"
 #include "soc_ctrl.h"
 
-#define VCO_FS_HZ 1
+#define VCO_FS_HZ 10
 #define SYS_FCLK_HZ 1000000
 #define VCO_UPDATE_CC (SYS_FCLK_HZ/VCO_FS_HZ)
+#define VCO_REFRESH_CC ((VCO_UPDATE_CC >= 4) ? (VCO_UPDATE_CC / 4) : 1)
 
 #define VCO_SUPPLY_FROM_LDO 1
 #define VCO_CAL_FROM_LDO_ADD_HZ    20
@@ -33,9 +35,9 @@ void __attribute__((aligned(4), interrupt)) handler_irq_timer(void) {
 }
 
 
-uint32_t compute_freq_Hz( diff_p ){
+uint32_t compute_freq_Hz(uint32_t diff_p, uint32_t intervals){
     uint32_t freq_p_Hz;
-    freq_p_Hz = diff_p*VCO_FS_HZ;
+    freq_p_Hz = (uint32_t)(((uint64_t)diff_p * VCO_FS_HZ) / intervals);
     #if VCO_SUPPLY_FROM_LDO
         freq_p_Hz += VCO_CAL_FROM_LDO_ADD_HZ;
     #endif
@@ -96,17 +98,18 @@ int main() {
     VCOn_enable(true);
     #endif
 
-    // Set the VCO refresh rate to 1000 cycles
-    VCO_set_refresh_rate(VCO_UPDATE_CC);
+    // Refresh the latched VCO counters several times within each sample period.
+    VCO_set_refresh_rate(VCO_REFRESH_CC);
 
     uint32_t i=0;
-    uint32_t coarse_p, last_coarse_p, diff_p, last_diff_p = 0;
+    uint32_t coarse_p, last_coarse_p, diff_p;
+    uint32_t sample_intervals = 0;
     uint32_t diff, avg, sum, dist, var, count = 0;
     uint32_t freq_p_Hz, vin_p_uV;
     #if PSEUDO_DIFF_MODE
-    uint32_t coarse_n, last_coarse_n, diff_n, last_diff_n = 0;
+    uint32_t coarse_n, last_coarse_n, diff_n;
     uint32_t freq_n_Hz, vin_n_uV = 0;
-    uint32_t vin_d_uV = 0;
+    int32_t vin_d_uV = 0;
     #endif
 
 
@@ -118,21 +121,29 @@ int main() {
 
     printf("=== Test VCO counter ===\n");
 
+    last_coarse_p = VCOp_get_coarse();
+    #if PSEUDO_DIFF_MODE
+    last_coarse_n = VCOn_get_coarse();
+    #endif
     timer_cycles_init();
-    timer_start();
+    timer_irq_enable();
+    timer_arm_start(VCO_UPDATE_CC);
+    asm volatile ("wfi");
+    timer_irq_clear();
 
     while(1){
+        sample_intervals++;
         coarse_p    = VCOp_get_coarse();
-        diff_p      =  coarse_p - last_coarse_p;
+        diff_p      = (coarse_p - last_coarse_p) & VCO_DECODER_ADC_P_COARSE_OUT_ADC_P_COARSE_OUT_MASK;
         #if PSEUDO_DIFF_MODE
         coarse_n    = VCOn_get_coarse();
-        diff_n      =  coarse_n - last_coarse_n;
+        diff_n      = (coarse_n - last_coarse_n) & VCO_DECODER_ADC_N_COARSE_OUT_ADC_N_COARSE_OUT_MASK;
         count       = VCO_get_count();
 
         diff        = diff_n - diff_p;
         #endif
 
-        if(  diff_p < (15*last_diff_p)/10 && diff_p > (5*last_diff_p)/10 ){
+        if (diff_p != 0) {
             #if COMPUTE_AVG
                 window[i%MOVING_AVG_WINDOW] = diff_p;
                 sum = 0;
@@ -147,30 +158,28 @@ int main() {
                 printf("\n%d:\t%d.%d kHz\t(µ:%d.%d, σ²:%d)", i, diff_p/1000, diff_p%1000, avg/1000, avg%1000, var);
             #endif
 
-            freq_p_Hz = compute_freq_Hz(diff_p);
+            freq_p_Hz = compute_freq_Hz(diff_p, sample_intervals);
             vin_p_uV  = interpolate_Vin_uV( freq_p_Hz );
             printf("\n%d:\t%d\tHz |\t%d\tuV", i, freq_p_Hz, vin_p_uV);
 
             #if PSEUDO_DIFF_MODE
-            freq_n_Hz = compute_freq_Hz(diff_n);
+            freq_n_Hz = compute_freq_Hz(diff_n, sample_intervals);
             vin_n_uV  = interpolate_Vin_uV( freq_n_Hz );
-            vin_d_uV  = vin_n_uV - vin_p_uV;
+            vin_d_uV  = (int32_t)vin_p_uV - (int32_t)vin_n_uV;
             printf("|\t%d:\t%d\tHz |\t%d\tuV =\t%d\tuV", i, freq_n_Hz, vin_n_uV,vin_d_uV);
 
             #endif
 
 
             i++;
+            last_coarse_p = coarse_p;
+            #if PSEUDO_DIFF_MODE
+            last_coarse_n = coarse_n;
+            #endif
+            sample_intervals = 0;
         }else{
-            printf("\nSkipped");
+            printf("\nSkipped: no fresh VCO counter update");
         }
-
-        last_coarse_p   = coarse_p;
-        last_diff_p     = diff_p;
-        #if PSEUDO_DIFF_MODE
-        last_coarse_n   = coarse_n;
-        last_diff_n     = diff_n;
-        #endif
 
         timer_cycles_init();
         timer_irq_enable();
