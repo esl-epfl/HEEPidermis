@@ -1,0 +1,9 @@
+set pagination off
+set remotetimeout 2000
+set confirm off
+target remote localhost:3333
+load
+monitor reset halt
+monitor reg pc 0x180
+monitor resume
+disconnect

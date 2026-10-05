@@ -329,6 +329,56 @@ gsr_status_t gsr_read_sample(gsr_controller_t *ctrl)
     }
 }
 
+gsr_status_t gsr_controller_read_pair(gsr_controller_t *ctrl, vco_pair_sample_t *pair)
+{
+    if (ctrl == NULL || pair == NULL || ctrl->config.channel != VCO_CHANNEL_DIFFERENTIAL) {
+        return GSR_STATUS_INVALID_ARGUMENT;
+    }
+
+    vco_pair_sample_t reading;
+    gsr_status_t status = gsr_status_from_vco(vco_get_pair(&reading));
+    if (status != GSR_STATUS_OK) {
+        ctrl->sample.valid = false;
+        return status;
+    }
+
+    uint32_t delta_uV = (reading.p_uV >= reading.n_uV)
+        ? (reading.p_uV - reading.n_uV) : (reading.n_uV - reading.p_uV);
+    if (delta_uV == 0U) {
+        ctrl->sample.valid = false;
+        return GSR_STATUS_OVERFLOW;
+    }
+
+    uint32_t current_nA = gsr_current_from_idac_code_nA(ctrl->config.idac_code);
+    uint64_t conductance_nS = ((uint64_t)current_nA * 1000000U) / delta_uV;
+    if (conductance_nS > UINT32_MAX) {
+        ctrl->sample.valid = false;
+        return GSR_STATUS_OVERFLOW;
+    }
+
+    ctrl->sample.prev_G_nS = ctrl->sample.G_nS;
+    ctrl->sample.G_nS = (uint32_t)conductance_nS;
+    ctrl->sample.vin_uV = reading.p_uV;
+    ctrl->sample.current_nA = current_nA;
+    ctrl->max_current_nA = max_current_for_conductance_nS(ctrl->sample.G_nS);
+    ctrl->sample.valid = true;
+    if (!ctrl->initialized) {
+        ctrl->sample.baseline_nS = ctrl->sample.G_nS;
+        ctrl->sample.prev_G_nS = ctrl->sample.G_nS;
+        ctrl->sample.slope_nS = 0;
+        ctrl->sample.amplitude_nS = 0;
+        ctrl->initialized = true;
+    } else {
+        ctrl->sample.slope_nS = ((int32_t)ctrl->sample.G_nS -
+            (int32_t)ctrl->sample.prev_G_nS) * (int32_t)ctrl->config.current_refresh_rate_Hz;
+        ctrl->sample.baseline_nS = calculate_baseline(ctrl->sample.baseline_nS, ctrl->sample.G_nS);
+        ctrl->sample.amplitude_nS = compute_amplitude_nS(ctrl);
+    }
+
+    *pair = reading;
+    return GSR_STATUS_OK;
+}
+
 const gsr_sample_t *gsr_get_last_sample(const gsr_controller_t *ctrl) {
     if (ctrl == NULL) return NULL;
 

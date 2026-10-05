@@ -12,6 +12,7 @@
 # Global configuration
 ROOT_DIR			:= $(realpath .)
 BUILD_DIR 			:= build
+PROJECT             ?= gsr/demo
 
 # FUSESOC and Python values (default)
 ifndef CONDA_DEFAULT_ENV
@@ -362,7 +363,7 @@ ifneq ($(APP_MAKE),)
 endif
 ifeq ($(TOOLCHAIN), GCC)
 	@echo "### Building application for SRAM execution with GCC compiler..."
-	CDEFS=$(CDEFS) $(MAKE) -f $(XHEEP_MAKE) $(MAKECMDGOALS) LINKER=$(LINKER) LINK_FOLDER=$(LINK_FOLDER) ARCH=$(ARCH) RISCV=$(RISCV)
+	CDEFS=$(CDEFS) $(MAKE) -f $(XHEEP_MAKE) $(MAKECMDGOALS) PROJECT=$(PROJECT) LINKER=$(LINKER) LINK_FOLDER=$(LINK_FOLDER) ARCH=$(ARCH) RISCV=$(RISCV)
 		TOOLCHAIN=$(TOOLCHAIN) $(FUSESOC_FLAGS) $(FUSESOC_ARGS)
 	find sw/build/ -maxdepth 1 -type f -name "main.*" -exec cp '{}' $(BUILD_DIR)/sw/app/ \;
 else
@@ -458,7 +459,8 @@ jtag_close:
 .PHONY: jtag_run
 jtag_run:
 ifeq ($(GUI_MODE),1)
-	$(RISCV_XHEEP)/bin/riscv32-unknown-elf-gdb -q -batch -ex "set pagination off" sw/build/main.elf -x scripts/asic/gdbInit
+	# Load and detach so the GUI can use OpenOCD's Tcl port for live current changes.
+	$(RISCV_XHEEP)/bin/riscv32-unknown-elf-gdb -q -batch sw/build/main.elf -x scripts/asic/gdbGuiInit
 else
 	$(RISCV_XHEEP)/bin/riscv32-unknown-elf-gdb sw/build/main.elf -x scripts/asic/gdbInit || true
 endif

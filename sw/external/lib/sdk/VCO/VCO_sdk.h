@@ -55,6 +55,17 @@ typedef struct {
     uint8_t flags;                     // packed internal state bits
 } vco_sdk_t;
 
+typedef struct {
+    uint32_t p_uV;
+    uint32_t n_uV;
+    uint32_t p_Hz;
+    uint32_t n_Hz;
+} vco_pair_sample_t;
+
+// Set timer clock and simulation acceleration before vco_initialize().
+// Existing users retain the SDK's 10 MHz / 100x simulation defaults.
+vco_status_t vco_set_clock_config(uint32_t system_clock_Hz, uint32_t acceleration);
+
 // Initialize the VCO path and configure its measurement refresh rate.
 vco_status_t vco_initialize(vco_channel_t channel, uint32_t refresh_rate_Hz);
 
@@ -66,6 +77,9 @@ uint32_t vco_get_kvco_Hz_per_V(uint32_t vin_uV);
 
 // Read the latest Vin value reconstructed from the VCO frequency.
 vco_status_t vco_get_Vin_uV(uint32_t *vin_uV);
+
+// Read P and N from one stable, latched refresh; reject stale or missed frames.
+vco_status_t vco_get_pair(vco_pair_sample_t *sample);
 
 // Interpolate Vin from a VCO oscillation frequency using the calibration table.
 uint32_t interpolate_Vin_uV(uint32_t f_target);

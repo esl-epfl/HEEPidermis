@@ -89,6 +89,9 @@ gsr_status_t gsr_controller_set_config(gsr_controller_t *ctrl);
 /* Read one sample and store it in the controller. Duty-cycled reads sleep until the VCO ON window has completed. */
 gsr_status_t gsr_read_sample(gsr_controller_t *ctrl);
 
+/* Read a synchronized P/N pair through the VCO SDK and update the controller sample. */
+gsr_status_t gsr_controller_read_pair(gsr_controller_t *ctrl, vco_pair_sample_t *pair);
+
 /* Return the last valid/attempted sample stored in the context. */
 const gsr_sample_t *gsr_get_last_sample(const gsr_controller_t *ctrl);
 
