@@ -531,6 +531,7 @@ class VCOGui:
                   foreground=[("readonly", "#ecf5f8")])
         style.configure("TLabelframe", background="#111e29", bordercolor="#365668")
         style.configure("TLabelframe.Label", background="#111e29", foreground="#c7dbe4")
+        style.configure("Warning.TLabel", background="#111e29", foreground="#ffc857", font=("DejaVu Sans", 9, "bold"))
         style.configure("TScrollbar", background="#294456", troughcolor="#101d28", arrowcolor="#c7dbe4")
 
     def _build_layout(self) -> None:
@@ -584,19 +585,22 @@ class VCOGui:
         ttk.Label(controls, text="MCU frequency (Hz)").grid(row=3, column=0, sticky="w")
         self.mcu_freq = tk.StringVar(value=str(self.configured_freq))
         ttk.Entry(controls, textvariable=self.mcu_freq).grid(row=4, column=0, sticky="ew", pady=(3, 5))
-        ttk.Button(controls, text="Config. board", command=self.configure_board).grid(row=5, column=0, sticky="ew", pady=(0, 12))
+        ttk.Button(controls, text="Config. board", command=self.configure_board).grid(row=5, column=0, sticky="ew", pady=(0, 4))
+        self.board_reset_notice = tk.StringVar(value="")
+        ttk.Label(controls, textvariable=self.board_reset_notice, wraplength=450,
+                  style="Warning.TLabel").grid(row=6, column=0, sticky="w", pady=(0, 8))
 
-        ttk.Button(controls, text="Build", command=self.build).grid(row=6, column=0, sticky="ew", pady=(0, 4))
+        ttk.Button(controls, text="Build", command=self.build).grid(row=7, column=0, sticky="ew", pady=(0, 4))
         self.memory = tk.StringVar(value="Memory use appears here after Build.")
-        ttk.Label(controls, textvariable=self.memory, justify="left", anchor="nw", font=("TkFixedFont", 10)).grid(row=7, column=0, sticky="ew", pady=(0, 12))
+        ttk.Label(controls, textvariable=self.memory, justify="left", anchor="nw", font=("TkFixedFont", 10)).grid(row=8, column=0, sticky="ew", pady=(0, 12))
         recording_buttons = ttk.Frame(controls)
-        recording_buttons.grid(row=8, column=0, sticky="ew", pady=3)
+        recording_buttons.grid(row=9, column=0, sticky="ew", pady=3)
         recording_buttons.columnconfigure(0, weight=2)
         recording_buttons.columnconfigure(1, weight=1)
-        self.record_button = tk.Button(recording_buttons, text="▶  RECORD", command=self.toggle_recording, background="#198754", foreground="white", activebackground="#157347", activeforeground="white", relief="flat", font=("TkDefaultFont", 10, "bold"), cursor="hand2")
+        self.record_button = tk.Button(recording_buttons, text="▶  START RECORDING", command=self.toggle_recording, background="#198754", foreground="white", activebackground="#157347", activeforeground="white", relief="flat", font=("TkDefaultFont", 10, "bold"), cursor="hand2")
         self.record_button.grid(row=0, column=0, sticky="ew", padx=(0, 6))
         ttk.Button(recording_buttons, text="RESET", command=self.reset_history).grid(row=0, column=1, sticky="ew")
-        ttk.Label(controls, text="Sampling frequency · 0.1–10,000 Hz").grid(row=9, column=0, sticky="w", pady=(12, 0))
+        ttk.Label(controls, text="Sampling frequency · 0.1–10,000 Hz").grid(row=10, column=0, sticky="w", pady=(12, 0))
         initial_rate_index = min(range(len(SAMPLING_RATES_HZ)),
                                  key=lambda index: abs(math.log(SAMPLING_RATES_HZ[index] / self.applied_sampling_hz)))
         self.sampling_index = tk.IntVar(value=initial_rate_index)
@@ -608,14 +612,14 @@ class VCOGui:
                                        background="#111e29", foreground="#e4edf3",
                                        troughcolor="#294457", activebackground="#38c6d9",
                                        highlightthickness=0, borderwidth=0, sliderlength=20)
-        self.sampling_scale.grid(row=10, column=0, sticky="ew")
+        self.sampling_scale.grid(row=11, column=0, sticky="ew")
         self.sampling_scale.bind("<ButtonRelease-1>", self._sampling_slider_released)
         self._sampling_slider_changed(str(initial_rate_index))
-        ttk.Label(controls, textvariable=self.sampling_selection, wraplength=450).grid(row=11, column=0, sticky="w", pady=(0, 8))
+        ttk.Label(controls, textvariable=self.sampling_selection, wraplength=450).grid(row=12, column=0, sticky="w", pady=(0, 8))
         ttk.Label(controls, textvariable=self.sampling_status, wraplength=450,
-                  font=("TkDefaultFont", 8)).grid(row=12, column=0, sticky="w", pady=(0, 8))
+                  font=("TkDefaultFont", 8)).grid(row=13, column=0, sticky="w", pady=(0, 8))
 
-        ttk.Label(controls, text="Injected current · iDAC code 1–255").grid(row=13, column=0, sticky="w")
+        ttk.Label(controls, text="Injected current · iDAC code 1–255").grid(row=14, column=0, sticky="w")
         initial_code = max(1, min(IDAC_MAX_CODE, round(self.applied_current_ua * 1000 / IDAC_STEP_NA)))
         self.current_code = tk.IntVar(value=initial_code)
         self.current_selection = tk.StringVar(value="")
@@ -626,36 +630,35 @@ class VCOGui:
                                       foreground="#e4edf3", troughcolor="#294457",
                                       activebackground="#38c6d9", highlightthickness=0,
                                       borderwidth=0, sliderlength=20)
-        self.current_scale.grid(row=14, column=0, sticky="ew", pady=(0, 2))
+        self.current_scale.grid(row=15, column=0, sticky="ew", pady=(0, 2))
         self.current_scale.bind("<ButtonRelease-1>", self._slider_released)
+        self.current_scale.bind("<KeyRelease>", self._slider_released)
         self._current_slider_changed(str(initial_code))
         current_range = ttk.Frame(controls)
-        current_range.grid(row=15, column=0, sticky="ew", pady=(0, 5))
+        current_range.grid(row=16, column=0, sticky="ew", pady=(0, 5))
         current_range.columnconfigure(1, weight=1)
         ttk.Label(current_range, text="0.04 µA", font=("TkDefaultFont", 8)).grid(row=0, column=0, sticky="w")
         ttk.Label(current_range, text="10.20 µA", font=("TkDefaultFont", 8)).grid(row=0, column=2, sticky="e")
         current_controls = ttk.Frame(controls)
-        current_controls.grid(row=16, column=0, sticky="ew", pady=(0, 4))
+        current_controls.grid(row=17, column=0, sticky="ew", pady=(0, 4))
         current_controls.columnconfigure(0, weight=1)
         ttk.Label(current_controls, textvariable=self.current_selection).grid(row=0, column=0, sticky="w")
-        self.current_apply_button = ttk.Button(current_controls, text="Apply current", command=self.apply_current)
-        self.current_apply_button.grid(row=0, column=1)
-        ttk.Label(controls, textvariable=self.current_status, wraplength=450).grid(row=17, column=0, sticky="w", pady=(0, 10))
-        ttk.Separator(controls).grid(row=18, column=0, sticky="ew", pady=14)
+        ttk.Label(controls, textvariable=self.current_status, wraplength=450).grid(row=18, column=0, sticky="w", pady=(0, 10))
+        ttk.Separator(controls).grid(row=19, column=0, sticky="ew", pady=14)
 
-        ttk.Label(controls, text="Serial port").grid(row=19, column=0, sticky="w")
+        ttk.Label(controls, text="Serial port").grid(row=20, column=0, sticky="w")
         self.port = tk.StringVar(value=DEFAULT_PORT)
-        ttk.Entry(controls, textvariable=self.port).grid(row=20, column=0, sticky="ew", pady=(3, 9))
-        ttk.Label(controls, text="Baud rate (MCU frequency ÷ 20)").grid(row=21, column=0, sticky="w")
+        ttk.Entry(controls, textvariable=self.port).grid(row=21, column=0, sticky="ew", pady=(3, 9))
+        ttk.Label(controls, text="Baud rate (MCU frequency ÷ 20)").grid(row=22, column=0, sticky="w")
         self.baud = tk.StringVar(value=str(self.configured_freq // 20))
-        ttk.Entry(controls, textvariable=self.baud).grid(row=22, column=0, sticky="ew", pady=(3, 14))
-        ttk.Label(controls, text="Moving average (samples; 1 = off)").grid(row=23, column=0, sticky="w")
+        ttk.Entry(controls, textvariable=self.baud).grid(row=23, column=0, sticky="ew", pady=(3, 14))
+        ttk.Label(controls, text="Moving average (samples; 1 = off)").grid(row=24, column=0, sticky="w")
         self.filter_window = tk.StringVar(value="10")
-        ttk.Spinbox(controls, from_=1, to=100000, textvariable=self.filter_window).grid(row=24, column=0, sticky="ew", pady=(3, 9))
+        ttk.Spinbox(controls, from_=1, to=100000, textvariable=self.filter_window).grid(row=25, column=0, sticky="ew", pady=(3, 9))
         self.filter_window.trace_add("write", self._filter_changed)
-        ttk.Button(controls, text="Save CSV…", command=self.save_csv).grid(row=25, column=0, sticky="ew", pady=(0, 4))
+        ttk.Button(controls, text="Save CSV…", command=self.save_csv).grid(row=26, column=0, sticky="ew", pady=(0, 4))
         self.recording_path_text = tk.StringVar(value="Recording starts with the first sample.")
-        ttk.Label(controls, textvariable=self.recording_path_text, wraplength=450).grid(row=26, column=0, sticky="ew", pady=(0, 12))
+        ttk.Label(controls, textvariable=self.recording_path_text, wraplength=450).grid(row=27, column=0, sticky="ew", pady=(0, 12))
         operating_host = ttk.Frame(container)
         operating_host.grid(row=1, column=1, sticky="nsew", padx=(0, 12))
         operating_host.columnconfigure(0, weight=1)
@@ -705,9 +708,9 @@ class VCOGui:
     def _set_recording_state(self, state: str) -> None:
         self.recording_state = state
         settings = {
-            "stopped": ("▶  RECORD", "#198754", "#157347", "normal"),
+            "stopped": (("▶  CONTINUE RECORDING" if self.samples else "▶  START RECORDING"), "#198754", "#157347", "normal"),
             "starting": ("▶  STARTING…", "#6c757d", "#5c636a", "disabled"),
-            "running": ("▮▮  PAUSE", "#dc3545", "#bb2d3b", "normal"),
+            "running": ("▮▮  PAUSE RECORDING", "#dc3545", "#bb2d3b", "normal"),
             "stopping": ("▮▮  STOPPING…", "#6c757d", "#5c636a", "disabled"),
         }
         label, background, active_background, enabled = settings[state]
@@ -747,6 +750,7 @@ class VCOGui:
         self.terminal.delete("1.0", "end")
         self.terminal.configure(state="disabled")
         self.recording_path_text.set("Recording starts with the next sample.")
+        self._set_recording_state(self.recording_state)
         self._log(f"History reset. Previous file kept: {previous_file}" if previous_file else "History reset.")
 
     def _filter_changed(self, *_args: str) -> None:
@@ -925,7 +929,6 @@ class VCOGui:
     def _finish_current_request(self, status: str) -> None:
         self.pending_current_na = None
         self.current_scale.configure(state="normal")
-        self.current_apply_button.configure(state="normal")
         self.current_status.set(status)
 
     def _current_request_timeout(self, request_id: int) -> None:
@@ -1000,7 +1003,6 @@ class VCOGui:
         request_id = self.current_request_id
         self.pending_current_na = current_na
         self.current_scale.configure(state="disabled")
-        self.current_apply_button.configure(state="disabled")
         self.current_status.set(f"Applying {current_na / 1000:.2f} µA via JTAG…")
 
         def worker() -> None:
@@ -1069,6 +1071,7 @@ class VCOGui:
             self.configured_freq = frequency
             self.baud.set(str(frequency // 20))
             self._sampling_slider_changed(str(self.sampling_index.get()))
+            self.board_reset_notice.set("MCU frequency configured. Please reset the hardware before starting a recording.")
             try:
                 for source in (DEMO_SOURCE, TEST_SOURCE):
                     write_defines({"SYS_FCLK_HZ": frequency}, source)
@@ -1375,6 +1378,7 @@ class VCOGui:
                 else:
                     self.operation = None
                 if tag == "run" and code == 0:
+                    self.board_reset_notice.set("")
                     self._log("Program started; GDB disconnected while the target runs.")
                 else:
                     self._log(f"{tag.capitalize()} {'finished' if code == 0 else f'exited with status {code}'}")

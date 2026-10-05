@@ -16,10 +16,10 @@
 #include "uart_regs.h"
 
 // Build values provide startup defaults; the GUI can update both volatile words over JTAG.
-#define SYS_FCLK_HZ 1000000
-#define VCO_FS_HZ 2
-#define VCO_SAMPLE_RATE_MILLIHZ 2000
-#define INJECTED_CURRENT_NA 5120
+#define SYS_FCLK_HZ 10000000
+#define VCO_FS_HZ 10
+#define VCO_SAMPLE_RATE_MILLIHZ 10000
+#define INJECTED_CURRENT_NA 2800
 
 #define IDAC_LSB_NA 40
 #define IDAC_MAX_CODE 255

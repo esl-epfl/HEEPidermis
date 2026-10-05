@@ -16,7 +16,7 @@ It is also the Makefile's default `PROJECT` for application builds.
 Select an application and press **Build** to invoke `make jtag_build`. The green
 **▶ RECORD** button opens OpenOCD and the serial port, then runs GDB inside the
 app. GDB loads and starts the target, then disconnects so JTAG can update the
-current and sampling rate during recording. The button becomes red **▮▮ PAUSE** while recording.
+current and sampling rate during recording. The button becomes red **▮▮ PAUSE RECORDING** while recording; after pausing, it offers **Continue recording** if history remains, or **Start recording** after Reset.
 Pause closes the serial port and invokes `make jtag_close`. Closing the window also
 cleans up connections started by the GUI. **RESET** clears the plotted and
 in-memory history and starts a new session file with the next sample; previous
@@ -25,8 +25,10 @@ session files are kept.
 Set **MCU frequency** in Hz and press **Config. board** to run
 `make board_freq PLL_FREQ=...`. The GUI sets the UART baud rate to one twentieth
 of that frequency, updates `SYS_FCLK_HZ` in the demo and legacy VCO applications,
-and reconnects the serial port if it is open. Rebuild the application to apply the new
-timer setting. The serial port and baud rate are also editable.
+and reconnects the serial port if it is open. After **Config. board** succeeds,
+the GUI asks you to reset the hardware. That reminder clears after GDB successfully
+opens the target. Rebuild the application to apply the new timer setting. The serial
+port and baud rate are also editable.
 
 Set **Sampling frequency** with the slider below **Record**. It offers
 0.1–0.9 Hz, 1–9 Hz, 10–90 Hz, and the same 1–9 steps through 10,000 Hz. It

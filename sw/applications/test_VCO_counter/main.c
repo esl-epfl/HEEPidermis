@@ -10,7 +10,7 @@
 #include "soc_ctrl.h"
 
 #define VCO_FS_HZ 10
-#define SYS_FCLK_HZ 1000000
+#define SYS_FCLK_HZ 10000000
 #define VCO_UPDATE_CC (SYS_FCLK_HZ/VCO_FS_HZ)
 #define VCO_REFRESH_CC ((VCO_UPDATE_CC >= 4) ? (VCO_UPDATE_CC / 4) : 1)
 
