@@ -42,6 +42,7 @@ QR_PNG = ROOT / "docs" / "img" / "HEEPidermis_QR.png"
 DEFAULT_PORT = "/dev/serial/by-id/usb-FTDI_Quad_RS232-HS-if02-port0"
 VIEW_SECONDS = 60.0
 TERMINAL_LINES = 1000
+MESSAGE_LINES = 100
 IDAC_STEP_NA = 40
 IDAC_MAX_CODE = 255
 SAMPLING_RATES_HZ = tuple(float(f"{mantissa * 10 ** decade:g}")
@@ -50,9 +51,10 @@ SAMPLING_RATES_HZ = tuple(float(f"{mantissa * 10 ** decade:g}")
 # The firmware emits e.g. "3: 42000 Hz | 400000 uV| 3: 41000 Hz | 390000 uV = ...".
 MICROVOLTS = re.compile(r"(-?\d+)\s*uV\b", re.IGNORECASE)
 FREQUENCY_VOLTAGE = re.compile(r"(\d+)\s*Hz\s*\|\s*(-?\d+)\s*uV\b", re.IGNORECASE)
+SAMPLE_RECORD = re.compile(r"^(\d+),(\d+),(\d+),(\d+)$")
 GSR_BANNER = re.compile(r"^=== GSR demo: (\d+(?:\.\d+)?) Hz, (\d+) nA ===$")
 CURRENT_ACK = re.compile(r"^Current set: (\d+) nA$")
-SAMPLING_ACK = re.compile(r"^Sampling set: (\d+(?:\.\d+)?) Hz$")
+SAMPLING_ACK = re.compile(r"^Sampling set: (\d+(?:\.\d+)?) (mHz|Hz)$")
 SAMPLE_CURRENT = re.compile(r"\bI=(\d+)\s*nA\b")
 MEMORY_BANK = re.compile(r"^(?:Cont|IntL)\s+\d+\s+[Cdi-]+\s+\d+(?:\.\d+)?%$")
 RUNTIME_SYMBOL = re.compile(r"^\s*(0x[0-9a-fA-F]+)\s+(gsr_(?:injected_current_nA|sample_rate_millihz))\s*$", re.MULTILINE)
@@ -104,6 +106,26 @@ def nominal_frequency_khz(curve: list[tuple[float, float]], voltage_mv: float) -
     x0, y0 = curve[index - 1]
     x1, y1 = curve[index]
     return y0 + (voltage_mv - x0) * (y1 - y0) / (x1 - x0)
+
+
+def nominal_voltage_uv(curve: list[tuple[float, float]], frequency_hz: int) -> int:
+    """Invert the nominal (input mV, frequency kHz) curve for UART frequencies."""
+    if not curve:
+        return 0
+    frequency_points = sorted((frequency_khz, voltage_mv) for voltage_mv, frequency_khz in curve)
+    unique: list[tuple[float, float]] = []
+    for frequency_khz, voltage_mv in frequency_points:
+        if not unique or frequency_khz != unique[-1][0]:
+            unique.append((frequency_khz, voltage_mv))
+    target_khz = frequency_hz / 1000.0
+    if target_khz <= unique[0][0]:
+        return round(unique[0][1] * 1000)
+    if target_khz >= unique[-1][0]:
+        return round(unique[-1][1] * 1000)
+    index = bisect.bisect_left(unique, (target_khz, -math.inf))
+    f0, v0 = unique[index - 1]
+    f1, v1 = unique[index]
+    return round((v0 + (target_khz - f0) * (v1 - v0) / (f1 - f0)) * 1000)
 
 
 def read_define(name: str, source: Path = DEMO_SOURCE) -> int:
@@ -175,14 +197,18 @@ class SignalPlot(tk.Canvas):
         self.prefix_n: list[int] = [0]
         self.prefix_current: list[float] = [0.0]
         self.start_s = 0.0
+        self.view_seconds = VIEW_SECONDS
+        self.cursor_time: float | None = None
         self.window = 1
         self.bind("<Configure>", lambda _event: self.redraw())
 
-    def set_view(self, samples: list[Sample], times: list[float], prefix_p: list[int], prefix_n: list[int], prefix_current: list[float], start_s: float, window: int) -> None:
+    def set_view(self, samples: list[Sample], times: list[float], prefix_p: list[int], prefix_n: list[int], prefix_current: list[float], start_s: float, window: int, view_seconds: float, cursor_time: float | None) -> None:
         self.samples, self.times = samples, times
         self.prefix_p, self.prefix_n = prefix_p, prefix_n
         self.prefix_current = prefix_current
         self.start_s, self.window = start_s, window
+        self.view_seconds = view_seconds
+        self.cursor_time = cursor_time
         self.redraw()
 
     def _raw_value(self, sample: Sample, channel: str) -> float | None:
@@ -212,7 +238,7 @@ class SignalPlot(tk.Canvas):
             self.create_line(legend_x + 9, 12, legend_x + 23, 12, fill=strong, width=2)
             self.create_text(legend_x + 28, 12, text=labels[channel], fill=strong, anchor="w", font=("TkDefaultFont", 9))
         first = bisect.bisect_left(self.times, self.start_s)
-        last = bisect.bisect_right(self.times, self.start_s + VIEW_SECONDS)
+        last = bisect.bisect_right(self.times, self.start_s + self.view_seconds)
         visible = self.samples[first:last]
         values = [value for sample in visible for channel, _, _ in self.channels if (value := self._raw_value(sample, channel)) is not None]
         values.extend(value for index in range(first, last) for channel, _, _ in self.channels if (value := self._average(index, channel)) is not None)
@@ -220,8 +246,9 @@ class SignalPlot(tk.Canvas):
             low, high = self.fixed_range
         else:
             low, high = (min(values), max(values)) if values else (0.0, 1.0)
-            padding = max((high - low) * 0.08, abs(high) * 0.02, 1.0)
-            low, high = max(0.0, low - padding), high + padding
+            span = high - low
+            padding = span * (1 / 0.9 - 1) / 2 if span > 0 else max(abs(high) * 0.02, 1.0)
+            low, high = low - padding, high + padding
 
         for tick in range(5):
             y = top + plot_h * tick / 4
@@ -233,7 +260,7 @@ class SignalPlot(tk.Canvas):
         for tick in range(7):
             x = left + plot_w * tick / 6
             self.create_line(x, top, x, top + plot_h, fill="#263744")
-            self.create_text(x, height - 18, text=f"{self.start_s + VIEW_SECONDS * tick / 6:.0f}", fill="#b6c6d2", font=("TkDefaultFont", 9))
+            self.create_text(x, height - 18, text=f"{self.start_s + self.view_seconds * tick / 6:.2f}".rstrip("0").rstrip("."), fill="#b6c6d2", font=("TkDefaultFont", 9))
         self.create_text(left + plot_w / 2, height - 5, text="Time (s)", fill="#b6c6d2", font=("TkDefaultFont", 9))
 
         for channel, strong, faded in self.channels:
@@ -241,7 +268,7 @@ class SignalPlot(tk.Canvas):
             points = []
             for index in range(first, last):
                 sample = self.samples[index]
-                x = left + plot_w * (sample.time_s - self.start_s) / VIEW_SECONDS
+                x = left + plot_w * (sample.time_s - self.start_s) / self.view_seconds
                 raw_value = self._raw_value(sample, channel)
                 if raw_value is not None and low <= raw_value <= high:
                     raw_y = top + plot_h * (high - raw_value) / (high - low)
@@ -262,6 +289,11 @@ class SignalPlot(tk.Canvas):
                 else:
                     x, y = segment
                     self.create_oval(x - 3, y - 3, x + 3, y + 3, fill=strong, outline="")
+
+        if self.cursor_time is not None and self.start_s <= self.cursor_time <= self.start_s + self.view_seconds:
+            cursor_x = left + plot_w * (self.cursor_time - self.start_s) / self.view_seconds
+            self.create_line(cursor_x, top, cursor_x, top + plot_h, fill="#f4f7fa", width=2,
+                             dash=(5, 3), tags="time_cursor")
 
 
 class TransferPlot(tk.Canvas):
@@ -458,6 +490,7 @@ class VCOGui:
         self.events: queue.Queue[tuple] = queue.Queue()
         self.samples: list[Sample] = []
         self.times: list[float] = []
+        self.memory_saturated = False
         self.prefix_p: list[int] = [0]
         self.prefix_n: list[int] = [0]
         self.prefix_current: list[float] = [0.0]
@@ -469,7 +502,12 @@ class VCOGui:
         self.history_start_clock = 0.0
         self.view_start = 0.0
         self.follow_latest = True
+        self.cursor_time: float | None = None
+        self.cursor_follows_live = True
+        self.operating_time_text = tk.StringVar(value="VCO operating points · waiting for samples")
         self.filter_size = 10
+        self.view_seconds = VIEW_SECONDS
+        self.zoom_text = tk.StringVar(value=f"TIME ZOOM · {VIEW_SECONDS:g} s")
         self.applied_current_ua = read_define("INJECTED_CURRENT_NA") / 1000
         self.applied_sampling_hz = read_define("VCO_SAMPLE_RATE_MILLIHZ") / 1000
         self.session_path: Path | None = None
@@ -492,6 +530,7 @@ class VCOGui:
         self.stop_reader = threading.Event()
         self.run_pending = False
         self.recording_state = "stopped"
+        self.gdb_opened = False
         self.close_completed = False
         self.operation: str | None = None
         self.open_requested = False
@@ -501,8 +540,10 @@ class VCOGui:
         self.current_request_id = 0
         self.pending_sample_millihz: int | None = None
         self.sample_request_id = 0
+        self.startup_current_pending = False
         self.shutting_down = False
         self.configured_freq = read_define("SYS_FCLK_HZ")
+        self.last_message: tuple[str, str] | None = None
         self._build_layout()
         if self.transfer_error:
             self._log(f"Transfer curve unavailable: {self.transfer_error}")
@@ -570,6 +611,19 @@ class VCOGui:
         side_scroll = ttk.Scrollbar(side, orient="vertical", command=side_canvas.yview)
         side_scroll.grid(row=0, column=1, sticky="ns")
         side_canvas.configure(yscrollcommand=side_scroll.set)
+        message_frame = ttk.LabelFrame(side, text="Messages", padding=8)
+        message_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        message_frame.columnconfigure(0, weight=1)
+        self.messages = tk.Text(message_frame, height=7, width=1, wrap="word",
+                                background="#0d1923", foreground="#e4edf3",
+                                font=("DejaVu Sans", 10), relief="flat",
+                                padx=8, pady=6, state="disabled")
+        self.messages.grid(row=0, column=0, sticky="nsew")
+        message_scroll = ttk.Scrollbar(message_frame, command=self.messages.yview)
+        message_scroll.grid(row=0, column=1, sticky="ns")
+        self.messages.configure(yscrollcommand=message_scroll.set)
+        self.messages.tag_configure("uart", foreground="#9edfe7", spacing3=8)
+        self.messages.tag_configure("gui", foreground="#ffc857", spacing3=8)
         controls = ttk.Frame(side_canvas, padding=14)
         controls_window = side_canvas.create_window((0, 0), window=controls, anchor="nw")
         controls.bind("<Configure>", lambda _event: side_canvas.configure(scrollregion=side_canvas.bbox("all")))
@@ -587,8 +641,6 @@ class VCOGui:
         ttk.Entry(controls, textvariable=self.mcu_freq).grid(row=4, column=0, sticky="ew", pady=(3, 5))
         ttk.Button(controls, text="Config. board", command=self.configure_board).grid(row=5, column=0, sticky="ew", pady=(0, 4))
         self.board_reset_notice = tk.StringVar(value="")
-        ttk.Label(controls, textvariable=self.board_reset_notice, wraplength=450,
-                  style="Warning.TLabel").grid(row=6, column=0, sticky="w", pady=(0, 8))
 
         ttk.Button(controls, text="Build", command=self.build).grid(row=7, column=0, sticky="ew", pady=(0, 4))
         self.memory = tk.StringVar(value="Memory use appears here after Build.")
@@ -659,12 +711,19 @@ class VCOGui:
         ttk.Button(controls, text="Save CSV…", command=self.save_csv).grid(row=26, column=0, sticky="ew", pady=(0, 4))
         self.recording_path_text = tk.StringVar(value="Recording starts with the first sample.")
         ttk.Label(controls, textvariable=self.recording_path_text, wraplength=450).grid(row=27, column=0, sticky="ew", pady=(0, 12))
+        ttk.Label(controls, text="Sampling-rate estimate window (samples)").grid(row=28, column=0, sticky="w")
+        self.rate_window = tk.StringVar(value="100")
+        ttk.Spinbox(controls, from_=2, to=100000, textvariable=self.rate_window).grid(row=29, column=0, sticky="ew", pady=(3, 5))
+        self.rate_window.trace_add("write", self._rate_window_changed)
+        self.rate_estimate_text = tk.StringVar(value="Average sample rate: waiting for samples")
+        ttk.Label(controls, textvariable=self.rate_estimate_text, wraplength=450).grid(row=30, column=0, sticky="w")
         operating_host = ttk.Frame(container)
         operating_host.grid(row=1, column=1, sticky="nsew", padx=(0, 12))
         operating_host.columnconfigure(0, weight=1)
         for plot_row in (1, 4, 6):
             operating_host.rowconfigure(plot_row, weight=1, uniform="operating_plots")
-        ttk.Label(operating_host, text="VCO operating points", font=("TkDefaultFont", 11, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 3))
+        ttk.Label(operating_host, textvariable=self.operating_time_text,
+                  font=("TkDefaultFont", 11, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 3))
         self.transfer_plot = TransferPlot(operating_host, self.transfer_curve, height=1)
         self.transfer_plot.grid(row=1, column=0, sticky="nsew")
         ttk.Label(operating_host, text="Solid: averaged P/N · ring: nominal curve", wraplength=640,
@@ -678,6 +737,10 @@ class VCOGui:
         self.resolution_plot = TradeoffPlot(operating_host, self.tradeoff_model, "resolution", height=1)
         self.resolution_plot.grid(row=6, column=0, sticky="nsew")
         self.resolution_plot.set_operating(None, 0.0, 0.0, self.applied_current_ua, self.applied_sampling_hz)
+        self.capacity_bar = tk.Canvas(operating_host, height=16, background="#101820", highlightthickness=0)
+        self.capacity_bar.grid(row=7, column=0, sticky="ew", pady=(8, 0))
+        self.capacity_bar.bind("<Configure>", lambda _event: self._draw_capacity_bar())
+        self._draw_capacity_bar()
 
         plots = ttk.Frame(container)
         plots.grid(row=1, column=2, sticky="nsew")
@@ -685,26 +748,39 @@ class VCOGui:
         plots.rowconfigure(1, weight=3)
         plots.rowconfigure(3, weight=2)
         ttk.Label(plots, text="VCO P and VCO N · mV", font=("TkDefaultFont", 12, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 6))
-        self.main_plot = SignalPlot(plots, [("p_uv", "#ffb000", "#86611b"), ("n_uv", "#38c6d9", "#2c6b74")], y_unit="mV", display_scale=1000, fixed_range=(300000, 850000))
+        self.main_plot = SignalPlot(plots, [("p_uv", "#ffb000", "#86611b"), ("n_uv", "#38c6d9", "#2c6b74")], y_unit="mV", display_scale=1000)
         self.main_plot.grid(row=1, column=0, sticky="nsew", pady=(0, 14))
+        self.main_plot.bind("<Button-1>", self._select_cursor_from_event)
+        self.main_plot.bind("<B1-Motion>", self._select_cursor_from_event)
         ttk.Label(plots, text="Tissue conductance · µS", font=("TkDefaultFont", 12, "bold")).grid(row=2, column=0, sticky="w", pady=(0, 6))
         self.diff_plot = SignalPlot(plots, [("conductance_us", "#b895ff", "#68558d")], y_unit="µS")
         self.diff_plot.grid(row=3, column=0, sticky="nsew")
+        self.diff_plot.bind("<Button-1>", self._select_cursor_from_event)
+        self.diff_plot.bind("<B1-Motion>", self._select_cursor_from_event)
         self.timeline_scroll = ttk.Scrollbar(plots, orient="horizontal", command=self._scroll_signals)
         self.timeline_scroll.grid(row=4, column=0, sticky="ew", pady=(8, 0))
-        ttk.Button(plots, text="Live", command=self._go_live).grid(row=4, column=1, padx=(6, 0), pady=(8, 0))
         self.timeline_scroll.set(0, 1)
 
         terminal_frame = ttk.LabelFrame(container, text="Terminal output", padding=5)
-        terminal_frame.grid(row=2, column=0, columnspan=3, sticky="nsew", pady=(12, 0))
+        terminal_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
         terminal_frame.columnconfigure(0, weight=1)
         terminal_frame.rowconfigure(0, weight=1)
-        self.terminal = tk.Text(terminal_frame, height=7, wrap="none", background="#101820", foreground="#d8e2e9", insertbackground="#d8e2e9", state="disabled")
+        self.terminal = tk.Text(terminal_frame, height=3, wrap="none", background="#101820", foreground="#d8e2e9", insertbackground="#d8e2e9", state="disabled")
         self.terminal.grid(row=0, column=0, sticky="nsew")
         scrollbar = ttk.Scrollbar(terminal_frame, command=self.terminal.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
         self.terminal.configure(yscrollcommand=scrollbar.set)
-
+        bottom_controls = ttk.Frame(container)
+        bottom_controls.grid(row=2, column=2, sticky="nsew", padx=(10, 0), pady=(12, 0))
+        ttk.Label(bottom_controls, textvariable=self.zoom_text,
+                  font=("TkDefaultFont", 8, "bold")).grid(row=0, column=0, columnspan=3,
+                                                            sticky="w", pady=(4, 0))
+        ttk.Button(bottom_controls, text="−", width=4, command=lambda: self._zoom_signals(2.0)).grid(row=1, column=0, padx=(0, 3))
+        ttk.Button(bottom_controls, text="+", width=4, command=lambda: self._zoom_signals(0.5)).grid(row=1, column=1, padx=3)
+        ttk.Button(bottom_controls, text="Live", command=self._go_live).grid(row=1, column=2, padx=(3, 0))
+        ttk.Label(bottom_controls, text="Click/drag a plot to inspect a sample",
+                  wraplength=240, font=("TkDefaultFont", 8)).grid(row=2, column=0,
+                                                                   columnspan=3, sticky="w", pady=(4, 0))
     def _set_recording_state(self, state: str) -> None:
         self.recording_state = state
         settings = {
@@ -738,7 +814,11 @@ class VCOGui:
         self.prefix_n_hz = [0]
         self.prefix_p_hz_count = [0]
         self.prefix_n_hz_count = [0]
+        self.memory_saturated = False
         self.first_sample_clock = None
+        self.cursor_time = None
+        self.cursor_follows_live = True
+        self.operating_time_text.set("VCO operating points · waiting for samples")
         self.session_path = None
         self.view_start = 0.0
         self.follow_latest = True
@@ -750,6 +830,8 @@ class VCOGui:
         self.terminal.delete("1.0", "end")
         self.terminal.configure(state="disabled")
         self.recording_path_text.set("Recording starts with the next sample.")
+        self.rate_estimate_text.set("Average sample rate: waiting for samples")
+        self._draw_capacity_bar()
         self._set_recording_state(self.recording_state)
         self._log(f"History reset. Previous file kept: {previous_file}" if previous_file else "History reset.")
 
@@ -763,52 +845,118 @@ class VCOGui:
         self._update_operating_point()
 
     def _scroll_signals(self, *args: str) -> None:
-        full_end = max(VIEW_SECONDS, (self.times[-1] + 1) if self.times else VIEW_SECONDS)
-        maximum = full_end - VIEW_SECONDS
+        full_end = self._timeline_end()
+        visible_seconds = self._visible_seconds()
+        maximum = full_end - visible_seconds
         if args[0] == "moveto":
             self.view_start = float(args[1]) * full_end
         elif args[0] == "scroll":
-            step = VIEW_SECONDS / 10 if args[2] == "units" else VIEW_SECONDS * 0.8
+            step = visible_seconds / 10 if args[2] == "units" else visible_seconds * 0.8
             self.view_start += int(args[1]) * step
         self.view_start = min(max(self.view_start, 0.0), maximum)
         self.follow_latest = self.view_start >= maximum - 0.01
+        if self.follow_latest:
+            self.cursor_follows_live = True
+            self.cursor_time = self.times[-1] if self.times else None
+        elif self.times:
+            self.cursor_follows_live = False
+            self.cursor_time = self._nearest_sample_time(self.view_start + visible_seconds / 2)
+        self._update_operating_point()
+        self._refresh_plots()
+
+    def _nearest_sample_time(self, target_s: float) -> float | None:
+        if not self.times:
+            return None
+        index = bisect.bisect_left(self.times, target_s)
+        if index == 0:
+            return self.times[0]
+        if index >= len(self.times):
+            return self.times[-1]
+        before, after = self.times[index - 1], self.times[index]
+        return before if target_s - before <= after - target_s else after
+
+    def _select_cursor_from_event(self, event: tk.Event) -> None:
+        if not self.times:
+            return
+        plot: SignalPlot = event.widget
+        left, right = 78, 16
+        plot_width = max(plot.winfo_width() - left - right, 1)
+        fraction = min(1.0, max(0.0, (event.x - left) / plot_width))
+        target_s = self.view_start + fraction * self._visible_seconds()
+        selected_time = self._nearest_sample_time(target_s)
+        if selected_time is None:
+            return
+        self.cursor_time = selected_time
+        self.cursor_follows_live = False
+        self.follow_latest = False
+        self._update_operating_point()
+        self._refresh_plots()
+
+    def _zoom_signals(self, factor: float) -> None:
+        previous_view = self._visible_seconds()
+        self.view_seconds = min(3600.0, max(1.0, previous_view * factor))
+        if self.follow_latest:
+            self.view_start = max(0.0, self._timeline_end() - self._visible_seconds())
+        else:
+            center = self.cursor_time if self.cursor_time is not None else self.view_start + previous_view / 2
+            self.view_start = max(0.0, center - self.view_seconds / 2)
         self._refresh_plots()
 
     def _go_live(self) -> None:
         self.follow_latest = True
+        self.cursor_follows_live = True
+        self.cursor_time = self.times[-1] if self.times else None
+        self._update_operating_point()
         self._refresh_plots()
 
+    def _timeline_end(self) -> float:
+        return max(self._visible_seconds(), self.times[-1] if self.times else self.view_seconds)
+
+    def _visible_seconds(self) -> float:
+        if self.follow_latest and self.times and self.times[-1] > 0:
+            return min(self.view_seconds, self.times[-1])
+        return self.view_seconds
+
     def _refresh_plots(self) -> None:
-        full_end = max(VIEW_SECONDS, (self.times[-1] + 1) if self.times else VIEW_SECONDS)
-        maximum = full_end - VIEW_SECONDS
+        full_end = self._timeline_end()
+        visible_seconds = self._visible_seconds()
+        self.zoom_text.set(f"TIME ZOOM · {visible_seconds:g} s")
+        maximum = full_end - visible_seconds
         if self.follow_latest:
             self.view_start = maximum
         else:
             self.view_start = min(self.view_start, maximum)
-        self.timeline_scroll.set(self.view_start / full_end, (self.view_start + VIEW_SECONDS) / full_end)
+        self.timeline_scroll.set(self.view_start / full_end, (self.view_start + visible_seconds) / full_end)
         for plot in (self.main_plot, self.diff_plot):
-            plot.set_view(self.samples, self.times, self.prefix_p, self.prefix_n, self.prefix_current, self.view_start, self.filter_size)
+            plot.set_view(self.samples, self.times, self.prefix_p, self.prefix_n, self.prefix_current,
+                          self.view_start, self.filter_size, visible_seconds, self.cursor_time)
 
     def _update_operating_point(self) -> None:
         if not self.samples:
+            self.operating_time_text.set("VCO operating points · waiting for samples")
             return
         end = len(self.samples)
-        # Match the trailing window used by the last point of each signal line.
-        start = max(0, end - self.filter_size)
-        count = end - start
+        sample_index = end - 1 if self.cursor_follows_live or self.cursor_time is None else max(
+            0, min(end - 1, bisect.bisect_right(self.times, self.cursor_time) - 1))
+        self.cursor_time = self.times[sample_index]
+        prefix_end = sample_index + 1
+        # Use the moving-average window ending at the selected sample.
+        start = max(0, prefix_end - self.filter_size)
+        count = prefix_end - start
 
         def average_frequency(sums: list[int], counts: list[int]) -> float | None:
-            frequency_count = counts[end] - counts[start]
-            return (sums[end] - sums[start]) / count if frequency_count == count else None
+            frequency_count = counts[prefix_end] - counts[start]
+            return (sums[prefix_end] - sums[start]) / count if frequency_count == count else None
 
         point = OperatingPoint(
-            p_uv=(self.prefix_p[end] - self.prefix_p[start]) / count,
-            n_uv=(self.prefix_n[end] - self.prefix_n[start]) / count,
+            p_uv=(self.prefix_p[prefix_end] - self.prefix_p[start]) / count,
+            n_uv=(self.prefix_n[prefix_end] - self.prefix_n[start]) / count,
             p_hz=average_frequency(self.prefix_p_hz, self.prefix_p_hz_count),
             n_hz=average_frequency(self.prefix_n_hz, self.prefix_n_hz_count),
         )
+        self.operating_time_text.set(f"VCO operating points · t = {self.cursor_time:.2f} s")
         self.transfer_plot.set_point(point)
-        current_ua = (self.prefix_current[end] - self.prefix_current[start]) / count
+        current_ua = (self.prefix_current[prefix_end] - self.prefix_current[start]) / count
         g_us = conductance_us(point.p_uv - point.n_uv, current_ua)
         for plot in (self.power_plot, self.resolution_plot):
             plot.set_operating(g_us, point.p_uv / 1000, point.n_uv / 1000,
@@ -832,9 +980,71 @@ class VCOGui:
         self.prefix_n_hz.append(self.prefix_n_hz[-1] + (n_hz or 0))
         self.prefix_p_hz_count.append(self.prefix_p_hz_count[-1] + (p_hz is not None))
         self.prefix_n_hz_count.append(self.prefix_n_hz_count[-1] + (n_hz is not None))
+        self.firmware_is_demo = True
+        self._update_capacity()
+        self._update_rate_estimate()
+        if self.cursor_follows_live:
+            self.cursor_time = sample.time_s
         self._persist_sample(sample)
         self._update_operating_point()
         self._refresh_plots()
+
+    def _update_capacity(self) -> None:
+        if self.memory_saturated:
+            return
+        used = len(self.samples) * 2
+        capacity = 16 * 1024
+        if used >= capacity:
+            self.memory_saturated = True
+        self._draw_capacity_bar()
+
+    def _draw_capacity_bar(self) -> None:
+        canvas = getattr(self, "capacity_bar", None)
+        if canvas is None:
+            return
+        canvas.delete("all")
+        width, height = max(canvas.winfo_width(), 1), max(canvas.winfo_height(), 1)
+        canvas.create_rectangle(0, 0, width, height, fill="#263946", outline="")
+        if self.memory_saturated:
+            canvas.create_rectangle(0, 0, width, height, fill="#e74c3c", outline="")
+            canvas.create_text(width / 2, height / 2, text="SAMPLE BANK FULL · 16,384 / 16,384 bytes",
+                               fill="#ffffff", font=("TkDefaultFont", 8, "bold"))
+            return
+        fraction = min(1.0, len(self.samples) / 8192)
+        colors = ("#1c4366", "#33b0a7", "#f4d56c", "#e4644d")
+        scaled = fraction * (len(colors) - 1)
+        segment = min(int(scaled), len(colors) - 2)
+        amount = scaled - segment
+        start = tuple(int(colors[segment][i:i + 2], 16) for i in (1, 3, 5))
+        end = tuple(int(colors[segment + 1][i:i + 2], 16) for i in (1, 3, 5))
+        fill = "#" + "".join(f"{round(a + (b - a) * amount):02x}" for a, b in zip(start, end))
+        canvas.create_rectangle(0, 0, width * fraction, height, fill=fill, outline="")
+        canvas.create_text(width / 2, height / 2,
+                           text=f"{len(self.samples) * 2:,} / 16,384 bytes · {fraction * 100:.1f}%",
+                           fill="#ffffff", font=("TkDefaultFont", 8, "bold"))
+
+    def _update_rate_estimate(self) -> None:
+        try:
+            window = self._positive_int(self.rate_window.get(), "Sampling-rate window")
+        except ValueError:
+            return
+        count = min(window, len(self.times))
+        if count < 2:
+            self.rate_estimate_text.set("Average sample rate: waiting for 2 samples")
+            return
+        elapsed = self.times[-1] - self.times[-count]
+        rate_hz = (count - 1) / elapsed if elapsed > 0 else 0.0
+        if rate_hz <= 0:
+            self.rate_estimate_text.set("Average sample rate: measuring…")
+            return
+        duration_s = (16 * 1024 / 2) / rate_hz
+        duration = f"{duration_s / 3600:.2f} h" if duration_s >= 3600 else f"{duration_s / 60:.1f} min"
+        self.rate_estimate_text.set(
+            f"Average rate (last {count}): {rate_hz:.3g} Hz · 16 KB holds about {duration}"
+        )
+
+    def _rate_window_changed(self, *_args: str) -> None:
+        self._update_rate_estimate()
 
     def _persist_sample(self, sample: Sample) -> None:
         try:
@@ -881,10 +1091,30 @@ class VCOGui:
         except (OSError, tk.TclError) as error:
             self._log(f"Could not save CSV: {error}")
 
-    def _log(self, message: str) -> None:
+    def _show_message(self, message: str, source: str = "gui") -> None:
+        """Keep human-facing guidance visible independently of terminal output."""
+        key = (source, message)
+        if key == self.last_message:
+            return
+        self.last_message = key
+        self.messages.configure(state="normal")
+        stamp = datetime.now().strftime("%H:%M:%S")
+        label = "UART [i]" if source == "uart" else "GUI"
+        self.messages.insert("end", f"{stamp}  {label}  {message}\n", source)
+        lines = int(self.messages.index("end-1c").split(".")[0])
+        if lines > MESSAGE_LINES:
+            self.messages.delete("1.0", f"{lines - MESSAGE_LINES + 1}.0")
+        self.messages.see("end")
+        self.messages.configure(state="disabled")
+
+    def _log(self, message: str, *, message_source: str | None = "gui") -> None:
         message = message.rstrip("\r\n")
         if not message:
             return
+        if message.startswith("[i]"):
+            self._show_message(message[3:].strip(), "uart")
+        elif message_source is not None:
+            self._show_message(message, message_source)
         self.terminal.configure(state="normal")
         self.terminal.insert("end", message + "\n")
         lines = int(self.terminal.index("end-1c").split(".")[0])
@@ -915,10 +1145,26 @@ class VCOGui:
         else:
             rate = SAMPLING_RATES_HZ[self.sampling_index.get()]
             self.sampling_status.set(f"Startup rate {rate:g} Hz will be used after Build and Record.")
+            self._log(self.sampling_status.get())
 
     def _slider_released(self, _event: tk.Event) -> None:
+        if self.project.get() == "gsr/demo":
+            try:
+                current_na = self._requested_current_na()
+                if read_define("INJECTED_CURRENT_NA") != current_na:
+                    write_defines({"INJECTED_CURRENT_NA": current_na}, DEMO_SOURCE)
+                if self.recording_state != "running":
+                    self.current_status.set(f"Startup current saved: {current_na / 1000:.2f} µA")
+                    self._log(f"Startup current saved: {current_na / 1000:.2f} µA. Build to apply it to the firmware image.")
+            except (OSError, ValueError) as error:
+                self._log(f"Could not save the selected startup current: {error}")
         if self.recording_state == "running" and self.firmware_is_demo:
-            self.apply_current()
+            if self.run_pending:
+                self.startup_current_pending = True
+                self.current_status.set("Applying selected current when GDB finishes starting…")
+                self._log(self.current_status.get())
+            else:
+                self.apply_current()
 
     def _requested_current_na(self) -> int:
         code = self.current_code.get()
@@ -930,6 +1176,7 @@ class VCOGui:
         self.pending_current_na = None
         self.current_scale.configure(state="normal")
         self.current_status.set(status)
+        self._log(status)
 
     def _current_request_timeout(self, request_id: int) -> None:
         if request_id == self.current_request_id and self.pending_current_na is not None:
@@ -940,6 +1187,7 @@ class VCOGui:
         self.pending_sample_millihz = None
         self.sampling_scale.configure(state="normal")
         self.sampling_status.set(status)
+        self._log(status)
 
     def _sampling_request_timeout(self, request_id: int) -> None:
         if request_id == self.sample_request_id and self.pending_sample_millihz is not None:
@@ -973,6 +1221,7 @@ class VCOGui:
         self.pending_sample_millihz = rate_millihz
         self.sampling_scale.configure(state="disabled")
         self.sampling_status.set(f"Applying {rate:g} Hz via JTAG…")
+        self._log(f"Applying {rate:g} Hz via JTAG; waiting for the firmware to confirm it.")
 
         def worker() -> None:
             try:
@@ -1004,6 +1253,7 @@ class VCOGui:
         self.pending_current_na = current_na
         self.current_scale.configure(state="disabled")
         self.current_status.set(f"Applying {current_na / 1000:.2f} µA via JTAG…")
+        self._log(f"Applying {current_na / 1000:.2f} µA via JTAG; waiting for the firmware to confirm it.")
 
         def worker() -> None:
             try:
@@ -1015,6 +1265,17 @@ class VCOGui:
         threading.Thread(target=worker, daemon=True).start()
         self.root.after(25000, self._current_request_timeout, request_id)
 
+    def _apply_startup_current_if_ready(self) -> None:
+        if not self.startup_current_pending or self.run_pending or not self.gdb_opened:
+            return
+        if self.recording_state != "running" or not self.firmware_is_demo or self.serial_port is None:
+            return
+        self.startup_current_pending = False
+        if self._requested_current_na() != round(self.applied_current_ua * 1000):
+            self.apply_current()
+        else:
+            self.current_status.set(f"Firmware current: {self.applied_current_ua:.2f} µA")
+
     def _run_make(self, tag: str, *arguments: str, on_success=None) -> None:
         if self.shutting_down:
             return
@@ -1025,7 +1286,10 @@ class VCOGui:
             self.operation = tag
         command = ["make", *arguments]
         run_generation = self.connection_generation if tag == "run" else None
-        self._log("$ " + " ".join(command))
+        self._log("$ " + " ".join(command), message_source=None)
+        self._show_message({"build": "Building firmware…", "board": "Configuring the board clock…",
+                            "open": "Opening JTAG and UART…", "run": "Loading and starting firmware…",
+                            "close": "Closing the device…"}.get(tag, f"Starting {tag}…"))
 
         def worker() -> None:
             code = 127
@@ -1072,6 +1336,7 @@ class VCOGui:
             self.baud.set(str(frequency // 20))
             self._sampling_slider_changed(str(self.sampling_index.get()))
             self.board_reset_notice.set("MCU frequency configured. Please reset the hardware before starting a recording.")
+            self._log(self.board_reset_notice.get())
             try:
                 for source in (DEMO_SOURCE, TEST_SOURCE):
                     write_defines({"SYS_FCLK_HZ": frequency}, source)
@@ -1169,7 +1434,7 @@ class VCOGui:
         if log_path.is_file():
             try:
                 for line in log_path.read_text(errors="replace").splitlines()[-8:]:
-                    self._log("OpenOCD: " + line)
+                    self._log("OpenOCD: " + line, message_source=None)
             except OSError as error:
                 self._log(f"Could not read OpenOCD output: {error}")
         try:
@@ -1207,21 +1472,17 @@ class VCOGui:
                 break
             if not raw or stop_event.is_set():
                 continue
-            line = raw.decode("utf-8", errors="replace").strip()
+            line = raw.decode("utf-8", errors="replace").strip().strip("\x00")
             if line:
                 received_at = time.monotonic()
                 self.events.put(("serial_output", line, received_at))
-                readings = FREQUENCY_VOLTAGE.findall(line)
-                current_match = SAMPLE_CURRENT.search(line)
-                current_na = int(current_match.group(1)) if current_match else None
-                if len(readings) >= 2:
-                    p_hz, p_uv = map(int, readings[0])
-                    n_hz, n_uv = map(int, readings[1])
-                    self.events.put(("sample", p_uv, n_uv, p_hz, n_hz, received_at, current_na))
-                else:
-                    voltages = MICROVOLTS.findall(line)
-                    if len(voltages) >= 2:
-                        self.events.put(("sample", int(voltages[0]), int(voltages[1]), None, None, received_at, current_na))
+                record = SAMPLE_RECORD.fullmatch(line)
+                if record:
+                    _sample_number, p_hz, n_hz, current_na = map(int, record.groups())
+                    p_hz, n_hz = int(p_hz), int(n_hz)
+                    p_uv = nominal_voltage_uv(self.transfer_curve, p_hz)
+                    n_uv = nominal_voltage_uv(self.transfer_curve, n_hz)
+                    self.events.put(("sample", p_uv, n_uv, p_hz, n_hz, received_at, int(current_na)))
 
     def _stop_serial(self) -> None:
         self.stop_reader.set()
@@ -1244,6 +1505,8 @@ class VCOGui:
             self.close_device()
             return
         self.run_pending = True
+        self.gdb_opened = False
+        self.startup_current_pending = self.project.get() == "gsr/demo"
         self._run_make("run", "jtag_run", "GUI_MODE=1")
         self._set_recording_state("running")
 
@@ -1275,6 +1538,8 @@ class VCOGui:
             self.sampling_status.set("Firmware sampling rate: device stopped")
         self._stop_serial()
         self.firmware_is_demo = False
+        self.gdb_opened = False
+        self.startup_current_pending = False
         self.connection_generation += 1
         self._terminate_processes()
         self._run_make("close", "jtag_close")
@@ -1291,10 +1556,18 @@ class VCOGui:
             if self.shutting_down:
                 continue
             if event[0] == "output":
-                self._log(event[1])
+                self._log(event[1], message_source=None)
             elif event[0] == "serial_output":
                 _, line, received_at = event
                 if received_at >= self.history_start_clock:
+                    if SAMPLE_RECORD.fullmatch(line):
+                        continue
+                    uart_line = line
+                    if line.startswith("[i]"):
+                        line = line[3:].strip()
+                    if line == "GSR demo ready.":
+                        self.firmware_is_demo = True
+                        self._apply_startup_current_if_ready()
                     banner = GSR_BANNER.match(line)
                     if banner:
                         self.firmware_is_demo = True
@@ -1304,9 +1577,14 @@ class VCOGui:
                         self._sampling_slider_changed(str(self.sampling_index.get()))
                         self.sampling_status.set(f"Firmware sampling rate: {self.applied_sampling_hz:g} Hz")
                         self.applied_current_ua = int(banner.group(2)) / 1000
-                        self.current_code.set(int(banner.group(2)) // IDAC_STEP_NA)
+                        requested_current_na = self._requested_current_na()
                         self._current_slider_changed(str(self.current_code.get()))
-                        self.current_status.set(f"Firmware current: {self.applied_current_ua:.2f} µA")
+                        self.startup_current_pending = requested_current_na != int(banner.group(2))
+                        self.current_status.set(
+                            f"Applying saved startup current: {requested_current_na / 1000:.2f} µA"
+                            if self.startup_current_pending else
+                            f"Firmware current: {self.applied_current_ua:.2f} µA")
+                        self._apply_startup_current_if_ready()
                         if not self.samples:
                             self.resolution_plot.set_operating(None, 0.0, 0.0,
                                                                self.applied_current_ua, self.applied_sampling_hz)
@@ -1314,7 +1592,9 @@ class VCOGui:
                     if current_ack:
                         current_na = int(current_ack.group(1))
                         self.applied_current_ua = current_na / 1000
-                        if self.pending_current_na == current_na:
+                        if self.startup_current_pending:
+                            self._apply_startup_current_if_ready()
+                        elif self.pending_current_na == current_na:
                             self._finish_current_request(f"Applied: {current_na / 1000:.2f} µA · code {current_na // IDAC_STEP_NA}")
                         elif self.pending_current_na is None:
                             self.current_code.set(current_na // IDAC_STEP_NA)
@@ -1324,7 +1604,7 @@ class VCOGui:
                         self._finish_current_request(line)
                     sampling_ack = SAMPLING_ACK.match(line)
                     if sampling_ack:
-                        self.applied_sampling_hz = float(sampling_ack.group(1))
+                        self.applied_sampling_hz = float(sampling_ack.group(1)) / (1000 if sampling_ack.group(2) == "mHz" else 1)
                         self.sampling_index.set(min(range(len(SAMPLING_RATES_HZ)),
                                                     key=lambda index: abs(math.log(SAMPLING_RATES_HZ[index] / self.applied_sampling_hz))))
                         self._sampling_slider_changed(str(self.sampling_index.get()))
@@ -1337,17 +1617,22 @@ class VCOGui:
                         self.sampling_index.set(min(range(len(SAMPLING_RATES_HZ)),
                                                     key=lambda index: abs(math.log(SAMPLING_RATES_HZ[index] / self.applied_sampling_hz))))
                         self._sampling_slider_changed(str(self.sampling_index.get()))
-                    self._log(line)
+                    self._log(uart_line, message_source=None)
             elif event[0] == "sample":
                 _, p_uv, n_uv, p_hz, n_hz, clock, current_na = event
                 if clock >= self.history_start_clock:
-                    if current_na is not None and self.pending_current_na == current_na:
+                    self.firmware_is_demo = True
+                    if current_na is not None and self.startup_current_pending:
+                        self.applied_current_ua = current_na / 1000
+                        self._apply_startup_current_if_ready()
+                    elif current_na is not None and self.pending_current_na == current_na:
                         self.applied_current_ua = current_na / 1000
                         self._finish_current_request(f"Applied: {current_na / 1000:.2f} µA · code {current_na // IDAC_STEP_NA}")
-                    elif current_na is not None and self.pending_current_na is None and current_na != round(self.applied_current_ua * 1000):
-                        self.applied_current_ua = current_na / 1000
-                        self.current_code.set(current_na // IDAC_STEP_NA)
-                        self._current_slider_changed(str(self.current_code.get()))
+                    elif current_na is not None and self.pending_current_na is None:
+                        if current_na != round(self.applied_current_ua * 1000):
+                            self.applied_current_ua = current_na / 1000
+                            self.current_code.set(current_na // IDAC_STEP_NA)
+                            self._current_slider_changed(str(self.current_code.get()))
                         self.current_status.set(f"Firmware current: {current_na / 1000:.2f} µA")
                     self._record_sample(p_uv, n_uv, p_hz, n_hz, clock, current_na)
             elif event[0] == "current_write_done":
@@ -1366,11 +1651,11 @@ class VCOGui:
                         self._finish_sampling_request("Sampling update failed; see terminal output")
                         self._log(f"JTAG sampling-rate write failed: {error}")
                     else:
-                        self._log(f"JTAG wrote {rate_millihz} mHz to 0x{address:08x}; waiting for firmware confirmation.")
+                        self._log(f"JTAG wrote {rate_millihz / 1000:g} Hz to 0x{address:08x}; waiting for firmware confirmation.")
                         self.root.after(6000, self._sampling_request_timeout, request_id)
             elif event[0] == "memory":
                 self.memory.set(event[1])
-                self._log(event[1].replace("\n", " | "))
+                self._log(event[1].replace("\n", " | "), message_source=None)
             elif event[0] == "make_done":
                 _, tag, code, on_success = event
                 if tag == "run":
@@ -1378,9 +1663,13 @@ class VCOGui:
                 else:
                     self.operation = None
                 if tag == "run" and code == 0:
+                    self.gdb_opened = True
                     self.board_reset_notice.set("")
-                    self._log("Program started; GDB disconnected while the target runs.")
+                    self._log("Firmware started; waiting for UART feedback.")
+                    self._apply_startup_current_if_ready()
                 else:
+                    if tag == "run":
+                        self.gdb_opened = False
                     self._log(f"{tag.capitalize()} {'finished' if code == 0 else f'exited with status {code}'}")
                 if tag == "build" and code != 0:
                     self.memory.set("Build failed; see terminal output below.")

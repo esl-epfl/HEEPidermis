@@ -4,9 +4,8 @@
 // Synchronized P/N GSR acquisition for the desktop monitor.
 
 #include <stdint.h>
-#include <stdio.h>
-#include <stdarg.h>
 
+#include "syscalls.h"
 #include "GSR_controller.h"
 #include "REFs_ctrl.h"
 #include "iDAC_ctrl.h"
@@ -19,13 +18,14 @@
 #define SYS_FCLK_HZ 10000000
 #define VCO_FS_HZ 10
 #define VCO_SAMPLE_RATE_MILLIHZ 10000
-#define INJECTED_CURRENT_NA 2800
+#define INJECTED_CURRENT_NA 240
 
 #define IDAC_LSB_NA 40
 #define IDAC_MAX_CODE 255
 #define IREF_DEFAULT_CAL 255
 #define IDAC_DEFAULT_CAL 15
 #define VREF_DEFAULT_CAL 1023
+#define FEEDBACK_PERIOD_CC ((SYS_FCLK_HZ <= UINT32_MAX / 3U) ? (SYS_FCLK_HZ * 3U) : UINT32_MAX)
 
 // The GUI updates these words over JTAG; firmware rereads them in the acquisition loop.
 volatile uint32_t gsr_injected_current_nA = INJECTED_CURRENT_NA;
@@ -44,16 +44,51 @@ volatile uint32_t gsr_sample_rate_millihz = VCO_SAMPLE_RATE_MILLIHZ;
 #error "Injected current must be a nonzero multiple of 40 nA, up to 10200 nA"
 #endif
 
-static void uart_log(const uart_t *uart, const char *format, ...) {
-    char line[144];
-    va_list args;
-    va_start(args, format);
-    int length = vsnprintf(line, sizeof(line), format, args);
-    va_end(args);
-    if (length > 0) {
-        size_t count = (size_t)length < sizeof(line) ? (size_t)length : sizeof(line) - 1U;
-        uart_write(uart, (const uint8_t *)line, count);
+static char *append_u32(char *out, uint32_t value) {
+    char digits[10];
+    uint8_t count = 0U;
+    do {
+        digits[count++] = (char)('0' + (value % 10U));
+        value /= 10U;
+    } while (value != 0U);
+    while (count != 0U) *out++ = digits[--count];
+    return out;
+}
+
+static void print_sample(uint32_t index, uint32_t p_Hz, uint32_t n_Hz, uint32_t current_nA) {
+    char line[46];
+    char *out = line;
+    out = append_u32(out, index); *out++ = ',';
+    out = append_u32(out, p_Hz); *out++ = ',';
+    out = append_u32(out, n_Hz); *out++ = ',';
+    out = append_u32(out, current_nA); *out++ = '\n';
+    *out = '\0';
+    _writestr(line);
+}
+
+static void print_setting(const char *name, uint32_t value, const char *unit) {
+    char number[11];
+    *append_u32(number, value) = '\0';
+    _writestr("[i] ");
+    _writestr(name);
+    _writestr(number);
+    _writestr(unit);
+}
+
+static const char *acquisition_feedback(gsr_status_t status, const vco_pair_sample_t *pair) {
+    if (status == GSR_STATUS_MISSED_UPDATE)
+        return "[i] Missed updates: decrease sample rate (CPU/UART limit).\n";
+    if (status == GSR_STATUS_UNDERFLOW || status == GSR_STATUS_OVERFLOW) {
+        if (pair->n_Hz < VCO_MIN_FREQUENCY_HZ || pair->n_Hz > VCO_MAX_FREQUENCY_HZ)
+            return "[i] N out of range: check reference/supply; lower sample rate if counts are sparse.\n";
+        // Front-end model: P voltage = reference - current / conductance.
+        if (pair->p_Hz < VCO_MIN_FREQUENCY_HZ)
+            return "[i] P below range: decrease current; check resistor/contact; lower sample rate if counts are sparse.\n";
+        if (pair->p_Hz > VCO_MAX_FREQUENCY_HZ)
+            return "[i] P above range: increase current to lower P voltage.\n";
+        return "[i] P-N unresolved: increase current or decrease sample rate.\n";
     }
+    return "[i] Acquisition setup error: lower sample rate and rebuild.\n";
 }
 
 typedef struct {
@@ -109,14 +144,13 @@ int main(void) {
     timer_cycles_init();
     timer_start();
     if (vco_set_clock_config(SYS_FCLK_HZ, 1U) != VCO_STATUS_OK) {
-        uart_log(&uart, "GSR init failed: VCO clock\n");
+        _writestr("[i] VCO clock setup failed: check MCU frequency and rebuild.\n");
         return 1;
     }
 
     gsr_controller_t controller = {0};
     gsr_status_t status = gsr_set_default_settings(&controller);
     if (status != GSR_STATUS_OK) {
-        uart_log(&uart, "GSR init failed: defaults %d\n", (int)status);
         return 1;
     }
     uint32_t current_nA = gsr_injected_current_nA;
@@ -130,18 +164,24 @@ int main(void) {
     controller.config.M = 1U;
     status = gsr_controller_init(&controller);
     if (status != GSR_STATUS_OK) {
-        uart_log(&uart, "GSR init failed: controller %d\n", (int)status);
+        _writestr("[i] GSR init failed: lower sample rate and rebuild.\n");
         return 1;
     }
 
     uint32_t sample_rate_millihz = gsr_sample_rate_millihz;
-    uart_log(&uart, "=== GSR demo: %u.%03u Hz, %u nA ===\n",
-        sample_rate_millihz / 1000U, sample_rate_millihz % 1000U, current_nA);
     uint32_t index = 0U;
     current_command_t command = {0};
     uint32_t last_output_cycle = timer_get_cycles();
     uint32_t output_period_cycles =
         (uint32_t)(((uint64_t)SYS_FCLK_HZ * 1000U) / sample_rate_millihz);
+    uint32_t last_valid_cycle = last_output_cycle;
+    uint32_t last_feedback_cycle = last_output_cycle;
+    bool signal_warning = false;
+    const char *no_signal = "[i] No signal: check resistor/electrodes; lower sample rate if VCO counts are sparse.\n";
+    const char *feedback = no_signal;
+    print_setting("Current set: ", current_nA, " nA\n");
+    print_setting("Sampling set: ", sample_rate_millihz, " mHz\n");
+    _writestr("[i] GSR demo ready.\n");
     while (1) {
         poll_current_command(&uart, &command);
         uint32_t requested_rate_millihz = gsr_sample_rate_millihz;
@@ -154,7 +194,7 @@ int main(void) {
                 refresh_rate_Hz > SYS_FCLK_HZ / 100U ||
                 (requested_rate_millihz < 1000U && period_cycles > UINT32_MAX)) {
                 gsr_sample_rate_millihz = sample_rate_millihz;
-                uart_log(&uart, "Sampling change failed: supported range is 0.1-10000 Hz\n");
+                _writestr("[i] Sampling change failed: outside timer/rate limits.\n");
             } else {
                 controller.config.baseline_refresh_rate_Hz = refresh_rate_Hz;
                 controller.config.phasic_refresh_rate_Hz = refresh_rate_Hz;
@@ -164,8 +204,7 @@ int main(void) {
                     sample_rate_millihz = requested_rate_millihz;
                     output_period_cycles = (uint32_t)period_cycles;
                     last_output_cycle = timer_get_cycles();
-                    uart_log(&uart, "Sampling set: %u.%03u Hz\n",
-                        sample_rate_millihz / 1000U, sample_rate_millihz % 1000U);
+                    print_setting("Sampling set: ", sample_rate_millihz, " mHz\n");
                 } else {
                     uint32_t old_refresh_rate = sample_rate_millihz < 1000U ? 1U : sample_rate_millihz / 1000U;
                     controller.config.baseline_refresh_rate_Hz = old_refresh_rate;
@@ -173,7 +212,7 @@ int main(void) {
                     controller.config.recovery_refresh_rate_Hz = old_refresh_rate;
                     gsr_controller_set_config(&controller);
                     gsr_sample_rate_millihz = sample_rate_millihz;
-                    uart_log(&uart, "Sampling change failed: controller status %d\n", (int)status);
+                    _writestr("[i] Sampling change failed: VCO setup rejected.\n");
                 }
             }
         }
@@ -182,7 +221,7 @@ int main(void) {
             if (requested_nA < IDAC_LSB_NA || requested_nA > IDAC_LSB_NA * IDAC_MAX_CODE ||
                 requested_nA % IDAC_LSB_NA != 0U) {
                 gsr_injected_current_nA = current_nA;
-                uart_log(&uart, "Current change failed: use 40 nA steps through 10200 nA\n");
+                _writestr("[i] Current change failed: use 40 nA steps (40..10200).\n");
                 continue;
             }
             controller.config.idac_code = requested_nA / IDAC_LSB_NA;
@@ -192,38 +231,43 @@ int main(void) {
                 IDAC_CTRL_CURRENT_REG_OFFSET) & IDAC_CTRL_CURRENT_CURRENT_1_MASK;
             if (status == GSR_STATUS_OK && dac_code == controller.config.idac_code) {
                 current_nA = requested_nA;
-                uart_log(&uart, "Current set: %u nA\n", current_nA);
+                print_setting("Current set: ", current_nA, " nA\n");
             } else {
                 controller.config.idac_code = current_nA / IDAC_LSB_NA;
                 gsr_controller_set_config(&controller);
                 gsr_injected_current_nA = current_nA;
-                uart_log(&uart, "Current change failed: status %d, iDAC code %u\n", (int)status, dac_code);
+                _writestr("[i] Current change failed: iDAC readback mismatch.\n");
             }
         }
-        vco_pair_sample_t pair;
+        vco_pair_sample_t pair = {0};
         status = gsr_controller_read_pair(&controller, &pair);
-        if (status == GSR_STATUS_NO_NEW_SAMPLE) continue;
+        uint32_t now = timer_get_cycles();
         if (status != GSR_STATUS_OK) {
-            if (status == GSR_STATUS_MISSED_UPDATE) {
-                uart_log(&uart, "Skipped: missed VCO refresh\n");
-            } else if (status == GSR_STATUS_UNDERFLOW || status == GSR_STATUS_OVERFLOW) {
-                uart_log(&uart, "Skipped: VCO reading outside calibrated range\n");
-            } else {
-                uart_log(&uart, "Skipped: GSR status %d\n", (int)status);
+            if (status != GSR_STATUS_NO_NEW_SAMPLE)
+                feedback = acquisition_feedback(status, &pair);
+            // Startup/stale reads are normal. Warn only after sustained failure,
+            // then repeat at most once per three seconds, even in a tight loop.
+            if ((uint32_t)(now - last_valid_cycle) >= FEEDBACK_PERIOD_CC &&
+                (uint32_t)(now - last_feedback_cycle) >= FEEDBACK_PERIOD_CC) {
+                _writestr(feedback);
+                last_feedback_cycle = now;
+                signal_warning = true;
             }
             continue;
         }
+        last_valid_cycle = now;
+        feedback = no_signal;
+        if (signal_warning) {
+            _writestr("[i] Signal recovered.\n");
+            signal_warning = false;
+        }
 
         if (sample_rate_millihz < 1000U) {
-            uint32_t now = timer_get_cycles();
             if ((uint32_t)(now - last_output_cycle) < output_period_cycles) continue;
             last_output_cycle += output_period_cycles;
         }
 
-        int32_t delta_uV = (int32_t)pair.p_uV - (int32_t)pair.n_uV;
-        uart_log(&uart, "%u:\t%u Hz |\t%u uV|\t%u:\t%u Hz |\t%u uV =\t%d uV | I=%u nA\n",
-            index, pair.p_Hz, pair.p_uV, index, pair.n_Hz, pair.n_uV,
-            delta_uV, controller.sample.current_nA);
+        print_sample(index, pair.p_Hz, pair.n_Hz, controller.sample.current_nA);
         index++;
     }
 }

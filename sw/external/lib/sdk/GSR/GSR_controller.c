@@ -335,8 +335,9 @@ gsr_status_t gsr_controller_read_pair(gsr_controller_t *ctrl, vco_pair_sample_t 
         return GSR_STATUS_INVALID_ARGUMENT;
     }
 
-    vco_pair_sample_t reading;
+    vco_pair_sample_t reading = {0};
     gsr_status_t status = gsr_status_from_vco(vco_get_pair(&reading));
+    *pair = reading; // Diagnostic values can be inspected even on range errors.
     if (status != GSR_STATUS_OK) {
         ctrl->sample.valid = false;
         return status;
@@ -375,7 +376,6 @@ gsr_status_t gsr_controller_read_pair(gsr_controller_t *ctrl, vco_pair_sample_t 
         ctrl->sample.amplitude_nS = compute_amplitude_nS(ctrl);
     }
 
-    *pair = reading;
     return GSR_STATUS_OK;
 }
 

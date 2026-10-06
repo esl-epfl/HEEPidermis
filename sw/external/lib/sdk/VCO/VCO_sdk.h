@@ -62,6 +62,10 @@ typedef struct {
     uint32_t n_Hz;
 } vco_pair_sample_t;
 
+// Frequency range of the voltage calibration LUT.
+#define VCO_MIN_FREQUENCY_HZ 24000U
+#define VCO_MAX_FREQUENCY_HZ 1051710U
+
 // Set timer clock and simulation acceleration before vco_initialize().
 // Existing users retain the SDK's 10 MHz / 100x simulation defaults.
 vco_status_t vco_set_clock_config(uint32_t system_clock_Hz, uint32_t acceleration);
@@ -79,6 +83,8 @@ uint32_t vco_get_kvco_Hz_per_V(uint32_t vin_uV);
 vco_status_t vco_get_Vin_uV(uint32_t *vin_uV);
 
 // Read P and N from one stable, latched refresh; reject stale or missed frames.
+// A fresh out-of-range pair still exposes its frequencies/clamped voltages for
+// diagnostics. Only VCO_STATUS_OK makes those values usable as a sample.
 vco_status_t vco_get_pair(vco_pair_sample_t *sample);
 
 // Interpolate Vin from a VCO oscillation frequency using the calibration table.

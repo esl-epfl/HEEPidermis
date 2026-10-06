@@ -26,8 +26,8 @@ MEMORY
 }
 
 /*
- * This linker script try to put data in ram1 and code
- * in ram0.
+ * All firmware code and runtime sections are packed into sram0. The separate
+ * 16 KiB ram1 region is intentionally left unallocated for acquisition data.
 */
 
 SECTIONS
@@ -70,7 +70,9 @@ SECTIONS
     *(.gnu.warning)
   } >ram0
 
-  .power_manager : ALIGN(4096)
+  /* CPU context is accessed with word loads/stores through its start symbol.
+     Word alignment avoids wasting a page before the firmware's data. */
+  .power_manager : ALIGN(4)
   {
      PROVIDE(__power_manager_start = .);
      . += 256;
@@ -85,20 +87,21 @@ SECTIONS
   PROVIDE (__etext = .);
   PROVIDE (_etext = .);
   PROVIDE (etext = .);
+  PROVIDE (__program_code_end = .);
+  PROVIDE (__sram0_program_data_start = .);
 
   /* read-only sections */
   .rodata         :
   {
     *(.rodata .rodata.* .gnu.linkonce.r.*)
-  } >ram1
+  } >ram0
   .rodata1        :
   {
     *(.rodata1)
-  } >ram1
+  } >ram0
 
-  /* second level sbss and sdata, I don't think we need this */
-  /* .sdata2         : {*(.sdata2 .sdata2.* .gnu.linkonce.s2.*)} */
-  /* .sbss2          : { *(.sbss2 .sbss2.* .gnu.linkonce.sb2.*) } */
+  /* Less common initialized small-data sections still belong to sram0. */
+  .sdata2 : { *(.sdata2 .sdata2.* .gnu.linkonce.s2.*) } >ram0
 
   /* gcc language agnostic exception related sections (try-catch-finally) */
   .eh_frame_hdr :
@@ -122,9 +125,8 @@ SECTIONS
   .exception_ranges   : ONLY_IF_RO { *(.exception_ranges
   .exception_ranges*) }
   */
-  /* Adjust the address for the data segment.  We want to adjust up to
-     the same address within the page on the next page up.  */
-  . = DATA_SEGMENT_ALIGN (CONSTANT (MAXPAGESIZE), CONSTANT (COMMONPAGESIZE));
+  /* Keep firmware data contiguous with code in sram0; no page-sized gap. */
+  . = ALIGN(4);
 
   /* Exception handling  */
   .eh_frame       : ONLY_IF_RW
@@ -149,11 +151,11 @@ SECTIONS
   {
     PROVIDE_HIDDEN (__tdata_start = .);
     *(.tdata .tdata.* .gnu.linkonce.td.*)
-  } >ram1
+  } >ram0
   .tbss     :
   {
     *(.tbss .tbss.* .gnu.linkonce.tb.*) *(.tcommon)
-  } >ram1
+  } >ram0
 
   /* initialization and termination routines */
   .preinit_array     :
@@ -161,21 +163,21 @@ SECTIONS
     PROVIDE_HIDDEN (__preinit_array_start = .);
     KEEP (*(.preinit_array))
     PROVIDE_HIDDEN (__preinit_array_end = .);
-  } >ram1
+  } >ram0
   .init_array     :
   {
     PROVIDE_HIDDEN (__init_array_start = .);
     KEEP (*(SORT_BY_INIT_PRIORITY(.init_array.*) SORT_BY_INIT_PRIORITY(.ctors.*)))
     KEEP (*(.init_array EXCLUDE_FILE (*crtbegin.o *crtbegin?.o *crtend.o *crtend?.o ) .ctors))
     PROVIDE_HIDDEN (__init_array_end = .);
-  } >ram1
+  } >ram0
   .fini_array     :
   {
     PROVIDE_HIDDEN (__fini_array_start = .);
     KEEP (*(SORT_BY_INIT_PRIORITY(.fini_array.*) SORT_BY_INIT_PRIORITY(.dtors.*)))
     KEEP (*(.fini_array EXCLUDE_FILE (*crtbegin.o *crtbegin?.o *crtend.o *crtend?.o ) .dtors))
     PROVIDE_HIDDEN (__fini_array_end = .);
-  } >ram1
+  } >ram0
   .ctors          :
   {
     /* gcc uses crtbegin.o to find the start of
@@ -209,7 +211,7 @@ SECTIONS
   /* .jcr            : { KEEP (*(.jcr)) } */
   /* .data.rel.ro : { *(.data.rel.ro.local* .gnu.linkonce.d.rel.ro.local.*) *(.data.rel.ro .data.rel.ro.* .gnu.linkonce.d.rel.ro.*) } */
   /* .dynamic        : { *(.dynamic) } */
-  . = DATA_SEGMENT_RELRO_END (0, .);
+  . = ALIGN(4);
 
   /* data sections for initalized data */
   .data           :
@@ -217,11 +219,20 @@ SECTIONS
     __DATA_BEGIN__ = .;
     *(.data .data.* .gnu.linkonce.d.*)
     SORT(CONSTRUCTORS)
-  } >ram1
+  } >ram0
   .data1          :
   {
     *(.data1)
-  } >ram1
+  } >ram0
+  .data.rel.ro :
+  {
+    *(.data.rel.ro.local* .gnu.linkonce.d.rel.ro.local.*)
+    *(.data.rel.ro .data.rel.ro.* .gnu.linkonce.d.rel.ro.*)
+  } >ram0
+  .got :
+  {
+    *(.got.plt) *(.igot.plt) *(.got) *(.got.*) *(.igot.*)
+  } >ram0
 
   _lma_vma_data_offset = 0x0;
 
@@ -236,7 +247,7 @@ SECTIONS
     __SDATA_BEGIN__ = .;
     *(.srodata.cst16) *(.srodata.cst8) *(.srodata.cst4) *(.srodata.cst2) *(.srodata .srodata.*)
     *(.sdata .sdata.* .gnu.linkonce.s.*)
-  } >ram1
+  } >ram0
   _edata = .; PROVIDE (edata = .);
   . = .;
 
@@ -245,9 +256,9 @@ SECTIONS
   .sbss           :
   {
     *(.dynsbss)
-    *(.sbss .sbss.* .gnu.linkonce.sb.*)
+    *(.sbss .sbss.* .gnu.linkonce.sb.* .sbss2 .sbss2.* .gnu.linkonce.sb2.*)
     *(.scommon)
-  } >ram1
+  } >ram0
   .bss            :
   {
    *(.dynbss)
@@ -259,19 +270,21 @@ SECTIONS
       FIXME: Why do we need it? When there is no .bss section, we don't
       pad the .data section.  */
    . = ALIGN(. != 0 ? 32 / 8 : 1);
-  } >ram1
-  . = ALIGN(32 / 8);
-  . = SEGMENT_START("ldata-segment", .);
+  } >ram0
   . = ALIGN(32 / 8);
   __BSS_END__ = .;
   __bss_end = .;
+  .noinit (NOLOAD) :
+  {
+    *(.noinit .noinit.*)
+  } >ram0
+  PROVIDE (__sram0_program_data_end = .);
 
   /* The compiler uses this to access data in the .sdata, .data, .sbss and .bss
      sections with fewer instructions (relaxation). This reduces code size. */
     __global_pointer$ = MIN(__SDATA_BEGIN__ + 0x800,
           MAX(__DATA_BEGIN__ + 0x800, __BSS_END__ - 0x800));
   _end = .; PROVIDE (end = .);
-  . = DATA_SEGMENT_END (.);
 
   /* heap: we should consider putting this to the bottom of the address space */
   .heap          :
@@ -279,7 +292,7 @@ SECTIONS
    PROVIDE(__heap_start = .);
    . = __heap_size;
    PROVIDE(__heap_end = .);
-  } >ram1
+  } >ram0
 
   /* stack: we should consider putting this further to the top of the address
     space */
@@ -290,9 +303,11 @@ SECTIONS
    PROVIDE(_sp = .);
    PROVIDE(__stack_end = .);
    PROVIDE(__freertos_irq_stack_top = .);
-  } >ram1
+  } >ram0
 
-  _end_ram1_data = .; PROVIDE (_end_ram1_data = .);
+  _end_ram0_program = .; PROVIDE (_end_ram0_program = .);
+  ASSERT(ADDR(.stack) + SIZEOF(.stack) <= ORIGIN(ram1),
+         "Firmware code/data exceeds sram0; ram1 is reserved for acquisition data")
 
 % for i, section in enumerate(xheep.iter_linker_sections()):
 % if not section.name in ["code", "data"]:

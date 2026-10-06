@@ -29,11 +29,11 @@ const uint32_t _table_Vin_uV[TABLE_SIZE] ={
     720000, 740000, 760000, 780000, 800000
 };
 const uint32_t _table_fosc_Hz[TABLE_SIZE] = {
-    24000, 26130, 31330, 37320, 45270,
+    VCO_MIN_FREQUENCY_HZ, 26130, 31330, 37320, 45270,
     55150, 67270, 82680, 99870, 121190,
     146020, 175270, 208990, 247770, 291780,
     341260, 396650, 457900, 525140, 598560, 
-    677660, 762750, 853760, 950200, 1051710
+    677660, 762750, 853760, 950200, VCO_MAX_FREQUENCY_HZ
 };
 
 const uint32_t _table_kvco_Hz_per_V[TABLE_SIZE] = {
@@ -439,22 +439,21 @@ vco_status_t vco_get_pair(vco_pair_sample_t *sample) {
     pair_prev_p = p;
     pair_prev_n = n;
     pair_last_timestamp += refresh_cycles;
-    if (delta_p == 0U || delta_n == 0U) return VCO_STATUS_UNDERFLOW;
 
     // The differential decoder register cannot recover both inputs; each
     // coarse counter records VCO cycles during one configured refresh period.
     uint64_t denominator = (uint64_t)refresh_cycles * g_acceleration;
     uint32_t p_Hz = (uint32_t)(((uint64_t)delta_p * g_system_clock_Hz) / denominator);
     uint32_t n_Hz = (uint32_t)(((uint64_t)delta_n * g_system_clock_Hz) / denominator);
+    sample->p_Hz = p_Hz;
+    sample->n_Hz = n_Hz;
+    sample->p_uV = interpolate_Vin_uV(p_Hz);
+    sample->n_uV = interpolate_Vin_uV(n_Hz);
     if (p_Hz < _table_fosc_Hz[0] || n_Hz < _table_fosc_Hz[0]) return VCO_STATUS_UNDERFLOW;
     if (p_Hz > _table_fosc_Hz[TABLE_SIZE - 1] || n_Hz > _table_fosc_Hz[TABLE_SIZE - 1]) {
         return VCO_STATUS_OVERFLOW;
     }
 
-    sample->p_Hz = p_Hz;
-    sample->n_Hz = n_Hz;
-    sample->p_uV = interpolate_Vin_uV(p_Hz);
-    sample->n_uV = interpolate_Vin_uV(n_Hz);
     return VCO_STATUS_OK;
 }
 

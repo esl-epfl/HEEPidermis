@@ -39,42 +39,66 @@ For rates below 1 Hz, `gsr/demo` refreshes the VCO at 1 Hz and emits samples
 at the chosen average rate. `test_VCO_counter` requires at least 1 Hz.
 The current slider also sits below **Record**. It selects iDAC codes 1–255,
 corresponding exactly to 40–10200 nA in 40 nA steps. During recording, releasing
-the slider writes its value to firmware over JTAG. Build writes the selected
-startup frequency and current to the source, runs `make jtag_build`, and
+the slider writes its value to firmware over JTAG and saves it as the startup
+current for the next GUI/build. The default startup current is 520 nA; if the
+existing firmware image has a different startup value, the GUI applies the saved
+current after GDB starts the target. Build writes the selected startup frequency
+and current to the source, runs `make jtag_build`, and
 shows the `Cont` and `IntL` bank use lines from X-HEEP's memory report directly
-below the Build button. Build and serial output are available in the terminal
-panel at the bottom. The legacy `test_VCO_counter` application remains
+below the Build button. Build output is available in the terminal panel at the
+bottom. The legacy `test_VCO_counter` application remains
 selectable; its sampling frequency is also applied at Build. Very high rates
-can exceed the UART's capacity to print every sample; the terminal reports
-skipped measurements when that occurs.
+can exceed the UART's capacity to print every sample.
 
 The demo uses the GSR controller to configure the iDAC and VCO, then reads
 a synchronized P/N pair through the VCO SDK. It discards startup, stale,
 missed, and out of range frames instead of plotting them. The SDK is given the
 configured board clock and real hardware timing by the demo.
 
+The **Messages** panel stays visible at the bottom of the left column. Firmware
+information starts with `[i]` on UART and appears in cyan with a timestamp;
+GUI guidance appears in amber. It includes rebuild/reset reminders, pending
+settings changes, acknowledgments, and acquisition feedback. The bottom terminal
+keeps the full compiler and debug output. Consecutive identical messages are
+collapsed in the Messages panel.
+
+After three seconds without a valid pair, the demo reports missing signal,
+out-of-range P or N, an unresolved P−N difference, or missed refresh updates.
+Warnings repeat at most every three seconds, and signal recovery is reported.
+For the front-end model `P = reference − current / conductance`, a low P suggests
+decreasing current, while a high P suggests increasing it. Invalid N suggests
+checking its reference/supply. Missing signal requires checking the resistor or
+electrodes; lower sampling rates can help with sparse counts. Unresolved P−N
+suggests increasing current or lowering the sampling rate. These are manual
+suggestions; the firmware does not automatically change your settings.
+
 While recording `gsr/demo`, move either runtime slider and release it. The GUI
 writes its firmware volatile word through OpenOCD/JTAG, then reads it back. The
 firmware picks up the new value; it reconfigures the VCO refresh rate for a
 sampling change. It applies current through the GSR controller, checks the iDAC
-register, and prints a confirmation. The firmware confirms sampling changes
-over UART as well. The GUI shows current as applied only after that confirmation
-or a measurement line reporting the new current. An unconfirmed change shows
-an error six seconds after the JTAG write. The firmware also prints
-`I=<nA> nA` on each measurement line, so the GUI records the programmed current
-used for each sample and computes conductance from it. The demo still accepts
+register. UART sample records contain only four comma-separated integers per line:
+sample number, P frequency in Hz, N frequency in Hz, and injected current in nA.
+The GUI inverts the nominal VCO transfer curve to estimate voltages for plotting.
+Informative lines are separate from samples. `[i] Current set: <nA> nA` and
+`[i] Sampling set: <mHz> mHz` confirm settings even when no valid signal is present.
+The GUI waits for these firmware acknowledgments after JTAG writes. The demo still accepts
 `I=<nA>` commands on UART for use outside the GUI.
 
-The monitor reads the first two `uV` values from each firmware output line as
-VCO P and VCO N, then calculates P − N in the GUI. The full terminal output
-appears across the bottom. The upper right plot shows P and N on a fixed
-300–850 mV scale. The lower right plot shows tissue conductance in µS using
+The upper right plot shows P and N in mV, auto-scaled
+to the visible samples with about 5% headroom so the data uses roughly 90% of
+the plot height. The lower right plot shows tissue conductance in µS using
 the current reported with each sample. Both plots show raw samples as faint points and filtered
 values as lines. The default moving average window is 10 samples. The
 conductance line is calculated from the moving average of P − N. Set the
 averaging window to 1 to see the unfiltered signal. The x axes show seconds
-since the first sample. Drag the horizontal scrollbar to
-review earlier samples, and press **Live** to return to the newest data.
+since the first sample. Use the **Time zoom −/+** buttons to adjust the visible
+time range, drag the horizontal scrollbar to review earlier samples, and press
+**Live** to return to the newest data.
+
+Click or drag over either right-hand plot to place a shared vertical time cursor.
+The middle column then shows the transfer operating point and estimates averaged
+through that selected sample. **Live** moves the cursor back to the newest sample
+and resumes following incoming data.
 
 Every sample, including its injected current and computed conductance, is
 appended immediately to a session CSV under `sw/gui/outs/`.
@@ -86,8 +110,8 @@ and exported CSV include that current, so a change between recordings does
 not alter earlier conductance values.
 
 The middle panel shows the VCO transfer curve from the repository CSV and the
-latest P and N operating points using the voltages and frequencies printed by
-the firmware. Solid markers show averaged measured points; small rings show the
+latest P and N operating points mapped from the firmware frequencies. Solid
+markers show averaged measured points; small rings show the
 corresponding locations on the nominal curve. The markers use the same moving
 average window as the signal lines and update when that window changes.
 The wider middle column shares its available height evenly among the transfer,
@@ -108,3 +132,13 @@ The resolution map extends to 10 kHz to follow the slider; estimates above the
 measured timing range extrapolate the model.
 
 The header uses `docs/img/cheep_logo.png` and `docs/img/HEEPidermis_QR.png`.
+
+The GUI estimates a sample rate from the selected trailing sample window
+(default 100) and shows how long the reserved 16 KiB bank would hold 8,192
+16-bit delta samples at that rate. The capacity bar sits below the middle-column
+heatmaps and fills in their palette; at capacity it turns red and stays full until
+**RESET**. Linker placement keeps
+code, constants, globals, heap, and stack in sram0 while leaving the 16 KiB
+data region free for a future sample buffer.
+The GSR JTAG build uses size optimization, a 1.5 KiB stack, and a 256-byte heap.
+The CPU context area is word aligned to avoid a page-sized gap before program data.

@@ -58,17 +58,18 @@
         {
             name: code
             start: 0
-            // minimum size for freeRTOS and clang
-            size: 0x000005000
+            // SRAM0: firmware code and all program-owned runtime data.
+            size: 0x000003FFC
         }
         {
             name: data
-            start: 0x000005000
-            size:  0x000001FFC
+            start: 0x000004000
+            // SRAM1: keep the full 16 KiB available for acquired samples.
+            size:  0x000004000
         }
         {
             name: debug_mem
-            start: 0x000007FFC
+            start: 0x000003FFC
             size:  0x000000004
         }
     ]
