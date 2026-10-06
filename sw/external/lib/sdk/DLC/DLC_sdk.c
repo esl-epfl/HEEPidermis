@@ -28,6 +28,11 @@ dlc_status_t dlc_init(
     if (!config || !src_ptr || !results_buf || buf_size == 0 || input_samples == 0) {
         return DLC_STATUS_INVALID_ARGUMENT;
     }
+    uint8_t time_bits = config->time_bits ? config->time_bits : DLC_TIME_BITS;
+    if (time_bits < 1U || time_bits > 6U || config->discard_bits > 15U ||
+        config->log_level_width > 15U || config->dlvl_format > 1U)
+        return DLC_STATUS_INVALID_ARGUMENT;
+    uint8_t amplitude_bits = 8U - time_bits;
 
     // Program the dLC registers
     volatile uint32_t *dlvl_log_level_width = (volatile uint32_t *)(DLC_START_ADDRESS + DLC_DLVL_LOG_LEVEL_WIDTH_REG_OFFSET);
@@ -41,24 +46,24 @@ dlc_status_t dlc_init(
 
     // In sign-magnitude one bit is used for the sign, in two's complement all fields are used
     uint8_t n_bits_mag = config->dlvl_format
-                         ? DLC_AMPLITUDE_BITS
-                         : (DLC_AMPLITUDE_BITS - 1);
+                         ? amplitude_bits
+                         : (amplitude_bits - 1);
 
     // Set the register values based on configuration
     *dlvl_format_reg      = config->dlvl_format;
     *dlvl_log_level_width = config->log_level_width;
     *dlvl_n_bits_reg      = n_bits_mag;
     *dlvl_mask_reg        = (1u << n_bits_mag) - 1u;
-    *dt_mask_reg          = (1u << DLC_TIME_BITS) - 1u;
+    *dt_mask_reg          = (1u << time_bits) - 1u;
     *dlc_hysteresis_en    = config->hysteresis_en;
-    *dlc_discard_bits     = 0;
+    *dlc_discard_bits     = config->discard_bits;
     *dlc_size_reg         = input_samples;
 
     // Save the configured state for decode later on
     s_state.dlvl_n_bits  = n_bits_mag;
     s_state.dlvl_format  = config->dlvl_format;
     s_state.dlvl_mask    = (uint16_t)((1u << n_bits_mag) - 1u);
-    s_state.dt_mask      = (uint16_t)((1u << DLC_TIME_BITS) - 1u);
+    s_state.dt_mask      = (uint16_t)((1u << time_bits) - 1u);
 
     // Configure and launch the DMA
     dma_init(NULL);
@@ -71,16 +76,16 @@ dlc_status_t dlc_init(
     s_tgt_dst.ptr       = results_buf;
     s_tgt_dst.trig      = DMA_TRIG_MEMORY;
     s_tgt_dst.inc_d1_du = 1;           /* advance one byte per event    */
-    s_tgt_dst.type      = DMA_DATA_TYPE_BYTE;
+    s_tgt_dst.type      = config->halfword_output ? DMA_DATA_TYPE_HALF_WORD : DMA_DATA_TYPE_BYTE;
 
     s_trans.src        = &s_tgt_src;
     s_trans.dst        = &s_tgt_dst;
     s_trans.dim        = DMA_DIM_CONF_1D;
     s_trans.channel    = 0;
     s_trans.size_d1_du = input_samples;
-    s_trans.win_du     = buf_size;
-    s_trans.end        = DMA_TRANS_END_INTR;
-    s_trans.mode       = DMA_TRANS_MODE_CIRCULAR;
+    s_trans.win_du     = config->single_shot ? 0U : buf_size;
+    s_trans.end        = config->single_shot ? DMA_TRANS_END_POLLING : DMA_TRANS_END_INTR;
+    s_trans.mode       = config->single_shot ? DMA_TRANS_MODE_SINGLE : DMA_TRANS_MODE_CIRCULAR;
     s_trans.hw_fifo_en = true;
 
     dma_config_flags_t res;
@@ -93,6 +98,13 @@ dlc_status_t dlc_init(
     if (dma_launch(&s_trans) != DMA_CONFIG_OK) return DLC_STATUS_NOT_INITIALIZED;
 
     s_state.initialized = true;
+    return DLC_STATUS_OK;
+}
+
+dlc_status_t dlc_start_transaction(void) {
+    if (!s_state.initialized) return DLC_STATUS_NOT_INITIALIZED;
+    if (dma_load_transaction(&s_trans) != DMA_CONFIG_OK || dma_launch(&s_trans) != DMA_CONFIG_OK)
+        return DLC_STATUS_NOT_INITIALIZED;
     return DLC_STATUS_OK;
 }
 

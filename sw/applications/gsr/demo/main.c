@@ -6,7 +6,7 @@
 #include <stdint.h>
 
 #include "syscalls.h"
-#include "GSR_controller.h"
+#include "VCO_sdk.h"
 #include "REFs_ctrl.h"
 #include "iDAC_ctrl.h"
 #include "soc_ctrl.h"
@@ -14,22 +14,50 @@
 #include "uart.h"
 #include "uart_regs.h"
 
-// Build values provide startup defaults; the GUI can update both volatile words over JTAG.
+// Build values provide startup defaults; the GUI can update the volatile runtime words over JTAG.
 #define SYS_FCLK_HZ 10000000
 #define VCO_FS_HZ 10
 #define VCO_SAMPLE_RATE_MILLIHZ 10000
-#define INJECTED_CURRENT_NA 240
+#define INJECTED_CURRENT_NA 360
 
 #define IDAC_LSB_NA 40
 #define IDAC_MAX_CODE 255
 #define IREF_DEFAULT_CAL 255
 #define IDAC_DEFAULT_CAL 15
 #define VREF_DEFAULT_CAL 1023
+#ifndef GSR_DLC_ENABLED
+#define GSR_DLC_ENABLED 0
+#endif
+#ifndef GSR_DLC_LOG_WIDTH
+#define GSR_DLC_LOG_WIDTH 11
+#endif
+#ifndef GSR_DLC_TIME_BITS
+#define GSR_DLC_TIME_BITS 5
+#endif
+
+// 0: hardware register; 1: chip software; 2: host GUI.
+#ifndef GSR_DIFFERENTIAL_MODE
+#define GSR_DIFFERENTIAL_MODE 0
+#endif
+#ifndef VCO_SUPPLY_RATE_MILLIHZ
+#define VCO_SUPPLY_RATE_MILLIHZ 0
+#endif
+#if GSR_DIFFERENTIAL_MODE < 0 || GSR_DIFFERENTIAL_MODE > 2
+#error "Differential mode must be hardware (0), software (1), or GUI (2)"
+#endif
+#if GSR_DLC_ENABLED && GSR_DIFFERENTIAL_MODE == 2
+#error "GUI differential mode does not support dLC"
+#endif
+#if GSR_DLC_ENABLED
+#define GSR_USE_DLC
+#endif
 #define FEEDBACK_PERIOD_CC ((SYS_FCLK_HZ <= UINT32_MAX / 3U) ? (SYS_FCLK_HZ * 3U) : UINT32_MAX)
 
 // The GUI updates these words over JTAG; firmware rereads them in the acquisition loop.
 volatile uint32_t gsr_injected_current_nA = INJECTED_CURRENT_NA;
 volatile uint32_t gsr_sample_rate_millihz = VCO_SAMPLE_RATE_MILLIHZ;
+// Zero follows the signal sampling rate; nonzero selects independent P integration.
+volatile uint32_t gsr_supply_rate_millihz = VCO_SUPPLY_RATE_MILLIHZ;
 
 #if VCO_FS_HZ < 1 || (SYS_FCLK_HZ / VCO_FS_HZ) < 100
 #error "Sampling period must be at least 100 MCU cycles"
@@ -55,15 +83,14 @@ static char *append_u32(char *out, uint32_t value) {
     return out;
 }
 
-static void print_sample(uint32_t index, uint32_t p_Hz, uint32_t n_Hz, uint32_t current_nA) {
-    char line[46];
-    char *out = line;
-    out = append_u32(out, index); *out++ = ',';
-    out = append_u32(out, p_Hz); *out++ = ',';
-    out = append_u32(out, n_Hz); *out++ = ',';
-    out = append_u32(out, current_nA); *out++ = '\n';
-    *out = '\0';
-    _writestr(line);
+static void number(uint32_t value) {
+    char text[11]; *append_u32(text, value) = '\0'; _writestr(text);
+}
+static void field(uint32_t value) { _writestr(","); number(value); }
+static void signed_field(int32_t value) {
+    _writestr(",");
+    if (value < 0) _writestr("-");
+    number(value < 0 ? (uint32_t)(-(int64_t)value) : (uint32_t)value);
 }
 
 static void print_setting(const char *name, uint32_t value, const char *unit) {
@@ -73,22 +100,6 @@ static void print_setting(const char *name, uint32_t value, const char *unit) {
     _writestr(name);
     _writestr(number);
     _writestr(unit);
-}
-
-static const char *acquisition_feedback(gsr_status_t status, const vco_pair_sample_t *pair) {
-    if (status == GSR_STATUS_MISSED_UPDATE)
-        return "[i] Missed updates: decrease sample rate (CPU/UART limit).\n";
-    if (status == GSR_STATUS_UNDERFLOW || status == GSR_STATUS_OVERFLOW) {
-        if (pair->n_Hz < VCO_MIN_FREQUENCY_HZ || pair->n_Hz > VCO_MAX_FREQUENCY_HZ)
-            return "[i] N out of range: check reference/supply; lower sample rate if counts are sparse.\n";
-        // Front-end model: P voltage = reference - current / conductance.
-        if (pair->p_Hz < VCO_MIN_FREQUENCY_HZ)
-            return "[i] P below range: decrease current; check resistor/contact; lower sample rate if counts are sparse.\n";
-        if (pair->p_Hz > VCO_MAX_FREQUENCY_HZ)
-            return "[i] P above range: increase current to lower P voltage.\n";
-        return "[i] P-N unresolved: increase current or decrease sample rate.\n";
-    }
-    return "[i] Acquisition setup error: lower sample rate and rebuild.\n";
 }
 
 typedef struct {
@@ -123,6 +134,8 @@ static void poll_current_command(const uart_t *uart, current_command_t *command)
     }
 }
 
+#include "acquisition_demo.h"
+
 int main(void) {
     soc_ctrl_t soc_ctrl;
     soc_ctrl.base_addr = mmio_region_from_addr((uintptr_t)SOC_CTRL_START_ADDRESS);
@@ -135,6 +148,7 @@ int main(void) {
         .nco = ((uint64_t)(SYS_FCLK_HZ / 20U) << (NCO_WIDTH + 4)) / SYS_FCLK_HZ,
     };
     if (uart_init(&uart) != kErrorOk) return 1;
+    _writestr("\n"); // terminate any partial UART line left by the previous image
 
     REFs_calibrate(IREF_DEFAULT_CAL, IREF1);
     REFs_calibrate(VREF_DEFAULT_CAL, VREF);
@@ -148,126 +162,8 @@ int main(void) {
         return 1;
     }
 
-    gsr_controller_t controller = {0};
-    gsr_status_t status = gsr_set_default_settings(&controller);
-    if (status != GSR_STATUS_OK) {
-        return 1;
-    }
-    uint32_t current_nA = gsr_injected_current_nA;
-    controller.config.channel = VCO_CHANNEL_DIFFERENTIAL;
-    controller.config.baseline_refresh_rate_Hz = VCO_FS_HZ;
-    controller.config.phasic_refresh_rate_Hz = VCO_FS_HZ;
-    controller.config.recovery_refresh_rate_Hz = VCO_FS_HZ;
-    controller.config.current_refresh_rate_Hz = VCO_FS_HZ;
-    controller.config.duty_cycle_code = 1U;
-    controller.config.idac_code = current_nA / IDAC_LSB_NA;
-    controller.config.M = 1U;
-    status = gsr_controller_init(&controller);
-    if (status != GSR_STATUS_OK) {
-        _writestr("[i] GSR init failed: lower sample rate and rebuild.\n");
-        return 1;
-    }
-
-    uint32_t sample_rate_millihz = gsr_sample_rate_millihz;
-    uint32_t index = 0U;
-    current_command_t command = {0};
-    uint32_t last_output_cycle = timer_get_cycles();
-    uint32_t output_period_cycles =
-        (uint32_t)(((uint64_t)SYS_FCLK_HZ * 1000U) / sample_rate_millihz);
-    uint32_t last_valid_cycle = last_output_cycle;
-    uint32_t last_feedback_cycle = last_output_cycle;
-    bool signal_warning = false;
-    const char *no_signal = "[i] No signal: check resistor/electrodes; lower sample rate if VCO counts are sparse.\n";
-    const char *feedback = no_signal;
-    print_setting("Current set: ", current_nA, " nA\n");
-    print_setting("Sampling set: ", sample_rate_millihz, " mHz\n");
-    _writestr("[i] GSR demo ready.\n");
-    while (1) {
-        poll_current_command(&uart, &command);
-        uint32_t requested_rate_millihz = gsr_sample_rate_millihz;
-        if (requested_rate_millihz != sample_rate_millihz) {
-            uint32_t refresh_rate_Hz = requested_rate_millihz < 1000U ? 1U : requested_rate_millihz / 1000U;
-            uint64_t period_cycles = requested_rate_millihz == 0U ? UINT64_MAX :
-                ((uint64_t)SYS_FCLK_HZ * 1000U) / requested_rate_millihz;
-            if (requested_rate_millihz < 100U || requested_rate_millihz > 10000000U ||
-                (requested_rate_millihz >= 1000U && requested_rate_millihz % 1000U != 0U) ||
-                refresh_rate_Hz > SYS_FCLK_HZ / 100U ||
-                (requested_rate_millihz < 1000U && period_cycles > UINT32_MAX)) {
-                gsr_sample_rate_millihz = sample_rate_millihz;
-                _writestr("[i] Sampling change failed: outside timer/rate limits.\n");
-            } else {
-                controller.config.baseline_refresh_rate_Hz = refresh_rate_Hz;
-                controller.config.phasic_refresh_rate_Hz = refresh_rate_Hz;
-                controller.config.recovery_refresh_rate_Hz = refresh_rate_Hz;
-                status = gsr_controller_set_config(&controller);
-                if (status == GSR_STATUS_OK) {
-                    sample_rate_millihz = requested_rate_millihz;
-                    output_period_cycles = (uint32_t)period_cycles;
-                    last_output_cycle = timer_get_cycles();
-                    print_setting("Sampling set: ", sample_rate_millihz, " mHz\n");
-                } else {
-                    uint32_t old_refresh_rate = sample_rate_millihz < 1000U ? 1U : sample_rate_millihz / 1000U;
-                    controller.config.baseline_refresh_rate_Hz = old_refresh_rate;
-                    controller.config.phasic_refresh_rate_Hz = old_refresh_rate;
-                    controller.config.recovery_refresh_rate_Hz = old_refresh_rate;
-                    gsr_controller_set_config(&controller);
-                    gsr_sample_rate_millihz = sample_rate_millihz;
-                    _writestr("[i] Sampling change failed: VCO setup rejected.\n");
-                }
-            }
-        }
-        uint32_t requested_nA = gsr_injected_current_nA;
-        if (requested_nA != current_nA) {
-            if (requested_nA < IDAC_LSB_NA || requested_nA > IDAC_LSB_NA * IDAC_MAX_CODE ||
-                requested_nA % IDAC_LSB_NA != 0U) {
-                gsr_injected_current_nA = current_nA;
-                _writestr("[i] Current change failed: use 40 nA steps (40..10200).\n");
-                continue;
-            }
-            controller.config.idac_code = requested_nA / IDAC_LSB_NA;
-            status = gsr_controller_set_config(&controller);
-            uint32_t dac_code = mmio_region_read32(
-                mmio_region_from_addr((uintptr_t)IDAC_CTRL_START_ADDRESS),
-                IDAC_CTRL_CURRENT_REG_OFFSET) & IDAC_CTRL_CURRENT_CURRENT_1_MASK;
-            if (status == GSR_STATUS_OK && dac_code == controller.config.idac_code) {
-                current_nA = requested_nA;
-                print_setting("Current set: ", current_nA, " nA\n");
-            } else {
-                controller.config.idac_code = current_nA / IDAC_LSB_NA;
-                gsr_controller_set_config(&controller);
-                gsr_injected_current_nA = current_nA;
-                _writestr("[i] Current change failed: iDAC readback mismatch.\n");
-            }
-        }
-        vco_pair_sample_t pair = {0};
-        status = gsr_controller_read_pair(&controller, &pair);
-        uint32_t now = timer_get_cycles();
-        if (status != GSR_STATUS_OK) {
-            if (status != GSR_STATUS_NO_NEW_SAMPLE)
-                feedback = acquisition_feedback(status, &pair);
-            // Startup/stale reads are normal. Warn only after sustained failure,
-            // then repeat at most once per three seconds, even in a tight loop.
-            if ((uint32_t)(now - last_valid_cycle) >= FEEDBACK_PERIOD_CC &&
-                (uint32_t)(now - last_feedback_cycle) >= FEEDBACK_PERIOD_CC) {
-                _writestr(feedback);
-                last_feedback_cycle = now;
-                signal_warning = true;
-            }
-            continue;
-        }
-        last_valid_cycle = now;
-        feedback = no_signal;
-        if (signal_warning) {
-            _writestr("[i] Signal recovered.\n");
-            signal_warning = false;
-        }
-
-        if (sample_rate_millihz < 1000U) {
-            if ((uint32_t)(now - last_output_cycle) < output_period_cycles) continue;
-            last_output_cycle += output_period_cycles;
-        }
-
-        print_sample(index, pair.p_Hz, pair.n_Hz, controller.sample.current_nA);
-        index++;
-    }
+    run_acquisition(&uart);
+    _writestr("[i] Acquisition stopped: reset board and start recording again.\n");
+    // Returning from main would reenter startup with live peripheral state.
+    while (1) __asm__ volatile ("wfi");
 }

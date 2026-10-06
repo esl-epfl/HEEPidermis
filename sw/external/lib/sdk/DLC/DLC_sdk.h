@@ -20,7 +20,7 @@ typedef enum {
     DLC_STATUS_NOT_INITIALIZED,
     DLC_STATUS_INVALID_ARGUMENT,
     DLC_STATUS_NO_EVENT,        /* ΔLvl = 0: no crossing in this packet  */
-    DLC_STATUS_INVALID_EVENT,   /* ΔT   = 0: malformed or overflow event */
+    DLC_STATUS_INVALID_EVENT,   /* reserved; ΔT=0 is a valid continuation */
 } dlc_status_t;
 
 // All dLC hardware knobs in one place.
@@ -28,6 +28,10 @@ typedef struct {
     uint8_t log_level_width;    // log2 of the quantization step in source counts
     uint8_t dlvl_format;        // 0 = sign-magnitude, 1 = two's complement
     uint8_t hysteresis_en;      // 1 = enable 1-level dead zone against chattering
+    uint8_t time_bits;          // 0 preserves the legacy 6-bit time field; otherwise 1..6
+    uint8_t discard_bits;       // scale the signed 32-bit source into the hardware's 16-bit input
+    bool single_shot;           // finite transaction, polled by the caller
+    bool halfword_output;       // distinguish untouched 0xffff words from any 8-bit event
 } dlc_config_t;
 
 /*
@@ -46,6 +50,9 @@ dlc_status_t dlc_init(
 
 // Write the initial quantized level into the dLC CURR_LVL register.
 void dlc_set_initial_level(uint32_t level);
+
+// Relaunch a completed finite transaction without changing its current level.
+dlc_status_t dlc_start_transaction(void);
 
 /*
 Decode one raw 8-bit event byte into its two fields.

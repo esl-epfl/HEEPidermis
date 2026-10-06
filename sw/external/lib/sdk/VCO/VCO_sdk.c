@@ -56,7 +56,10 @@ const uint32_t _table_kvco_Hz_per_V[TABLE_SIZE] = {
 #define VCO_FLAG_OVERFLOW        (1U << 4)
 
 static uint32_t g_refresh_rate_Hz = 0;
+
 static uint32_t g_system_clock_Hz = SYS_FCLK_HZ;
+
+uint32_t vco_get_clock_hz(void) { return g_system_clock_Hz; }
 static uint32_t g_acceleration = VCO_ACCEL_RATIO;
 static vco_sdk_t vco_data;
 static bool pair_seeded = false;
@@ -64,6 +67,7 @@ static bool pair_has_prev = false;
 static uint32_t pair_last_timestamp;
 static uint32_t pair_prev_p;
 static uint32_t pair_prev_n;
+static uint8_t pair_prev_p_phase, pair_prev_n_phase;
 
 static bool vco_flag_is_set(uint8_t flag) {
     return (vco_data.flags & flag) != 0U;
@@ -380,16 +384,28 @@ vco_status_t vco_get_Vin_uV(uint32_t* vin_uV){
     return VCO_STATUS_OK;
 }
 
-static bool vco_read_stable_pair(uint32_t *p, uint32_t *n) {
+static uint8_t vco_phase(uint32_t fine) {
+    uint32_t bits = fine >> 1;
+    uint8_t ones = 0;
+    while (bits) { ones += bits & 1U; bits >>= 1; }
+    return (fine & 1U) ? ones : 61U - ones;
+}
+
+static bool vco_read_stable_pair(vco_pair_sample_t *sample) {
     // Both coarse registers latch on the same refresh. Reading twice detects
     // a refresh that occurs between the P and N bus transactions.
     uint32_t first_p = VCOp_get_coarse();
     uint32_t first_n = VCOn_get_coarse();
+    uint32_t p_fine = VCOp_get_fine(), n_fine = VCOn_get_fine();
+    int32_t difference = (int32_t)VCO_get_count();
     uint32_t second_p = VCOp_get_coarse();
     uint32_t second_n = VCOn_get_coarse();
-    if (first_p != second_p || first_n != second_n) return false;
-    *p = second_p;
-    *n = second_n;
+    if (first_p != second_p || first_n != second_n ||
+        p_fine != VCOp_get_fine() || n_fine != VCOn_get_fine() ||
+        difference != (int32_t)VCO_get_count()) return false;
+    sample->p_count = second_p; sample->n_count = second_n;
+    sample->p_fine = p_fine; sample->n_fine = n_fine;
+    sample->differential_count = difference;
     return true;
 }
 
@@ -401,13 +417,15 @@ vco_status_t vco_get_pair(vco_pair_sample_t *sample) {
     }
 
     uint32_t refresh_cycles = vco_get_refresh_cycles();
-    uint32_t p, n;
-    if (!vco_read_stable_pair(&p, &n)) return VCO_STATUS_NO_NEW_SAMPLE;
+    if (!vco_read_stable_pair(sample)) return VCO_STATUS_NO_NEW_SAMPLE;
+    uint32_t p = sample->p_count, n = sample->n_count;
+    uint8_t p_phase = vco_phase(sample->p_fine), n_phase = vco_phase(sample->n_fine);
     uint32_t now = timer_get_cycles();
 
     if (!pair_seeded) {
         pair_prev_p = p;
         pair_prev_n = n;
+        pair_prev_p_phase = p_phase; pair_prev_n_phase = n_phase;
         pair_seeded = true;
         return VCO_STATUS_NO_NEW_SAMPLE;
     }
@@ -415,6 +433,7 @@ vco_status_t vco_get_pair(vco_pair_sample_t *sample) {
         if (p == pair_prev_p && n == pair_prev_n) return VCO_STATUS_NO_NEW_SAMPLE;
         pair_prev_p = p;
         pair_prev_n = n;
+        pair_prev_p_phase = p_phase; pair_prev_n_phase = n_phase;
         pair_last_timestamp = now;
         pair_has_prev = true;
         return VCO_STATUS_NO_NEW_SAMPLE;
@@ -434,7 +453,17 @@ vco_status_t vco_get_pair(vco_pair_sample_t *sample) {
 
     uint32_t delta_p = (p - pair_prev_p) & VCO_DECODER_ADC_P_COARSE_OUT_ADC_P_COARSE_OUT_MASK;
     uint32_t delta_n = (n - pair_prev_n) & VCO_DECODER_ADC_N_COARSE_OUT_ADC_N_COARSE_OUT_MASK;
-    if (delta_p == 0U && delta_n == 0U) return VCO_STATUS_NO_NEW_SAMPLE;
+    if (delta_p == 0U && delta_n == 0U && p_phase == pair_prev_p_phase && n_phase == pair_prev_n_phase)
+        return VCO_STATUS_NO_NEW_SAMPLE;
+
+    int32_t fine_p = (int32_t)p_phase - pair_prev_p_phase;
+    int32_t fine_n = (int32_t)n_phase - pair_prev_n_phase;
+    uint32_t coarse_p = delta_p * VCO_DECODER_PHASES, coarse_n = delta_n * VCO_DECODER_PHASES;
+    // With an unpowered/disconnected VCO its fine phases can move backwards
+    // while the coarse counter stays zero. Do not wrap that into ~4G counts.
+    sample->p_phase_counts = fine_p < 0 && coarse_p < (uint32_t)-fine_p ? 0U : coarse_p + fine_p;
+    sample->n_phase_counts = fine_n < 0 && coarse_n < (uint32_t)-fine_n ? 0U : coarse_n + fine_n;
+    pair_prev_p_phase = p_phase; pair_prev_n_phase = n_phase;
 
     pair_prev_p = p;
     pair_prev_n = n;
@@ -442,9 +471,9 @@ vco_status_t vco_get_pair(vco_pair_sample_t *sample) {
 
     // The differential decoder register cannot recover both inputs; each
     // coarse counter records VCO cycles during one configured refresh period.
-    uint64_t denominator = (uint64_t)refresh_cycles * g_acceleration;
-    uint32_t p_Hz = (uint32_t)(((uint64_t)delta_p * g_system_clock_Hz) / denominator);
-    uint32_t n_Hz = (uint32_t)(((uint64_t)delta_n * g_system_clock_Hz) / denominator);
+    uint64_t denominator = (uint64_t)refresh_cycles * g_acceleration * VCO_DECODER_PHASES;
+    uint32_t p_Hz = (uint32_t)(((uint64_t)sample->p_phase_counts * g_system_clock_Hz) / denominator);
+    uint32_t n_Hz = (uint32_t)(((uint64_t)sample->n_phase_counts * g_system_clock_Hz) / denominator);
     sample->p_Hz = p_Hz;
     sample->n_Hz = n_Hz;
     sample->p_uV = interpolate_Vin_uV(p_Hz);

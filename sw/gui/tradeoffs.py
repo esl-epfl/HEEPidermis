@@ -27,8 +27,7 @@ class TradeoffModel:
         self.g_values_us = np.geomspace(1.0, 100.0, 25)
         self.current_values_ua = np.linspace(0.04, 10.2, 19)
         self.rate_values_hz = np.geomspace(0.1, 10_000.0, 29)
-        self.n_reference_v = 0.8
-        self.n_reference_power_uw = float(self._vco_power_uw(self.n_reference_v))
+        self.reference_v = 0.8
 
     def _vco_power_uw(self, voltage_v):
         voltage = np.clip(np.asarray(voltage_v), 0.2, 0.85)
@@ -38,8 +37,8 @@ class TradeoffModel:
         g = np.asarray(g_us, dtype=float)
         current = np.asarray(current_ua, dtype=float)
         with np.errstate(divide="ignore", invalid="ignore"):
-            p_v = 0.8 - current / g if p_mv is None else np.asarray(p_mv) / 1000
-        n_v = self.n_reference_v if n_mv is None else np.asarray(n_mv) / 1000
+            n_v = self.reference_v - current / g if n_mv is None else np.asarray(n_mv) / 1000
+        p_v = self.reference_v if p_mv is None else np.asarray(p_mv) / 1000
         result = self._vco_power_uw(p_v) + self._vco_power_uw(n_v) + 0.8 * current + 0.4
         return np.where((g > 0) & (current > 0), result, np.nan)
 
@@ -49,21 +48,22 @@ class TradeoffModel:
         interpolator = self.vco.interp_adev_p if channel == "P" else self.vco.interp_adev_n
         return interpolator(points).reshape(voltage.shape)
 
-    def resolution_bits(self, g_us, rate_hz, current_ua, p_mv=None, n_mv=None):
+    def resolution_bits(self, g_us, rate_hz, current_ua, p_mv=None, n_mv=None, supply_rate_hz=None):
         g, rate = np.broadcast_arrays(np.asarray(g_us, dtype=float), np.asarray(rate_hz, dtype=float))
         current = np.asarray(current_ua, dtype=float)
         with np.errstate(divide="ignore", invalid="ignore"):
             high_v = np.clip(0.8 - current / (g + 0.5), 0.2, 0.85)
             low_v = np.clip(0.8 - current / (g - 0.5), 0.2, 0.85)
         signal_v = np.abs(high_v - low_v)
-        p_v = (high_v + low_v) / 2 if p_mv is None else np.asarray(p_mv, dtype=float) / 1000
-        n_v = self.n_reference_v if n_mv is None else np.asarray(n_mv, dtype=float) / 1000
+        n_v = (high_v + low_v) / 2 if n_mv is None else np.asarray(n_mv, dtype=float) / 1000
+        p_v = self.reference_v if p_mv is None else np.asarray(p_mv, dtype=float) / 1000
         p_hz = self.vco.interp_freq(p_v)
         n_hz = self.vco.interp_freq(n_v)
         p_slope = np.abs(self.vco.kvco_func(p_v))
         n_slope = np.abs(self.vco.kvco_func(n_v))
         with np.errstate(divide="ignore", invalid="ignore"):
-            noise_p = p_hz * self._adev("P", p_v, rate) / p_slope
+            p_rate = rate if supply_rate_hz is None else np.asarray(supply_rate_hz, dtype=float)
+            noise_p = p_hz * self._adev("P", p_v, p_rate) / p_slope
             noise_n = n_hz * self._adev("N", n_v, rate) / n_slope
             noise_v = np.sqrt(noise_p ** 2 + noise_n ** 2)
             snr_db = 10 * np.log10(signal_v ** 2 / noise_v ** 2) + 10 * np.log10(rate)
@@ -75,6 +75,6 @@ class TradeoffModel:
         g, current = np.meshgrid(self.g_values_us, self.current_values_ua)
         return self.power_uw(g, current)
 
-    def resolution_map(self, current_ua: float):
+    def resolution_map(self, current_ua: float, supply_rate_hz=None):
         g, rate = np.meshgrid(self.g_values_us, self.rate_values_hz)
-        return self.resolution_bits(g, rate, current_ua)
+        return self.resolution_bits(g, rate, current_ua, supply_rate_hz=supply_rate_hz)

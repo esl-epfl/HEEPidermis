@@ -14,13 +14,15 @@ This layer handles everything that knows about VCOs.
 
 Reuses vco_status_t:
   VCO_STATUS_NO_NEW_SAMPLE – ΔLvl = 0, no crossing
-  VCO_STATUS_MISSED_UPDATE – ΔT = 0, malformed event
+VCO_STATUS_MISSED_UPDATE – invalid reconstructed level or malformed event
+Zero-time continuation packets are legitimate hardware output.
 */
 
 // State maintained across events to reconstruct Vin.
 typedef struct {
     int32_t         current_level;   // absolute quantized level (signed)
     uint32_t        level_width;     // counts per level = 2^log_level_width
+    uint8_t         discard_bits;
     uint32_t        refresh_rate_Hz;
     vco_channel_t   channel;
     bool            initialized;
@@ -38,6 +40,7 @@ vco_status_t vco_dlc_initialize(
 );
 
 vco_status_t vco_dlc_config(vco_channel_t channel, uint32_t refresh_rate_Hz);
+int32_t vco_dlc_initial_level(void);
 
 //Decode one dLC event and return the reconstructed Vin.
 vco_status_t vco_dlc_process_event(uint8_t packed_event, uint32_t *vin_uV);

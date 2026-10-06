@@ -60,11 +60,17 @@ typedef struct {
     uint32_t n_uV;
     uint32_t p_Hz;
     uint32_t n_Hz;
+    uint32_t p_count, n_count;     // raw latched coarse registers
+    uint32_t p_fine, n_fine;       // raw latched thermometer phases
+    uint32_t p_phase_counts, n_phase_counts; // counts in this integration window
+    int32_t differential_count;   // signed hardware P-N decoder register
 } vco_pair_sample_t;
 
 // Frequency range of the voltage calibration LUT.
 #define VCO_MIN_FREQUENCY_HZ 24000U
 #define VCO_MAX_FREQUENCY_HZ 1051710U
+
+uint32_t vco_get_clock_hz(void);
 
 // Set timer clock and simulation acceleration before vco_initialize().
 // Existing users retain the SDK's 10 MHz / 100x simulation defaults.
