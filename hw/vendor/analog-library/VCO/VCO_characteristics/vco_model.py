@@ -277,19 +277,18 @@ class VCOADCModel:
         out = f_osc_Hz * adev
         return out.item() if out.ndim == 0 else out
     
-    def df_osc_sampling_Hz(self, f_int_Hz=None, avg_window=1):
+    def df_osc_sampling_Hz(self, f_int_Hz=None):
         if f_int_Hz is None:
             raise ValueError("f_int_Hz must be provided to compute delta_f_osc_Hz.")
 
         f_int_Hz = np.asarray(f_int_Hz, dtype=float)
-        avg_window = float(avg_window)
-        invalid = (f_int_Hz <= 0) | (avg_window <= 0)
-        result = np.where(invalid, np.nan, f_int_Hz * np.sqrt(avg_window))
+        invalid = (f_int_Hz <= 0)
+        result = np.where(invalid, np.nan, f_int_Hz)
 
         return result.item() if np.ndim(result) == 0 else result
 
-    def df_osc_Hz(self, vin_mV, f_int_Hz, variance=1, avg_window=1):
-        df_samp = self.df_osc_sampling_Hz(f_int_Hz, avg_window=avg_window)
+    def df_osc_Hz(self, vin_mV, f_int_Hz, variance=1):
+        df_samp = self.df_osc_sampling_Hz(f_int_Hz)
         df_adev = variance * self.df_osc_adev_Hz(vin_mV, f_int_Hz)
         out = np.maximum(df_samp, df_adev)
         return out.item() if np.ndim(out) == 0 else out
@@ -306,9 +305,9 @@ class VCOADCModel:
 
         return out.item() if out.ndim == 0 else out
 
-    def delta_G_uS(self, G_uS, vin_mV, i_dc_uA, f_int_Hz, variance=1, avg_window=1):
+    def delta_G_uS(self, G_uS, vin_mV, i_dc_uA, f_int_Hz, variance=1 ):
         k_vco_kHz_per_mV = self.kvco_kHz_per_mV(vin_mV)  
-        df_osc = self.df_osc_Hz(vin_mV=vin_mV, f_int_Hz=f_int_Hz, variance=variance, avg_window=avg_window)
+        df_osc = self.df_osc_Hz(vin_mV=vin_mV, f_int_Hz=f_int_Hz, variance=variance)
 
         _, _, vin_2d, _, vin_scalar, idc_scalar = self._prepare_grid(vin_mV, i_dc_uA)
         vin_V = vin_2d * 1e-3
@@ -360,7 +359,7 @@ class VCOADCModel:
     def i_dc_max(self, G_uS):
         return min(float(G_uS * (self.vdd_mV() - self.params.vin_min_mV) / 1000), self.params.idc_max)
     
-    def compute_delta_G_range_nS(self, G_uS, f_int_Hz, variance, avg_window):
+    def compute_delta_G_range_nS(self, G_uS, f_int_Hz, variance):
         """Compute min/max deltaG range for given G and f_int values"""
         i_vals = self.params.i_dc_range
         max_i_dc = self.i_dc_max(G_uS)
@@ -375,8 +374,7 @@ class VCOADCModel:
                 vin_mV=vin_mV,
                 i_dc_uA=i_dc,
                 f_int_Hz=f_int_Hz,
-                variance=variance,
-                avg_window=avg_window
+                variance=variance
             )
             deltaG_vals.append(delta_G_us)
             valid_mask.append(np.isfinite(delta_G_us))

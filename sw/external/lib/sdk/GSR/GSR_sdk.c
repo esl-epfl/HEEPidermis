@@ -106,6 +106,34 @@ gsr_status_t gsr_get_conductance_nS(uint32_t *conductance_nS, uint32_t* vin_uV_r
 
 }
 
+gsr_status_t gsr_count_to_conductance_nS(uint32_t decoder_count, uint32_t *conductance_nS, uint32_t *vin_uV_ret)
+{
+    uint32_t vin_uV = 0;
+    vco_status_t vst;
+
+    if (conductance_nS == NULL) {
+        return GSR_STATUS_INVALID_ARGUMENT;
+    }
+
+    vst = vco_count_to_Vin_uV(decoder_count, &vin_uV);
+    if (vst != VCO_STATUS_OK) {
+        return gsr_status_from_vco(vst);
+    }
+
+    uint32_t dv_uV = VCO_SUPPLY_VOLTAGE_UV - vin_uV;
+    if (dv_uV == 0U) {
+        return GSR_STATUS_OVERFLOW;
+    }
+
+    *conductance_nS = (uint32_t)(((uint64_t)current_nA * 1000000ULL) / dv_uV);
+
+    if (vin_uV_ret != NULL) {
+        *vin_uV_ret = vin_uV;
+    }
+
+    return GSR_STATUS_OK;
+}
+
 /*
 
 Compute an averaged conductance estimate from multiple valid samples.

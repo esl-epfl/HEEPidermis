@@ -15,9 +15,9 @@ const gsr_resolution_profile_t k_resolution_profiles[GSR_OPCTRL_PROFILE_COUNT] =
 };
 
 const gsr_refresh_profile_t k_refresh_profiles[GSR_OPCTRL_PROFILE_COUNT] = {
-    { .refresh_rate_Hz = 2U },  // low refresh rate for baseline tracking
-    { .refresh_rate_Hz = 5U },  // medium refresh rate for recovery tracking
-    { .refresh_rate_Hz = 10U }, // high refresh rate for phasic event capture
+    { .refresh_rate_Hz = 20U },  // low refresh rate for baseline tracking
+    { .refresh_rate_Hz = 30U },  // medium refresh rate for recovery tracking
+    { .refresh_rate_Hz = 40U }, // high refresh rate for phasic event capture
 };
 
 const gsr_power_profile_t k_power_profiles[GSR_OPCTRL_PROFILE_COUNT] = {

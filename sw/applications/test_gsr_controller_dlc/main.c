@@ -2,12 +2,9 @@
 // Solderpad Hardware License, Version 2.1, see LICENSE.md for details.
 // SPDX-License-Identifier: Apache-2.0 WITH SHL-2.1
 //
-// File: test_reconstruct_dlc/main.c
-// Author: Omar Shibli
-// Description: Tests event-based GSR reconstruction using the dLC pipeline.
-//              Uses GSR_sdk (compiled with GSR_USE_VCO_DLC) to get conductance
-//              directly from dLC events.
-//              Output format matches test_reconstruction for easy comparison.
+// File: test_gsr_controller_dlc/main.c
+// Author: Ismail Essaidi
+// Description: 
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,12 +43,12 @@
 #define IDAC_DEFAULT_CAL   15
 #define VREF_DEFAULT_CAL   0b1111111111U
 // dLC configuration
-#define DLC_LOG_LVL_W      5            // level width = 128 counts
-#define DLC_INPUT_SAMPLES  100          // samples per transaction → 200 ms
+#define DLC_LOG_LVL_W      7            // level width = 128 counts
+#define DLC_INPUT_SAMPLES  20         // samples per transaction → 200 ms
 #define DLC_BUF_SIZE       DLC_INPUT_SAMPLES
 
 // Stop after this many transactions
-#define WINDOWS_TO_PROCESS 15
+#define WINDOWS_TO_PROCESS 3
 
 #define INTR_DMA_TRANS_DONE  (1 << 19)
 #define INTR_DMA_WINDOW_DONE (1 << 30)
@@ -101,11 +98,35 @@ static void hw_init(void) {
     timer_cycles_init();
     timer_start();
 }
+// Load a default controller configuration for standard GSR operation.
+static gsr_status_t set_default_settings(gsr_controller_t *ctrl) {
+
+    if (ctrl == 0) {
+        return GSR_STATUS_INVALID_ARGUMENT;
+    }
+
+    ctrl->config.channel = VCO_CHANNEL_P;
+    ctrl->config.duty_cycle_code = 1; // 100% duty cycle
+    ctrl->config.M = 1; // no oversampling by default, just take one measurement per sample. This can be increased for more noisy environments at the cost of temporal resolution and power consumption.
+    ctrl->config.baseline_refresh_rate_Hz = 100;
+    ctrl->config.phasic_refresh_rate_Hz = 10;
+    ctrl->config.recovery_refresh_rate_Hz = 5;
+    ctrl->config.idac_code = 7;
+    ctrl->config.current_refresh_rate_Hz = ctrl->config.baseline_refresh_rate_Hz; // initialize the current refresh rate to the baseline rate
+    ctrl->amplitude_threshold_nS = 80;
+    ctrl->slope_threshold_nS = 40;
+    ctrl->settle_threshold_nS = 25;
+    ctrl->recovery_count_required = 8;
+
+    ctrl->dlc_used = false;
+
+    return GSR_STATUS_OK;
+}
 
 static int init_controller(gsr_controller_t *ctrl, gsr_dlc_config_t *gsr_dlc_cfg) {
     gsr_status_t st;
 
-    st = gsr_set_default_settings(ctrl);
+    st = set_default_settings(ctrl);
     if (st != GSR_STATUS_OK) {
         debug_mark(0xE1U, (uint32_t)st);
         return -1;
@@ -121,13 +142,6 @@ static int init_controller(gsr_controller_t *ctrl, gsr_dlc_config_t *gsr_dlc_cfg
         return -1;
     }
 
-    // ctrl->mode = GSR_CTRL_MODE_BASELINE;
-    // st = gsr_controller_set_config(ctrl);
-    // if (st != GSR_STATUS_OK) {
-    //     debug_mark(0xE3U, (uint32_t)st);
-    //     return -1;
-    // }
-
     return 0;
 }
 
@@ -136,6 +150,7 @@ static int process_window(gsr_controller_t *ctrl) {
     int valid = 0;
     const gsr_sample_t *sample;
     gsr_status_t st;
+    uint32_t no_new = 0, missed = 0, other = 0;
 
     for (int i = 0; i < DLC_BUF_SIZE; i++) {
         uint32_t conductance_nS = 0;
@@ -150,7 +165,17 @@ static int process_window(gsr_controller_t *ctrl) {
             // }
             // debug_mark(0, sample->G_nS);
             debug_mark(0, conductance_nS);
+            debug_mark(0xA0U, valid);
             valid++;
+        }else if (st == GSR_STATUS_NO_NEW_SAMPLE) {
+            no_new++;
+            // debug_mark(0xA1U, no_new);
+        } else if (st == GSR_STATUS_MISSED_UPDATE) {
+            missed++;
+            // debug_mark(0xA2U, missed);
+        } else {
+            other++;
+            // debug_mark(0xA3U, other);
         }
         // NO_NEW_SAMPLE and MISSED_UPDATE skipped
     }
@@ -185,10 +210,11 @@ int main(void) {
     if (init_controller(&ctrl, &gsr_dlc_cfg) != 0) {
         return -1;
     }
+    debug = 'Star';
 
     // Enable interrupts and run the processing loop.
     CSR_SET_BITS(CSR_REG_MSTATUS, 0x8);
-    CSR_SET_BITS(CSR_REG_MIE, INTR_DMA_TRANS_DONE | INTR_DMA_WINDOW_DONE);
+    CSR_SET_BITS(CSR_REG_MIE, INTR_DMA_TRANS_DONE); // disabled the window done interrupt (for testing)
 
     int total_windows = 0;
     int total_samples = 0;
@@ -196,7 +222,7 @@ int main(void) {
     while (total_windows < WINDOWS_TO_PROCESS) {
         CSR_CLEAR_BITS(CSR_REG_MSTATUS, 0x8);
         if (g_trans_flag == 0) wait_for_interrupt();
-        CSR_SET_BITS(CSR_REG_MSTATUS, 0x8);
+        // CSR_SET_BITS(CSR_REG_MSTATUS, 0x8);
 
         if (g_trans_flag > 0) {
             g_trans_flag--;

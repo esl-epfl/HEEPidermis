@@ -67,6 +67,8 @@ uint32_t vco_get_kvco_Hz_per_V(uint32_t vin_uV);
 // Read the latest Vin value reconstructed from the VCO frequency.
 vco_status_t vco_get_Vin_uV(uint32_t *vin_uV);
 
+vco_status_t vco_count_to_Vin_uV(uint32_t decoder_count, uint32_t *vin_uV);
+
 // Interpolate Vin from a VCO oscillation frequency using the calibration table.
 uint32_t interpolate_Vin_uV(uint32_t f_target);
 
