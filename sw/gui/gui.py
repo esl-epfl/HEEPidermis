@@ -22,6 +22,8 @@ from pathlib import Path
 from tkinter import filedialog, ttk
 
 from acquisition import DLCDecoder, RecordingHistory
+from recording import Sample, MotionDetector, conductance_us, read_recording, invalid_periods, DIFFERENTIAL_MODES
+from configuration import read_configuration, write_configuration, validate_configuration
 try:
     from analysis import ALGORITHMS, analyze
 except ImportError as exc:
@@ -46,6 +48,9 @@ ELF_MAP = ROOT / "sw" / "build" / "main.map"
 LOGO_PNG = ROOT / "docs" / "img" / "cheep_logo.png"
 QR_PNG = ROOT / "docs" / "img" / "HEEPidermis_QR.png"
 DEFAULT_PORT = "/dev/serial/by-id/usb-FTDI_Quad_RS232-HS-if02-port0"
+LAST_CONFIGURATION = ROOT / "sw" / "gui" / "last_configuration.json"
+CONFIGURATION_DIR = ROOT / "sw" / "gui" / "configurations"
+SIGNAL_LEFT, SIGNAL_RIGHT = 78, 65
 VIEW_SECONDS = 60.0
 TERMINAL_LINES = 1000
 MESSAGE_LINES = 100
@@ -53,10 +58,10 @@ IDAC_STEP_NA = 40
 IDAC_MAX_CODE = 255
 SAMPLING_RATES_HZ = tuple(float(f"{mantissa * 10 ** decade:g}")
                           for decade in range(-1, 4) for mantissa in range(1, 10)) + (10_000.0,)
-DIFFERENTIAL_MODES = ("Hardware P−N", "Chip software P−N", "GUI P−N")
 DIFFERENTIAL_CSV_COLUMNS = ("differential_mode", "supply_sample_rate_Hz", "p_counter", "n_counter", "p_fine", "n_fine",
                             "difference_phase_counts", "difference_word_int16", "difference_word_shift",
-                            "raw_delta_v_uV", "raw_conductance_uS", "dlc_event_kind")
+                            "raw_delta_v_uV", "raw_conductance_uS", "dlc_event_kind",
+                            "acquisition_valid", "motion_artifact", "voltage_offset_mV")
 
 # The firmware emits e.g. "3: 42000 Hz | 400000 uV| 3: 41000 Hz | 390000 uV = ...".
 MICROVOLTS = re.compile(r"(-?\d+)\s*uV\b", re.IGNORECASE)
@@ -71,55 +76,12 @@ MEMORY_BANK = re.compile(r"^(?:Cont|IntL)\s+\d+\s+[Cdi-]+\s+\d+(?:\.\d+)?%$")
 RUNTIME_SYMBOL = re.compile(r"^\s*(0x[0-9a-fA-F]+)\s+(gsr_(?:injected_current_nA|sample_rate_millihz|supply_rate_millihz))\s*$", re.MULTILINE)
 
 
-@dataclass
-class Sample:
-    time_s: float
-    p_uv: int
-    n_uv: int
-    p_hz: int | None = None
-    n_hz: int | None = None
-    current_ua: float = 0.52
-    source: str = "raw"
-    segment: int = 0
-    sample_hz: float = 10.0
-    dlc_byte: int | None = None
-    stored_bytes: int = 2
-    tonic_us: float | None = None
-    phasic_us: float | None = None
-    phasic_peak: bool = False
-    valid: bool = True
-    measured_delta_uv: float | None = None
-    differential_mode: int = 0
-    supply_hz: float = 10.0
-    p_count: int | None = None
-    n_count: int | None = None
-    p_fine: int | None = None
-    n_fine: int | None = None
-    difference_counts: int | None = None
-    dlc_kind: str | None = None
-    difference_word: int | None = None
-    difference_shift: int = 0
-
-    @property
-    def raw_delta_uv(self):
-        return self.p_uv - self.n_uv
-
-    @property
-    def delta_uv(self) -> int:
-        return self.measured_delta_uv if self.measured_delta_uv is not None else self.raw_delta_uv
-
-
 @dataclass(frozen=True)
 class OperatingPoint:
     p_uv: float
     n_uv: float
     p_hz: float | None
     n_hz: float | None
-
-
-def conductance_us(delta_uv: float, current_ua: float) -> float | None:
-    """Return conductance in µS from current in µA and voltage in µV."""
-    return current_ua * 1_000_000 / abs(delta_uv) if delta_uv else None
 
 
 def load_transfer_curve() -> list[tuple[float, float]]:
@@ -220,12 +182,15 @@ def write_runtime_word(symbol: str, value: int) -> int:
 class SignalPlot(tk.Canvas):
     """Raw samples and moving averages over a shared time viewport."""
 
-    def __init__(self, master: tk.Misc, channels: list[tuple[str, str, str]], *, y_unit: str, display_scale: float = 1.0, fixed_range: tuple[float, float] | None = None, **kwargs):
+    def __init__(self, master: tk.Misc, channels: list[tuple[str, str, str]], *, y_unit: str,
+                 display_scale: float = 1.0, fixed_range: tuple[float, float] | None = None,
+                 show_x_axis: bool = True, **kwargs):
         super().__init__(master, background="#101820", highlightthickness=0, **kwargs)
         self.channels = channels  # (sample attribute, strong color, faded color)
         self.y_unit = y_unit
         self.display_scale = display_scale
         self.fixed_range = fixed_range
+        self.show_x_axis = show_x_axis
         self.samples: list[Sample] = []
         self.times: list[float] = []
         self.prefix_p: list[int] = [0]
@@ -236,9 +201,11 @@ class SignalPlot(tk.Canvas):
         self.view_seconds = VIEW_SECONDS
         self.cursor_time: float | None = None
         self.window = 1
+        self.offset_uv = 0.0
+        self.missing_intervals = []
         self.bind("<Configure>", lambda _event: self.redraw())
 
-    def set_view(self, samples: list[Sample], times: list[float], prefix_p: list[int], prefix_n: list[int], prefix_current: list[float], start_s: float, window: int, view_seconds: float, cursor_time: float | None, prefix_delta=None) -> None:
+    def set_view(self, samples: list[Sample], times: list[float], prefix_p: list[int], prefix_n: list[int], prefix_current: list[float], start_s: float, window: int, view_seconds: float, cursor_time: float | None, prefix_delta=None, missing_intervals=()) -> None:
         self.samples, self.times = samples, times
         self.prefix_p, self.prefix_n = prefix_p, prefix_n
         self.prefix_current = prefix_current
@@ -246,44 +213,44 @@ class SignalPlot(tk.Canvas):
         self.start_s, self.window = start_s, window
         self.view_seconds = view_seconds
         self.cursor_time = cursor_time
+        self.missing_intervals = missing_intervals
         self.redraw()
 
     def _raw_value(self, sample: Sample, channel: str) -> float | None:
         if channel == "conductance_us":
             if any(hz is not None and not 24000 <= hz <= 1051710 for hz in (sample.p_hz, sample.n_hz)): return None
-            if sample.p_hz is None and sample.n_hz is None and not sample.valid: return None
-            return conductance_us(sample.raw_delta_uv, sample.current_ua)
-        if not sample.valid and channel not in ("p_uv", "n_uv"): return None
+            if sample.p_hz is None and sample.n_hz is None and not sample.analysis_valid: return None
+            return conductance_us(sample.raw_delta_uv, sample.current_ua, self.offset_uv)
+        if not sample.analysis_valid and channel not in ("p_uv", "n_uv"): return None
         hz = sample.p_hz if channel == "p_uv" else sample.n_hz if channel == "n_uv" else None
         if hz is not None and not 24000 <= hz <= 1051710: return None
         return getattr(sample, channel)
 
     def _average(self, index: int, channel: str) -> float | None:
-        if not self.samples[index].valid and channel in ("p_uv", "n_uv"):
+        if not self.samples[index].analysis_valid and channel in ("p_uv", "n_uv"):
             return self._raw_value(self.samples[index], channel)
-        if not self.samples[index].valid and channel not in ("p_uv", "n_uv"): return None
+        if not self.samples[index].analysis_valid and channel not in ("p_uv", "n_uv"): return None
         if channel in ("tonic_us", "phasic_us"):
             return getattr(self.samples[index], channel)
         if self.samples[index].source == "dlc":
-            return (conductance_us(self.samples[index].delta_uv, self.samples[index].current_ua)
+            return (conductance_us(self.samples[index].delta_uv, self.samples[index].current_ua, self.offset_uv)
                     if channel == "conductance_us" else self._raw_value(self.samples[index], channel))
         first = max(0, index + 1 - self.window)
-        while first < index and self.samples[first].segment != self.samples[index].segment:
-            first += 1
+        first = max(first, self.samples[index].processing_start)
         count = index + 1 - first
         p = (self.prefix_p[index + 1] - self.prefix_p[first]) / count
         n = (self.prefix_n[index + 1] - self.prefix_n[first]) / count
         if channel == "conductance_us":
             current = (self.prefix_current[index + 1] - self.prefix_current[first]) / count
             delta = (self.prefix_delta[index+1]-self.prefix_delta[first])/count if self.prefix_delta else p-n
-            return conductance_us(delta, current)
+            return conductance_us(delta, current, self.offset_uv)
         return p if channel == "p_uv" else n
 
     def redraw(self) -> None:
         self.delete("all")
         width, height = self.winfo_width(), self.winfo_height()
         component = self.channels[0][0] == "tonic_us"
-        left, right, top, bottom = 78, (65 if component else 16), 28, 32
+        left, right, top, bottom = SIGNAL_LEFT, SIGNAL_RIGHT, 28, 32
         plot_w, plot_h = max(width - left - right, 1), max(height - top - bottom, 1)
         labels = {"p_uv": "P", "n_uv": "N", "conductance_us": "G", "tonic_us": "Tonic", "phasic_us": "Phasic"}
         for position, (channel, strong, faded) in enumerate(self.channels):
@@ -294,6 +261,13 @@ class SignalPlot(tk.Canvas):
         first = bisect.bisect_left(self.times, self.start_s)
         last = bisect.bisect_right(self.times, self.start_s + self.view_seconds)
         visible = self.samples[first:last]
+        excluded = list(invalid_periods(self.samples[max(0, first - 1):last])) + list(self.missing_intervals)
+        for begin, end in excluded:
+            if end < self.start_s or begin > self.start_s + self.view_seconds:
+                continue
+            x0 = left + plot_w * (max(begin, self.start_s) - self.start_s) / self.view_seconds
+            x1 = left + plot_w * (min(end, self.start_s + self.view_seconds) - self.start_s) / self.view_seconds
+            self.create_rectangle(x0, top, max(x0 + 2, x1), top + plot_h, fill="#49252b", outline="", tags="invalid_period")
         values = [value for sample in visible for channel, _, _ in self.channels if (value := self._raw_value(sample, channel)) is not None]
         values.extend(value for index in range(first, last) for channel, _, _ in self.channels if (value := self._average(index, channel)) is not None)
         if self.fixed_range is not None:
@@ -307,7 +281,8 @@ class SignalPlot(tk.Canvas):
         ranges = {}
         if component:
             for channel, _strong, _faded in self.channels:
-                data = [getattr(sample, channel) for sample in visible if getattr(sample, channel) is not None]
+                data = [getattr(sample, channel) for sample in visible
+                        if sample.analysis_valid and getattr(sample, channel) is not None]
                 a, b = (min(data), max(data)) if data else (0.0, 1.0)
                 margin = (b-a)/18 if b > a else max(abs(b)*0.02, 0.001)
                 ranges[channel] = (a-margin, b+margin)
@@ -327,8 +302,10 @@ class SignalPlot(tk.Canvas):
         for tick in range(7):
             x = left + plot_w * tick / 6
             self.create_line(x, top, x, top + plot_h, fill="#263744")
-            self.create_text(x, height - 18, text=f"{self.start_s + self.view_seconds * tick / 6:.2f}".rstrip("0").rstrip("."), fill="#b6c6d2", font=("TkDefaultFont", 9))
-        self.create_text(left + plot_w / 2, height - 2, text="Time (s)", anchor="s", fill="#b6c6d2", font=("TkDefaultFont", 9))
+            if self.show_x_axis:
+                self.create_text(x, height - 18, text=f"{self.start_s + self.view_seconds * tick / 6:.2f}".rstrip("0").rstrip("."), fill="#b6c6d2", font=("TkDefaultFont", 9))
+        if self.show_x_axis:
+            self.create_text(left + plot_w / 2, height - 2, text="Shared time (s)", anchor="s", fill="#b6c6d2", font=("TkDefaultFont", 9))
 
         for channel, strong, faded in self.channels:
             if component: low, high = ranges[channel]
@@ -339,7 +316,7 @@ class SignalPlot(tk.Canvas):
             for index in range(first, last):
                 sample = self.samples[index]
                 color = strong
-                if previous is not None and (sample.segment != previous.segment or color != line_color):
+                if previous is not None and (sample.processing_start != previous.processing_start or color != line_color):
                     if points: segments.append((points, line_color))
                     points = []
                 previous, line_color = sample, color
@@ -368,7 +345,7 @@ class SignalPlot(tk.Canvas):
                     self.create_oval(x - 3, y - 3, x + 3, y + 3, fill=segment_color, outline="")
             if channel == "phasic_us":
                 for sample in visible:
-                    if sample.phasic_peak and sample.phasic_us is not None:
+                    if sample.analysis_valid and sample.phasic_peak and sample.phasic_us is not None:
                         x = left + plot_w * (sample.time_s - self.start_s) / self.view_seconds
                         y = top + plot_h * (high - sample.phasic_us) / (high - low)
                         self.create_polygon(x, y-6, x-5, y+3, x+5, y+3, fill="#9ee7ff", outline="#d2f5ff", tags="phasic_peak")
@@ -388,6 +365,11 @@ class SignalPlot(tk.Canvas):
 
         if any(sample.source == "dlc" for sample in visible) and self.channels[0][0] == "conductance_us":
             self.create_text(width-right, 12, text="dLC: ▲ +  ▼ −  ○ overflow · faint: raw", anchor="e", fill="#c8b5ff", font=("TkDefaultFont", 8))
+        for sample in visible:
+            if sample.analysis_valid and sample.phasic_peak:
+                peak_x = left + plot_w * (sample.time_s - self.start_s) / self.view_seconds
+                self.create_line(peak_x, top, peak_x, top + plot_h, fill="#52bfff", width=2,
+                                 tags="phasic_peak_time")
         if self.cursor_time is not None and self.start_s <= self.cursor_time <= self.start_s + self.view_seconds:
             cursor_x = left + plot_w * (self.cursor_time - self.start_s) / self.view_seconds
             self.create_line(cursor_x, top, cursor_x, top + plot_h, fill="#f4f7fa", width=2,
@@ -591,6 +573,12 @@ class VCOGui:
         self.events: queue.Queue[tuple] = queue.Queue()
         self.samples: list[Sample] = []
         self.times: list[float] = []
+        self.loaded_recording: Path | None = None
+        self.configuration_loading = False
+        self.configuration_save_job = None
+        self.run_configuration_widget_states = {}
+        self.motion_detector = MotionDetector()
+        self.offset_uv = 0.0
         self.memory_saturated = False
         self.memory_used = 0
         self.memory_entries: list[tuple[float, int, str, int]] = []
@@ -671,12 +659,183 @@ class VCOGui:
         self.configured_freq = read_define("SYS_FCLK_HZ")
         self.last_message: tuple[str, str] | None = None
         self._build_layout()
+        self._initialize_configuration()
         if self.transfer_error:
             self._log(f"Transfer curve unavailable: {self.transfer_error}")
         if self.tradeoff_error:
             self._log(f"Power/resolution model unavailable: {self.tradeoff_error}")
         self.root.after(50, self._drain_events)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _configuration_choices(self):
+        return {"project": tuple(path.parent.relative_to(APPLICATIONS).as_posix() for path in APPLICATIONS.rglob("main.c")),
+                "algorithm": ALGORITHMS, "differential_mode": DIFFERENTIAL_MODES,
+                "memory_color": ("Acquisition type", "Average sampling rate")}
+
+    def _initialize_configuration(self):
+        names = ("project", "mcu_freq", "port", "baud", "sampling_index", "current_code", "differential_mode",
+                 "supply_follow", "supply_index", "use_dlc", "dlc_width", "dlc_time_bits", "memory_color",
+                 "filter_window", "rate_window", "algorithm", "smoothing", "peak_prominence", "motion_enabled",
+                 "motion_window", "motion_threshold_mv", "motion_correlation", "voltage_offset_mv")
+        self.configuration_variables = {name: getattr(self, name) for name in names}
+        if LAST_CONFIGURATION.exists():
+            try:
+                self._apply_configuration(read_configuration(LAST_CONFIGURATION))
+                self._log(f"Restored {LAST_CONFIGURATION.name}")
+            except (OSError, ValueError, TypeError, tk.TclError) as error:
+                self._log(f"Could not restore last configuration: {error}")
+        for variable in self.configuration_variables.values():
+            variable.trace_add("write", self._configuration_changed)
+        self._persist_configuration()
+
+    def _configuration_snapshot(self):
+        values = {name: variable.get() for name, variable in self.configuration_variables.items()}
+        values["view_seconds"] = self.view_seconds
+        return validate_configuration(values, self._configuration_choices(), len(SAMPLING_RATES_HZ))
+
+    def _configuration_changed(self, *_args):
+        if self.configuration_loading or self.shutting_down:
+            return
+        if self.configuration_save_job is not None:
+            self.root.after_cancel(self.configuration_save_job)
+        self.configuration_save_job = self.root.after(150, self._persist_configuration)
+
+    def _persist_configuration(self):
+        self.configuration_save_job = None
+        try:
+            values = self._configuration_snapshot()
+        except (ValueError, TypeError, tk.TclError):
+            return  # An entry can be temporarily empty while it is being edited.
+        try:
+            write_configuration(LAST_CONFIGURATION, values)
+        except OSError as error:
+            self._log(f"Could not save last configuration: {error}")
+
+    def _apply_configuration(self, values):
+        values = validate_configuration(values, self._configuration_choices(), len(SAMPLING_RATES_HZ))
+        self.configuration_loading = True
+        try:
+            for name, value in values.items():
+                if name == "view_seconds":
+                    self.view_seconds = value
+                else:
+                    self.configuration_variables[name].set(value)
+            self._current_slider_changed("")
+            self._sampling_slider_changed("")
+            self._differential_mode_changed(log=False)
+            self._supply_slider_changed()
+        finally:
+            self.configuration_loading = False
+        self._filter_changed()
+        self._rate_window_changed()
+        self._screening_changed()
+        self._configuration_changed()
+
+    def save_configuration(self):
+        try:
+            values = self._configuration_snapshot()
+            CONFIGURATION_DIR.mkdir(parents=True, exist_ok=True)
+            filename = filedialog.asksaveasfilename(parent=self.root, title="Save GUI configuration",
+                        initialdir=str(CONFIGURATION_DIR), defaultextension=".json", filetypes=[("JSON configurations", "*.json")])
+            if filename:
+                write_configuration(filename, values)
+                self._persist_configuration()
+                self._log(f"Saved configuration: {filename}")
+        except (OSError, ValueError, TypeError, tk.TclError) as error:
+            self._log(f"Could not save configuration: {error}")
+
+    def load_configuration(self):
+        if self.recording_state != "stopped" or self.operation is not None:
+            self._log("Pause recording and wait for hardware operations before loading a configuration.")
+            return
+        filename = filedialog.askopenfilename(parent=self.root, title="Load GUI configuration",
+                    initialdir=str(CONFIGURATION_DIR if CONFIGURATION_DIR.exists() else LAST_CONFIGURATION.parent),
+                    filetypes=[("JSON configurations", "*.json")])
+        if not filename:
+            return
+        try:
+            self._apply_configuration(read_configuration(filename))
+            self._persist_configuration()
+            self._log(f"Loaded configuration: {filename}. Build applies acquisition settings to firmware.")
+        except (OSError, ValueError, TypeError, tk.TclError) as error:
+            self._log(f"Could not load configuration: {error}")
+
+    def _screening_changed(self, *_args):
+        if self.configuration_loading:
+            return
+        try:
+            values = {name: getattr(self, name).get() for name in
+                      ("motion_enabled", "motion_window", "motion_threshold_mv", "motion_correlation", "voltage_offset_mv")}
+            values = validate_configuration(values, {}, len(SAMPLING_RATES_HZ))
+        except (ValueError, TypeError, tk.TclError):
+            return
+        self.offset_uv = values["voltage_offset_mv"] * 1000
+        self.motion_detector = MotionDetector(values["motion_enabled"], values["motion_window"],
+                                              values["motion_threshold_mv"] * 1000, values["motion_correlation"])
+        for index, sample in enumerate(self.samples):
+            self._screen_sample(sample, index)
+        self._analysis_changed()
+        if hasattr(self, "main_plot"):
+            self._refresh_plots()
+            self._update_operating_point()
+
+    def _screen_sample(self, sample, index):
+        sample.motion_artifact = self.motion_detector.classify(sample)
+        sample.voltage_invalid = conductance_us(sample.delta_uv, sample.current_ua, self.offset_uv) is None
+        previous = self.samples[index - 1] if index else None
+        same = (previous is not None and sample.acquisition_key == previous.acquisition_key and
+                sample.analysis_valid == previous.analysis_valid and
+                sample.time_s - previous.time_s <= max(3.0, 2.5 / sample.sample_hz))
+        sample.processing_start = previous.processing_start if same else index
+
+    def load_recording(self):
+        if self.recording_state != "stopped" or self.operation is not None:
+            self._log("Pause recording and wait for hardware operations before loading a recording.")
+            return
+        filename = filedialog.askopenfilename(parent=self.root, title="Open GSR recording for exploration",
+                    initialdir=str(OUT_DIR), filetypes=[("GSR recordings", "*.csv")])
+        if not filename:
+            return
+        try:
+            samples = read_recording(filename, self._requested_current_na() / 1000)
+            with open(filename, newline="", encoding="utf-8-sig") as stream:
+                missing_current = "injected_current_uA" not in (csv.DictReader(stream).fieldnames or ())
+        except (OSError, ValueError, csv.Error) as error:
+            self._log(f"Could not load recording: {error}")
+            return
+        self.reset_history()
+        self.loaded_recording = Path(filename)
+        self.samples = samples
+        self.times = [sample.time_s for sample in samples]
+        self.segment_id = max(sample.segment for sample in samples) + 1
+        self.history = RecordingHistory()
+        for index, sample in enumerate(samples):
+            if index:
+                previous = samples[index - 1]
+                tolerance = max(3.0, 2.5 / previous.sample_hz)
+                if sample.time_s - previous.time_s > tolerance:
+                    self.history.change(previous.time_s + min(tolerance, 1 / previous.sample_hz), "missing")
+            self.history.change(sample.time_s, "recording")
+            self._append_prefixes(sample)
+            if sample.stored_bytes:
+                self.memory_used += sample.stored_bytes
+                self.memory_entries.append((sample.time_s, sample.stored_bytes, sample.source, sample.segment))
+        self.history.change(samples[-1].time_s, "paused")
+        self._screening_changed()
+        self.follow_latest = self.cursor_follows_live = False
+        self.view_start = samples[0].time_s
+        self.cursor_time = samples[0].time_s
+        self._update_capacity()
+        self._update_rate_estimate()
+        self._draw_capacity_bar()
+        self._update_operating_point()
+        self._refresh_plots()
+        self._set_recording_state("stopped")
+        self._set_run_configuration_enabled(False)
+        self.recording_path_text.set(f"Explorer: {filename}")
+        self._log(f"Loaded {len(samples)} samples. Processing controls recompute this recording; Save CSV exports the result.")
+        if missing_current:
+            self._log(f"Legacy file has no injected current; using the selected {samples[0].current_ua:g} µA for this import.")
 
     def _configure_style(self) -> None:
         self.root.configure(background="#0b131c")
@@ -704,7 +863,7 @@ class VCOGui:
     def _build_layout(self) -> None:
         container = ttk.Frame(self.root, padding=12)
         container.pack(fill="both", expand=True)
-        container.columnconfigure(0, minsize=500)
+        container.columnconfigure(0, minsize=575)
         container.columnconfigure(1, minsize=680)
         container.columnconfigure(2, weight=1)
         container.rowconfigure(1, weight=1)
@@ -730,6 +889,7 @@ class VCOGui:
 
         side = ttk.Frame(container)
         side.grid(row=1, column=0, sticky="nsew", padx=(0, 12))
+        side.grid_propagate(False)
         side.columnconfigure(0, weight=1)
         side.rowconfigure(0, weight=1)
         side_canvas = tk.Canvas(side, highlightthickness=0, background="#111e29")
@@ -767,6 +927,7 @@ class VCOGui:
         parameter_section = section("PARAMETERS", 1)
         dlc_section = section("DLC MODE", 2)
         serial_section = section("SERIAL COMMUNICATION", 3)
+        self.run_configuration_roots = (control_section, parameter_section, dlc_section, serial_section)
         visualization_section = section("VISUALIZATION", 4)
         processing_section = section("PROCESSING", 5)
 
@@ -781,14 +942,16 @@ class VCOGui:
         ttk.Button(control_section, text="Config. board", command=self.configure_board).grid(row=2, column=0, sticky="ew", pady=4)
         self.board_reset_notice = tk.StringVar(value="")
         self.memory = tk.StringVar(value="Memory use appears here after Build.")
-        ttk.Label(control_section, textvariable=self.memory, justify="left", anchor="nw", font=("TkFixedFont", 8), wraplength=220).grid(row=3, column=1, sticky="ew", pady=(0, 8))
+        self.memory_label = ttk.Label(control_section, textvariable=self.memory, justify="left", anchor="nw", font=("TkFixedFont", 8))
+        self.memory_label.grid(row=3, column=1, sticky="ew", pady=(0, 8))
         recording_buttons = ttk.Frame(control_section)
         recording_buttons.grid(row=4, column=0, columnspan=2, sticky="ew", pady=3)
         recording_buttons.columnconfigure(0, weight=2)
         recording_buttons.columnconfigure(1, weight=1)
         self.record_button = tk.Button(recording_buttons, text="▶  START RECORDING", command=self.toggle_recording, background="#198754", foreground="white", activebackground="#157347", activeforeground="white", relief="flat", font=("TkDefaultFont", 10, "bold"), cursor="hand2")
         self.record_button.grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        ttk.Button(recording_buttons, text="RESET", command=self.reset_history).grid(row=0, column=1, sticky="ew")
+        self.reset_button = ttk.Button(recording_buttons, text="RESET", command=self.reset_history)
+        self.reset_button.grid(row=0, column=1, sticky="ew")
         ttk.Label(parameter_section, text="N signal sampling · 0.1–10,000 Hz").grid(row=0, column=0, columnspan=2, sticky="w", pady=(10, 0))
         initial_rate_index = min(range(len(SAMPLING_RATES_HZ)), key=lambda index: abs(math.log(SAMPLING_RATES_HZ[index] / self.applied_sampling_hz)))
         self.sampling_index = tk.IntVar(value=initial_rate_index)
@@ -888,7 +1051,30 @@ class VCOGui:
         self.peak_prominence.trace_add("write", self._analysis_changed)
         self.analysis_status = tk.StringVar(value="Analysis: waiting for samples")
         ttk.Label(processing_section, textvariable=self.analysis_status, wraplength=440, font=("TkDefaultFont", 8)).grid(row=6, column=0, columnspan=2, sticky="w", pady=(6, 0))
-        ttk.Button(side, text="Save CSV…", command=self.save_csv).grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.motion_enabled = tk.BooleanVar(value=True)
+        self.motion_window = tk.StringVar(value="2")
+        self.motion_threshold_mv = tk.StringVar(value="1")
+        self.motion_correlation = tk.StringVar(value="0.8")
+        self.voltage_offset_mv = tk.StringVar(value="0")
+        ttk.Checkbutton(processing_section, text="Exclude P/N movement artifacts (red)", variable=self.motion_enabled).grid(row=7, column=0, columnspan=2, sticky="w", pady=(10, 3))
+        for row, label, variable, low, high, step in (
+            (8, "Motion window (s)", self.motion_window, 0.1, 30, 0.1),
+            (9, "Minimum P movement (mV)", self.motion_threshold_mv, 0.001, 100, 0.1),
+            (10, "P/N correlation threshold", self.motion_correlation, 0.1, 1, 0.05),
+            (11, "Calibrated P−N offset (mV)", self.voltage_offset_mv, -500, 500, 0.1),
+        ):
+            ttk.Label(processing_section, text=label).grid(row=row, column=0, sticky="w", pady=2)
+            ttk.Spinbox(processing_section, from_=low, to=high, increment=step, textvariable=variable, width=10).grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=2)
+        ttk.Label(processing_section, text="Offset defaults to zero; set only from a known-load calibration.", wraplength=515, font=("TkDefaultFont", 8)).grid(row=12, column=0, columnspan=2, sticky="w", pady=(3, 5))
+        for variable in (self.motion_enabled, self.motion_window, self.motion_threshold_mv, self.motion_correlation, self.voltage_offset_mv):
+            variable.trace_add("write", self._screening_changed)
+        files = ttk.Frame(side)
+        files.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        files.columnconfigure((0, 1), weight=1)
+        ttk.Button(files, text="Save CSV…", command=self.save_csv).grid(row=0, column=0, sticky="ew", padx=(0, 3))
+        ttk.Button(files, text="Load recording…", command=self.load_recording).grid(row=0, column=1, sticky="ew", padx=(3, 0))
+        ttk.Button(files, text="Save configuration…", command=self.save_configuration).grid(row=1, column=0, sticky="ew", padx=(0, 3), pady=(4, 0))
+        ttk.Button(files, text="Load configuration…", command=self.load_configuration).grid(row=1, column=1, sticky="ew", padx=(3, 0), pady=(4, 0))
         operating_host = ttk.Frame(container)
         operating_host.grid(row=1, column=1, sticky="nsew", padx=(0, 12))
         operating_host.columnconfigure(0, weight=1)
@@ -928,12 +1114,12 @@ class VCOGui:
         for row in (1, 3, 5):
             plots.rowconfigure(row, weight=1, uniform="signals")
         ttk.Label(plots, text="VCO P and VCO N · mV", font=("TkDefaultFont", 12, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 6))
-        self.main_plot = SignalPlot(plots, [("p_uv", "#ffb000", "#86611b"), ("n_uv", "#38c6d9", "#2c6b74")], y_unit="mV", display_scale=1000, height=1)
+        self.main_plot = SignalPlot(plots, [("p_uv", "#ffb000", "#86611b"), ("n_uv", "#38c6d9", "#2c6b74")], y_unit="mV", display_scale=1000, show_x_axis=False, height=1)
         self.main_plot.grid(row=1, column=0, sticky="nsew", pady=(0, 14))
         self.main_plot.bind("<Button-1>", self._select_cursor_from_event)
         self.main_plot.bind("<B1-Motion>", self._select_cursor_from_event)
         ttk.Label(plots, text="Tissue conductance · µS", font=("TkDefaultFont", 12, "bold")).grid(row=2, column=0, sticky="w", pady=(0, 6))
-        self.diff_plot = SignalPlot(plots, [("conductance_us", "#b895ff", "#68558d")], y_unit="µS", height=1)
+        self.diff_plot = SignalPlot(plots, [("conductance_us", "#b895ff", "#68558d")], y_unit="µS", show_x_axis=False, height=1)
         self.diff_plot.grid(row=3, column=0, sticky="nsew")
         self.diff_plot.bind("<Button-1>", self._select_cursor_from_event)
         self.diff_plot.bind("<B1-Motion>", self._select_cursor_from_event)
@@ -990,13 +1176,46 @@ class VCOGui:
             "stopping": ("▮▮  STOPPING…", "#6c757d", "#5c636a", "disabled"),
         }
         label, background, active_background, enabled = settings[state]
+        if self.loaded_recording is not None and state == "stopped":
+            label = "▶  START NEW RECORDING"
         self.record_button.configure(text=label, background=background, activebackground=active_background, state=enabled)
+
+    def _set_run_configuration_enabled(self, enabled):
+        if enabled:
+            saved_states = self.run_configuration_widget_states
+            self.run_configuration_widget_states = {}
+            for widget, state in saved_states.items():
+                try:
+                    widget.configure(state=state)
+                except tk.TclError:
+                    pass
+            self._differential_mode_changed(log=False)
+            self._supply_slider_changed()
+            return
+        if self.run_configuration_widget_states:
+            return
+
+        def descendants(parent):
+            for child in parent.winfo_children():
+                yield child
+                yield from descendants(child)
+
+        configurable = (tk.Button, tk.Scale, ttk.Button, ttk.Checkbutton,
+                        ttk.Combobox, ttk.Entry, ttk.Spinbox)
+        for root in self.run_configuration_roots:
+            for widget in descendants(root):
+                if widget is self.reset_button or not isinstance(widget, configurable):
+                    continue
+                self.run_configuration_widget_states[widget] = str(widget.cget("state"))
+                widget.configure(state="disabled")
 
     def toggle_recording(self) -> None:
         if self.recording_state == "stopped":
             if self.operation is not None:
                 self._log(f"Wait for {self.operation} to finish.")
                 return
+            if self.loaded_recording is not None:
+                self.reset_history()
             self._set_recording_state("starting")
             self.open_device()
         elif self.recording_state == "running":
@@ -1004,6 +1223,10 @@ class VCOGui:
 
     def reset_history(self) -> None:
         previous_file = self.session_path
+        was_exploring = self.loaded_recording is not None
+        self.loaded_recording = None
+        if was_exploring:
+            self._set_run_configuration_enabled(True)
         self.dlc_origin_s -= self._elapsed()
         self.history_start_clock = time.monotonic()
         self.samples.clear()
@@ -1026,6 +1249,7 @@ class VCOGui:
         self.last_data_clock = None
         self.history.change(0.0, "missing" if self.recording_state == "running" else "paused")
         self._analysis_changed()
+        self._screening_changed()
         self.cursor_time = None
         self.cursor_follows_live = True
         self.operating_time_text.set("VCO operating points · waiting for samples")
@@ -1046,6 +1270,8 @@ class VCOGui:
         self._log(f"History reset. Previous file kept: {previous_file}" if previous_file else "History reset.")
 
     def _filter_changed(self, *_args: str) -> None:
+        if self.configuration_loading:
+            return
         try:
             window = self._positive_int(self.filter_window.get(), "Moving average window")
         except ValueError:
@@ -1090,7 +1316,7 @@ class VCOGui:
         if not self.times:
             return
         plot: SignalPlot = event.widget
-        left, right = 78, 16
+        left, right = SIGNAL_LEFT, SIGNAL_RIGHT
         plot_width = max(plot.winfo_width() - left - right, 1)
         fraction = min(1.0, max(0.0, (event.x - left) / plot_width))
         target_s = self.view_start + fraction * self._visible_seconds()
@@ -1105,13 +1331,15 @@ class VCOGui:
 
     def _zoom_signals(self, factor: float) -> None:
         previous_view = self._visible_seconds()
-        self.view_seconds = min(3600.0, max(1.0, previous_view * factor))
+        maximum = max(3600.0, self.times[-1] - self.times[0] if self.times else 0.0)
+        self.view_seconds = min(maximum, max(0.1, previous_view * factor))
         if self.follow_latest:
             self.view_start = max(0.0, self._timeline_end() - self._visible_seconds())
         else:
             center = self.cursor_time if self.cursor_time is not None else self.view_start + previous_view / 2
             self.view_start = max(0.0, center - self.view_seconds / 2)
         self._refresh_plots()
+        self._configuration_changed()
 
     def _go_live(self) -> None:
         self.follow_latest = True
@@ -1138,9 +1366,13 @@ class VCOGui:
         else:
             self.view_start = min(self.view_start, maximum)
         self.timeline_scroll.set(self.view_start / full_end, (self.view_start + visible_seconds) / full_end)
+        missing_intervals = [(first, last) for first, last, status in self.history.intervals()
+                             if status == "missing"]
         for plot in (self.main_plot, self.diff_plot, self.component_plot):
+            plot.offset_uv = self.offset_uv
             plot.set_view(self.samples, self.times, self.prefix_p, self.prefix_n, self.prefix_current,
-                          self.view_start, self.filter_size, visible_seconds, self.cursor_time, self.prefix_delta)
+                          self.view_start, self.filter_size, visible_seconds, self.cursor_time,
+                          self.prefix_delta, missing_intervals)
         self._draw_timeline()
 
     def _update_operating_point(self) -> None:
@@ -1154,8 +1386,7 @@ class VCOGui:
         prefix_end = sample_index + 1
         # Use the moving-average window ending at the selected sample.
         start = max(0, prefix_end - (1 if self.samples[sample_index].source == "dlc" else self.filter_size))
-        while start < sample_index and self.samples[start].segment != self.samples[sample_index].segment:
-            start += 1
+        start = max(start, self.samples[sample_index].processing_start)
         count = prefix_end - start
 
         def average_frequency(sums: list[int], counts: list[int]) -> float | None:
@@ -1168,11 +1399,15 @@ class VCOGui:
             p_hz=average_frequency(self.prefix_p_hz, self.prefix_p_hz_count),
             n_hz=average_frequency(self.prefix_n_hz, self.prefix_n_hz_count),
         )
-        self.operating_time_text.set(f"VCO operating points · t = {self.cursor_time:.2f} s" + (" · uncalibrated" if not self.samples[sample_index].valid else ""))
+        selected = self.samples[sample_index]
+        reason = (" · invalid acquisition" if not selected.valid else
+                  " · motion artifact" if selected.motion_artifact else
+                  " · invalid voltage drop" if selected.voltage_invalid else "")
+        self.operating_time_text.set(f"VCO operating points · t = {self.cursor_time:.2f} s{reason}")
         self.transfer_plot.set_point(point)
         current_ua = (self.prefix_current[prefix_end] - self.prefix_current[start]) / count
         delta = (self.prefix_delta[prefix_end]-self.prefix_delta[start])/count
-        g_us = conductance_us(delta, current_ua) if self.samples[sample_index].valid else None
+        g_us = conductance_us(delta, current_ua, self.offset_uv) if self.samples[sample_index].analysis_valid else None
         for plot in (self.power_plot, self.resolution_plot):
             plot.set_operating(g_us, point.p_uv / 1000, point.n_uv / 1000,
                                current_ua, self.samples[sample_index].sample_hz, self.samples[sample_index].supply_hz)
@@ -1237,13 +1472,15 @@ class VCOGui:
         colors = {"recording": "#269e63", "missing": "#df5147", "paused": "#6d7885"}
         for first, last, status in self.history.intervals():
             bar.create_rectangle(width*first/end, 0, width*last/end, 16, fill=colors[status], outline="")
+        for first, last in invalid_periods(self.samples):
+            bar.create_rectangle(width*first/end, 0, min(width, max(width*last/end, width*first/end+2)), 16, fill="#c86464", outline="", tags="invalid_period")
         for sample in self.samples:
-            if sample.phasic_peak:
+            if sample.analysis_valid and sample.phasic_peak:
                 x = width*sample.time_s/end
                 bar.create_rectangle(x-1, 0, x+2, 6, fill="#9ee7ff", outline="")
         bar.create_rectangle(width*self.view_start/end, 0, min(width, width*(self.view_start+self._visible_seconds())/end), 16,
                              outline="#e4edf3", width=1)
-        bar.create_text(2, 20, text="green: recording  red: no data  gray: paused  blue: phasic peak", anchor="nw", fill="#b6c6d2", font=("TkDefaultFont", 8))
+        bar.create_text(2, 20, text="green: valid  red: missing / invalid / motion  gray: paused  blue: peak", anchor="nw", fill="#b6c6d2", font=("TkDefaultFont", 8))
 
     def _timeline_click(self, event) -> None:
         total = max(self.history.end, self.times[-1] if self.times else 0.0, 0.1)
@@ -1255,6 +1492,8 @@ class VCOGui:
         self._refresh_plots()
 
     def _update_timeline(self, now):
+        if self.loaded_recording is not None:
+            return
         elapsed = self._elapsed(now)
         if self.recording_state == "running" and self.last_data_clock is not None:
             # Time-only dLC heartbeats are data, even when there is no crossing.
@@ -1262,11 +1501,17 @@ class VCOGui:
             if now-self.last_data_clock > tolerance and self.history.status == "recording":
                 self.history.change(self._elapsed(self.last_data_clock)+tolerance, "missing")
                 self.segment_id += 1
+                self.plots_dirty = True
         self.history.change(elapsed, self.history.status)
 
     def _analysis_changed(self, *_args) -> None:
+        if self.configuration_loading:
+            return
         self.analysis_generation += 1
         self.analysis_dirty = True
+        for sample in self.samples:
+            sample.tonic_us = sample.phasic_us = None
+            sample.phasic_peak = False
         if hasattr(self, "analysis_status"):
             self.analysis_status.set("Analysis: recomputing…")
 
@@ -1280,13 +1525,13 @@ class VCOGui:
         values, segments = [], []
         segment_start = 0
         for index, sample in enumerate(self.samples):
-            if index and sample.segment != self.samples[index-1].segment: segment_start = index
+            segment_start = sample.processing_start
             first = index if sample.source == "dlc" else max(segment_start, index+1-self.filter_size)
             count = index+1-first
             delta = (self.prefix_delta[index+1]-self.prefix_delta[first])/count
             current = (self.prefix_current[index+1]-self.prefix_current[first])/count
-            values.append((conductance_us(delta, current) or math.nan) if sample.valid else math.nan)
-            segments.append(sample.segment)
+            values.append((conductance_us(delta, current, self.offset_uv) or math.nan) if sample.analysis_valid else math.nan)
+            segments.append(sample.processing_start)
         return (list(self.times), values, segments, self.algorithm.get(), smoothing, prominence,
                 [sample.sample_hz for sample in self.samples], [sample.source for sample in self.samples])
 
@@ -1296,7 +1541,9 @@ class VCOGui:
             sample.tonic_us = float(t) if math.isfinite(t) else None
             sample.phasic_us = float(p) if math.isfinite(p) else None
             sample.phasic_peak = bool(peak)
-        self.analysis_status.set(f"{self.algorithm.get()} · {sum(peaks)} phasic peaks · live edge provisional")
+        artifacts = sum(sample.motion_artifact for sample in self.samples)
+        edge = "recording explorer" if self.loaded_recording is not None else "live edge provisional"
+        self.analysis_status.set(f"{self.algorithm.get()} · {sum(peaks)} peaks · {artifacts} motion exclusions · {edge}")
         self.plots_dirty = True
 
     def _start_analysis(self, now):
@@ -1467,13 +1714,17 @@ class VCOGui:
         current_ua = current_nA / 1000 if current_nA is not None else self.applied_current_ua
         if self.last_data_clock is not None and clock-self.last_data_clock > max(3.0, 2.5/max(0.1, self.applied_sampling_hz)) and self.history.status == "recording":
             self.history.change(self._elapsed(self.last_data_clock)+max(3.0, 2.5/max(0.1, self.applied_sampling_hz)), "missing")
-        if self.history.status != "recording" or (self.samples and self.samples[-1].valid != valid):
+        valid = bool(valid and all(hz is None or 24000 <= hz <= 1051710 for hz in (p_hz, n_hz)))
+        if self.history.status != "recording" or (self.samples and
+                (self.samples[-1].valid != valid or self.samples[-1].current_ua != current_ua or
+                 self.samples[-1].sample_hz != self.applied_sampling_hz or self.samples[-1].source != source)):
             self.segment_id += 1
         self.last_data_clock = clock
         self.history.change(elapsed, "recording")
         sample = Sample(elapsed, p_uv, n_uv, p_hz, n_hz, current_ua, source, self.segment_id, self.applied_sampling_hz, dlc_byte, stored_bytes)
         sample.valid = valid
         for name, value in extra.items(): setattr(sample, name, value)
+        self._screen_sample(sample, len(self.samples))
         if p_hz is not None and n_hz is not None:
             integration_rate = max(1.0, sample.sample_hz)
             sample.difference_shift = max(0, math.ceil(1051710*62/integration_rate).bit_length()-15)
@@ -1486,20 +1737,23 @@ class VCOGui:
         self.plots_dirty = True
         self.samples.append(sample)
         self.times.append(elapsed)
-        self.prefix_delta.append(self.prefix_delta[-1] + sample.delta_uv)
-        self.prefix_p.append(self.prefix_p[-1] + p_uv)
-        self.prefix_n.append(self.prefix_n[-1] + n_uv)
-        self.prefix_current.append(self.prefix_current[-1] + sample.current_ua)
-        self.prefix_p_hz.append(self.prefix_p_hz[-1] + (p_hz or 0))
-        self.prefix_n_hz.append(self.prefix_n_hz[-1] + (n_hz or 0))
-        self.prefix_p_hz_count.append(self.prefix_p_hz_count[-1] + (p_hz is not None))
-        self.prefix_n_hz_count.append(self.prefix_n_hz_count[-1] + (n_hz is not None))
+        self._append_prefixes(sample)
         self.firmware_is_demo = True
         self._update_capacity()
         if self.cursor_follows_live:
             self.cursor_time = sample.time_s
         self._persist_sample(sample)
         return sample
+
+    def _append_prefixes(self, sample):
+        self.prefix_delta.append(self.prefix_delta[-1] + sample.delta_uv)
+        self.prefix_p.append(self.prefix_p[-1] + sample.p_uv)
+        self.prefix_n.append(self.prefix_n[-1] + sample.n_uv)
+        self.prefix_current.append(self.prefix_current[-1] + sample.current_ua)
+        self.prefix_p_hz.append(self.prefix_p_hz[-1] + (sample.p_hz or 0))
+        self.prefix_n_hz.append(self.prefix_n_hz[-1] + (sample.n_hz or 0))
+        self.prefix_p_hz_count.append(self.prefix_p_hz_count[-1] + (sample.p_hz is not None))
+        self.prefix_n_hz_count.append(self.prefix_n_hz_count[-1] + (sample.n_hz is not None))
 
     def _update_capacity(self) -> None:
         self.memory_saturated = self.memory_used >= 16384
@@ -1584,19 +1838,19 @@ class VCOGui:
                 self.session_path = new_path
                 self.recording_path_text.set(f"Recording: {self.session_path}")
             with self.session_path.open("a", newline="") as stream:
-                conductance = conductance_us(sample.delta_uv, sample.current_ua) if sample.valid else None
-                csv.writer(stream).writerow((f"{sample.time_s:.6f}", sample.p_uv, sample.n_uv, sample.delta_uv, f"{conductance:.6g}" if conductance is not None else "", sample.p_hz if sample.p_hz is not None else "", sample.n_hz if sample.n_hz is not None else "", f"{sample.current_ua:g}", sample.source, sample.sample_hz, sample.stored_bytes, sample.dlc_byte if sample.dlc_byte is not None else "", sample.segment, int(sample.valid)) + self._counter_csv_values(sample))
+                conductance = conductance_us(sample.delta_uv, sample.current_ua, self.offset_uv) if sample.analysis_valid else None
+                csv.writer(stream).writerow((f"{sample.time_s:.6f}", sample.p_uv, sample.n_uv, sample.delta_uv, f"{conductance:.6g}" if conductance is not None else "", sample.p_hz if sample.p_hz is not None else "", sample.n_hz if sample.n_hz is not None else "", f"{sample.current_ua:g}", sample.source, sample.sample_hz, sample.stored_bytes, sample.dlc_byte if sample.dlc_byte is not None else "", sample.segment, int(sample.analysis_valid)) + self._counter_csv_values(sample))
         except OSError as error:
             self._log(f"Could not write recording: {error}")
 
-    @staticmethod
-    def _counter_csv_values(sample):
+    def _counter_csv_values(self, sample):
         raw_valid = all(hz is None or 24000 <= hz <= 1051710 for hz in (sample.p_hz, sample.n_hz))
-        raw_g = conductance_us(sample.raw_delta_uv, sample.current_ua) if raw_valid else None
+        raw_g = conductance_us(sample.raw_delta_uv, sample.current_ua, self.offset_uv) if raw_valid else None
         return (DIFFERENTIAL_MODES[sample.differential_mode], sample.supply_hz,
                 sample.p_count, sample.n_count, sample.p_fine, sample.n_fine, sample.difference_counts,
                 sample.difference_word, sample.difference_shift,
-                sample.raw_delta_uv, f"{raw_g:.9g}" if raw_g is not None else "", sample.dlc_kind)
+                sample.raw_delta_uv, f"{raw_g:.9g}" if raw_g is not None else "", sample.dlc_kind,
+                int(sample.valid), int(sample.motion_artifact), self.offset_uv / 1000)
 
     def save_csv(self) -> None:
         if not self.samples:
@@ -1618,17 +1872,20 @@ class VCOGui:
             if self.session_path and output_path.resolve() == self.session_path.resolve():
                 self._log("Choose another filename; the session file is still recording.")
                 return
+            if self.loaded_recording and output_path.resolve() == self.loaded_recording.resolve():
+                self._log("Choose another filename to keep the original recording unchanged.")
+                return
             self._apply_analysis(analyze(*self._analysis_snapshot()))
             with output_path.open("w", newline="") as stream:
                 writer = csv.writer(stream)
                 writer.writerow(("time_s", "vco_p_uV", "vco_n_uV", "delta_v_uV", "conductance_uS", "injected_current_uA", "tonic_uS", "phasic_uS", "phasic_peak_detected", "filtered_conductance_uS", "algorithm", "source", "sample_rate_Hz", "stored_bytes", "dlc_byte", "segment", "valid", "vco_p_Hz", "vco_n_Hz") + DIFFERENTIAL_CSV_COLUMNS)
                 for sample in self.samples:
-                    conductance = conductance_us(sample.delta_uv, sample.current_ua) if sample.valid else None
+                    conductance = conductance_us(sample.delta_uv, sample.current_ua, self.offset_uv) if sample.analysis_valid else None
                     writer.writerow((f"{sample.time_s:.6f}", sample.p_uv, sample.n_uv, sample.delta_uv, f"{conductance:.6g}" if conductance is not None else "", f"{sample.current_ua:g}",
                                      f"{sample.tonic_us:.9g}" if sample.tonic_us is not None else "",
                                      f"{sample.phasic_us:.9g}" if sample.phasic_us is not None else "",
                                      int(sample.phasic_peak), f"{sample.tonic_us+sample.phasic_us:.9g}" if sample.tonic_us is not None and sample.phasic_us is not None else "", self.algorithm.get(), sample.source, sample.sample_hz,
-                                     sample.stored_bytes, sample.dlc_byte if sample.dlc_byte is not None else "", sample.segment, int(sample.valid), sample.p_hz, sample.n_hz) + self._counter_csv_values(sample))
+                                     sample.stored_bytes, sample.dlc_byte if sample.dlc_byte is not None else "", sample.segment, int(sample.analysis_valid), sample.p_hz, sample.n_hz) + self._counter_csv_values(sample))
             self._log(f"Saved {len(self.samples)} samples to {output_path}")
         except (OSError, ValueError, tk.TclError) as error:
             self._log(f"Could not save CSV: {error}")
@@ -1691,7 +1948,7 @@ class VCOGui:
             self._log(self.sampling_status.get())
 
     def _slider_released(self, _event: tk.Event) -> None:
-        if self.project.get() == "gsr/demo":
+        if self.project.get() == "gsr/demo" and self.loaded_recording is None:
             try:
                 current_na = self._requested_current_na()
                 if read_define("INJECTED_CURRENT_NA") != current_na:
@@ -2171,6 +2428,7 @@ class VCOGui:
                         if self.history.status != "missing":
                             self.segment_id += 1
                         self.history.change(self._elapsed(received_at), "missing")
+                        self.plots_dirty = True
                     if line == "GSR demo ready.":
                         self.firmware_is_demo = True
                         self._apply_startup_current_if_ready()
@@ -2335,6 +2593,9 @@ class VCOGui:
     def _on_close(self) -> None:
         if self.shutting_down:
             return
+        if self.configuration_save_job is not None:
+            self.root.after_cancel(self.configuration_save_job)
+        self._persist_configuration()
         self.shutting_down = True
         self._stop_serial()
         self._terminate_processes()

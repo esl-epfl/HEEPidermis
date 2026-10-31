@@ -102,6 +102,22 @@ since recording started, including pauses and missing data. Use the **Time zoom 
 time range, drag the horizontal scrollbar to review earlier samples, and press
 **Live** to return to the newest data.
 
+All three plots in the right column use the same time viewport, plot bounds,
+cursor and vertical grid. The time labels are shown once on the bottom plot as
+their common x-axis.
+
+Conductance uses the physical signed drop
+`G_µS = current_µA × 1,000,000 / (P_µV − N_µV − offset_µV)`; zero or reversed
+drops are invalid rather than being rectified. Filtering restarts whenever the
+current, sample rate, source, validity or acquisition segment changes, so a
+moving-average window never combines two current settings. The calibrated P−N
+offset defaults to zero and should only be changed from a known-load
+calibration. For a fixed resistor within the front-end operating range, the
+corrected voltage drop should scale with current. A channel offset can cause
+apparent current dependence, especially at low currents. Verify the nominal
+VCO conversion and actual iDAC current against a known resistor before relying
+on absolute conductance values.
+
 Click or drag over any right-hand plot to place a shared vertical time cursor.
 The middle column then shows the transfer operating point and estimates averaged
 through that selected sample. **Live** moves the cursor back to the newest sample
@@ -111,10 +127,32 @@ Every sample, including its injected current and computed conductance, is
 appended immediately to a session CSV under `sw/gui/outs/`.
 **Save CSV…**, below Messages, exports the full session to a chosen path. The suggested filename
 is the time of the Save action in `yyyy_mm_dd_hhmm.csv` format. Exported conductance is
-`current_µA × 1,000,000 / abs(P_µV − N_µV)` in µS; it is blank when P equals N.
+`current_µA × 1,000,000 / (P_µV − N_µV − offset_µV)` in µS; it is blank
+when the corrected drop is zero or negative.
 Each sample retains the current active when it was recorded. Both the session
 and exported CSV include that current, so a change between recordings does
 not alter earlier conductance values.
+
+**Load recording…** opens either a continuously written session CSV or an
+exported CSV without connecting to hardware. The loaded data can be browsed,
+zoomed, re-screened and re-analyzed with the normal processing controls, then
+exported again. Starting a new hardware recording clears the explorer history;
+the source recording is never modified. Very old recordings without an injected
+current column use the current selected in the GUI at import time; current files
+always retain their stored per-sample current.
+While a recording is loaded, hardware/run controls are disabled and shown
+grayed out so the explorer cannot accidentally change a run configuration.
+Processing, visualization, export and configuration-file actions remain
+available. Press **RESET** to leave explorer mode and re-enable run controls.
+
+Every GUI parameter is atomically mirrored to
+`sw/gui/last_configuration.json` after it changes. Startup restores that file.
+**Save configuration…** writes a named JSON configuration and **Load
+configuration…** validates and applies one; acquisition settings take effect on
+the device after the corresponding Build or live update.
+
+The left column is 575 pixels wide (15% wider than before); the extra 75 pixels
+come from the right column, leaving the middle column at its existing width.
 
 The middle panel shows the VCO transfer curve from the repository CSV and the
 latest P and N operating points mapped from the firmware frequencies. Solid
@@ -193,9 +231,30 @@ used by [NeuroKit's EDA peak routines](https://neuropsychology.github.io/NeuroKi
 this GUI uses its own SciPy settings rather than claiming an exact NeuroKit port.
 
 The timeline above the scrollbar shows green acquisition intervals, red missing
-data, gray pauses, and blue detected peaks. Click/drag it to browse the recording.
+or invalid periods, gray pauses, and blue detected peaks. Click/drag it to browse the recording.
 Missing data is declared after `max(3 s, 2.5 / selected rate)` without a sample;
 time-only dLC packets and heartbeats prevent a quiet signal being marked missing.
+
+When movement screening is enabled, a sample is excluded if P (the reference)
+and N move together with comparable amplitude, either as a common step or as a
+correlated change over the selected motion window. Exclusions are shaded dark
+red on every signal plot and red on the timeline. The same full-height red
+shading is used for lead-off, missing acquisition, invalid hardware samples and
+invalid conductance. These periods split filtering/decomposition segments and
+are recorded separately from hardware acquisition validity in CSV. Detected
+phasic peaks are drawn as blue vertical markers through all three plots. The
+motion threshold, window and minimum correlation are adjustable under
+**PROCESSING**.
+Defaults are a 2 s window, at least 1 mV of reference movement, correlation
+of 0.8, and a signal/reference movement ratio between 0.5 and 2. Common steps
+hold the exclusion for one window. This is a tunable movement heuristic;
+review flagged periods against the raw P/N traces. Turning screening off or
+changing its settings recomputes exclusions for the full in-memory recording.
+CSV `valid` reflects the resulting analysis validity; `acquisition_valid`
+preserves the original hardware validity, `motion_artifact` records the motion
+decision, and `voltage_offset_mV` records the calibration used. Session CSV
+rows retain the screening/calibration active when appended; Save CSV recomputes
+and exports the full session with the current settings.
 
 CSV export recomputes the chosen analysis over the full session and includes
 `tonic_uS`, `phasic_uS`, `phasic_peak_detected` (0/1), and

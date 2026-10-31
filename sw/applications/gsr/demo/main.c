@@ -18,7 +18,7 @@
 #define SYS_FCLK_HZ 10000000
 #define VCO_FS_HZ 10
 #define VCO_SAMPLE_RATE_MILLIHZ 10000
-#define INJECTED_CURRENT_NA 360
+#define INJECTED_CURRENT_NA 200
 
 #define IDAC_LSB_NA 40
 #define IDAC_MAX_CODE 255
@@ -37,7 +37,7 @@
 
 // 0: hardware register; 1: chip software; 2: host GUI.
 #ifndef GSR_DIFFERENTIAL_MODE
-#define GSR_DIFFERENTIAL_MODE 0
+#define GSR_DIFFERENTIAL_MODE 2
 #endif
 #ifndef VCO_SUPPLY_RATE_MILLIHZ
 #define VCO_SUPPLY_RATE_MILLIHZ 0

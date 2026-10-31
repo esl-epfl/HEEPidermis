@@ -32,6 +32,8 @@ environment.yml
 
 # Python outputs
 **/__pycache__
+sw/gui/last_configuration.json
+sw/gui/last_configuration.json.tmp
 
 # Questasim files
 transcipt
