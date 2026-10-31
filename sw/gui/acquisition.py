@@ -20,32 +20,45 @@ class DLCDecoder:
         return self.level * (1 << (self.log_width + self.discard_bits)) * self.rate_hz / 62
 
     def event_kind(self, byte, next_byte=None):
-        """Classify crossing direction and time/amplitude overflow continuations."""
+        """Classify only time and amplitude overflow packets."""
         amplitude_bits = 8 - self.time_bits
         mask = (1 << (amplitude_bits - 1)) - 1
         magnitude, ticks = byte & mask, byte >> amplitude_bits
-        if not magnitude or not ticks or (magnitude == mask and next_byte is not None and next_byte >> amplitude_bits == 0):
-            return "overflow"
-        return "down" if byte & (1 << (amplitude_bits - 1)) else "up"
+        if not magnitude:
+            return "time_overflow"
+        direction = "down" if byte & (1 << (amplitude_bits - 1)) else "up"
+        continued = (magnitude == mask and next_byte is not None and
+                     next_byte >> amplitude_bits == 0 and next_byte & mask)
+        if not ticks or continued:
+            return f"amplitude_{direction}"
+        return None
 
-    def decode(self, payload):
-        """Yield (elapsed ticks, reconstructed P Hz, N Hz) for every stored byte.
+    def level_change(self, byte):
+        amplitude_bits = 8 - self.time_bits
+        magnitude = byte & ((1 << (amplitude_bits - 1)) - 1)
+        return -magnitude if byte & (1 << (amplitude_bits - 1)) else magnitude
+
+    def decode_events(self, payload):
+        """Yield ticks, reconstructed frequencies, level and signed level change.
 
         RTL sign-magnitude layout is {dt, sign, magnitude}. Zero-magnitude
         packets extend time; zero-time packets continue a large crossing.
         The ADC decoder uses 62 phase counts per oscillator cycle.
         """
         amplitude_bits = 8 - self.time_bits
-        magnitude_mask = (1 << (amplitude_bits - 1)) - 1
         for byte in payload:
-            magnitude = byte & magnitude_mask
-            sign = (byte >> (amplitude_bits - 1)) & 1
             self.ticks += byte >> amplitude_bits
-            self.level += -magnitude if sign else magnitude
+            change = self.level_change(byte)
+            self.level += change
             if self.reference_p:
-                yield self.ticks, self.n_hz, round(self.n_hz - self.difference_hz)
+                yield self.ticks, self.n_hz, round(self.n_hz - self.difference_hz), self.level, change
             else:
-                yield self.ticks, round(self.n_hz + self.difference_hz), self.n_hz
+                yield self.ticks, round(self.n_hz + self.difference_hz), self.n_hz, self.level, change
+
+    def decode(self, payload):
+        """Yield the legacy ticks/P/N tuple for every stored byte."""
+        for ticks, p_hz, n_hz, _level, _change in self.decode_events(payload):
+            yield ticks, p_hz, n_hz
 
 
 class RecordingHistory:

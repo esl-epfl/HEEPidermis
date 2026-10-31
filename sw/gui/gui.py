@@ -19,13 +19,15 @@ import threading
 import time
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, ttk
+from tkinter import filedialog, font as tkfont, ttk
 
 from acquisition import DLCDecoder, RecordingHistory
-from recording import Sample, MotionDetector, conductance_us, read_recording, invalid_periods, DIFFERENTIAL_MODES
+from recording import (Sample, MotionDetector, conductance_us, read_recording,
+                       invalid_periods, buffer_loss_periods, recording_configuration_path,
+                       recording_uart_path, DIFFERENTIAL_MODES)
 from configuration import read_configuration, write_configuration, validate_configuration
 try:
-    from analysis import ALGORITHMS, analyze
+    from analysis import ALGORITHMS, DLC_INTERPOLATION_MODES, analyze, interpolate_signal
 except ImportError as exc:
     raise SystemExit("GUI dependencies missing. Run: python3 -m pip install -r sw/gui/requirements.txt") from exc
 
@@ -56,12 +58,30 @@ TERMINAL_LINES = 1000
 MESSAGE_LINES = 100
 IDAC_STEP_NA = 40
 IDAC_MAX_CODE = 255
+SAMPLE_BANK_BYTES = 16_384
+DLC_BUFFER_CHOICES = (1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024)
 SAMPLING_RATES_HZ = tuple(float(f"{mantissa * 10 ** decade:g}")
                           for decade in range(-1, 4) for mantissa in range(1, 10)) + (10_000.0,)
-DIFFERENTIAL_CSV_COLUMNS = ("differential_mode", "supply_sample_rate_Hz", "p_counter", "n_counter", "p_fine", "n_fine",
+DIFFERENTIAL_CSV_COLUMNS = ("differential_mode", "idac_code", "supply_sample_rate_Hz", "p_counter", "n_counter", "p_fine", "n_fine",
                             "difference_phase_counts", "difference_word_int16", "difference_word_shift",
                             "raw_delta_v_uV", "raw_conductance_uS", "dlc_event_kind",
-                            "acquisition_valid", "motion_artifact", "voltage_offset_mV")
+                            "acquisition_valid", "motion_artifact", "current_settling", "voltage_offset_mV",
+                            "dlc_level", "dlc_level_change", "dlc_log_width", "dlc_discard_bits", "dlc_reference_p", "buffer_loss")
+
+UI_BACKGROUND = "#071019"
+UI_SURFACE = "#0e1b25"
+UI_SURFACE_RAISED = "#132530"
+UI_PLOT = "#09151e"
+UI_BORDER = "#294552"
+UI_BORDER_ACTIVE = "#3a6673"
+UI_TEXT = "#e8f1f4"
+UI_MUTED = "#91a9b4"
+UI_ACCENT = "#55d3dd"
+UI_ACCENT_DARK = "#1d5661"
+UI_WARNING = "#f2bd62"
+UI_DISABLED_BACKGROUND = "#0b171f"
+UI_DISABLED_BORDER = "#1c313a"
+UI_DISABLED_TEXT = "#526873"
 
 # The firmware emits e.g. "3: 42000 Hz | 400000 uV| 3: 41000 Hz | 390000 uV = ...".
 MICROVOLTS = re.compile(r"(-?\d+)\s*uV\b", re.IGNORECASE)
@@ -73,7 +93,9 @@ SAMPLING_ACK = re.compile(r"^Sampling set: (\d+(?:\.\d+)?) (mHz|Hz)$")
 SUPPLY_ACK = re.compile(r"^Supply sampling set: (\d+) mHz$")
 SAMPLE_CURRENT = re.compile(r"\bI=(\d+)\s*nA\b")
 MEMORY_BANK = re.compile(r"^(?:Cont|IntL)\s+\d+\s+[Cdi-]+\s+\d+(?:\.\d+)?%$")
-RUNTIME_SYMBOL = re.compile(r"^\s*(0x[0-9a-fA-F]+)\s+(gsr_(?:injected_current_nA|sample_rate_millihz|supply_rate_millihz))\s*$", re.MULTILINE)
+RUNTIME_SYMBOL = re.compile(
+    r"^\s*(0x[0-9a-fA-F]+)\s+(gsr_(?:injected_current_nA|sample_rate_millihz|supply_rate_millihz|dlc_enabled|dlc_log_width|dlc_time_bits))\s*$",
+    re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -142,12 +164,12 @@ def write_defines(changes: dict[str, int], path: Path = DEMO_SOURCE) -> None:
     path.write_text(source)
 
 
-def write_runtime_word(symbol: str, value: int) -> int:
-    """Write one volatile GSR runtime setting through OpenOCD's Tcl port."""
+def write_runtime_words(values: dict[str, int]) -> dict[str, int]:
+    """Atomically write volatile GSR runtime settings through OpenOCD's Tcl port."""
     matches = {name: int(address, 16) for address, name in RUNTIME_SYMBOL.findall(ELF_MAP.read_text())}
-    if symbol not in matches:
-        raise RuntimeError(f"The built firmware has no {symbol} symbol. Build gsr/demo first.")
-    address = matches[symbol]
+    missing = values.keys() - matches.keys()
+    if missing:
+        raise RuntimeError(f"The built firmware has no {', '.join(sorted(missing))} symbol. Build gsr/demo first.")
     with socket.create_connection(("127.0.0.1", 6666), timeout=4) as connection:
         connection.settimeout(4)
 
@@ -168,15 +190,72 @@ def write_runtime_word(symbol: str, value: int) -> int:
         try:
             rpc("halt")
             halted = True
-            rpc(f"mww 0x{address:08x} 0x{value:08x}")
-            readback = rpc(f"mem2array gsr_readback 32 0x{address:08x} 1; format 0x%08x $gsr_readback(0)")
-            readback_value = int(readback, 16)
-            if readback_value != value:
-                raise RuntimeError(f"JTAG readback was {readback}, expected 0x{value:08x}.")
+            for symbol, value in values.items():
+                address = matches[symbol]
+                rpc(f"mww 0x{address:08x} 0x{value:08x}")
+                readback = rpc(f"mem2array gsr_readback 32 0x{address:08x} 1; format 0x%08x $gsr_readback(0)")
+                if int(readback, 16) != value:
+                    raise RuntimeError(f"JTAG readback for {symbol} was {readback}, expected 0x{value:08x}.")
         finally:
             if halted:
                 rpc("resume")
-    return address
+    return {symbol: matches[symbol] for symbol in values}
+
+
+def write_runtime_word(symbol: str, value: int) -> int:
+    return write_runtime_words({symbol: value})[symbol]
+
+
+class Tooltip:
+    """Show compact contextual help after the pointer rests for one second."""
+
+    def __init__(self, widget: tk.Misc, text: str):
+        self.widget = widget
+        self.text = text
+        self.job = None
+        self.window = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+        widget.bind("<Destroy>", self._hide, add="+")
+
+    def _schedule(self, _event=None):
+        self._cancel()
+        self.job = self.widget.after(1000, self._show)
+
+    def _cancel(self):
+        if self.job is not None:
+            self.widget.after_cancel(self.job)
+            self.job = None
+
+    def _show(self):
+        self.job = None
+        if self.window is not None or not self.widget.winfo_exists():
+            return
+        x = self.widget.winfo_rootx() + 14
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 8
+        self.window = tk.Toplevel(self.widget)
+        self.window.wm_overrideredirect(True)
+        self.window.wm_geometry(f"+{x}+{y}")
+        tk.Label(
+            self.window,
+            text=self.text,
+            justify="left",
+            wraplength=360,
+            background=UI_SURFACE_RAISED,
+            foreground=UI_TEXT,
+            padx=12,
+            pady=9,
+            relief="solid",
+            borderwidth=1,
+            font=("Helvetica", 9),
+        ).pack()
+
+    def _hide(self, _event=None):
+        self._cancel()
+        if self.window is not None:
+            self.window.destroy()
+            self.window = None
 
 
 class SignalPlot(tk.Canvas):
@@ -185,7 +264,8 @@ class SignalPlot(tk.Canvas):
     def __init__(self, master: tk.Misc, channels: list[tuple[str, str, str]], *, y_unit: str,
                  display_scale: float = 1.0, fixed_range: tuple[float, float] | None = None,
                  show_x_axis: bool = True, **kwargs):
-        super().__init__(master, background="#101820", highlightthickness=0, **kwargs)
+        super().__init__(master, background=UI_PLOT, highlightthickness=1,
+                         highlightbackground=UI_BORDER, **kwargs)
         self.channels = channels  # (sample attribute, strong color, faded color)
         self.y_unit = y_unit
         self.display_scale = display_scale
@@ -202,6 +282,9 @@ class SignalPlot(tk.Canvas):
         self.cursor_time: float | None = None
         self.window = 1
         self.offset_uv = 0.0
+        self.compare_dlc = False
+        self.dlc_interpolation = "ZOH"
+        self.transfer_curve = []
         self.missing_intervals = []
         self.bind("<Configure>", lambda _event: self.redraw())
 
@@ -217,7 +300,11 @@ class SignalPlot(tk.Canvas):
         self.redraw()
 
     def _raw_value(self, sample: Sample, channel: str) -> float | None:
+        if sample.source == "dlc" and sample.dlc_byte is not None:
+            return None
         if channel == "conductance_us":
+            if sample.source == "dlc" and not self.compare_dlc:
+                return None
             if any(hz is not None and not 24000 <= hz <= 1051710 for hz in (sample.p_hz, sample.n_hz)): return None
             if sample.p_hz is None and sample.n_hz is None and not sample.analysis_valid: return None
             return conductance_us(sample.raw_delta_uv, sample.current_ua, self.offset_uv)
@@ -246,6 +333,231 @@ class SignalPlot(tk.Canvas):
             return conductance_us(delta, current, self.offset_uv)
         return p if channel == "p_uv" else n
 
+    def _dlc_level_conductance(self, sample: Sample, level: int) -> float | None:
+        if (not self.transfer_curve or sample.dlc_log_width is None or
+                sample.dlc_discard_bits is None or sample.dlc_reference_p is None):
+            return None
+        scale_hz = (1 << (sample.dlc_log_width + sample.dlc_discard_bits)) * sample.sample_hz / 62
+        difference_hz = level * scale_hz
+        if sample.dlc_reference_p:
+            if sample.p_hz is None:
+                return None
+            reconstructed_p, reconstructed_n = sample.p_hz, sample.p_hz - difference_hz
+        else:
+            if sample.n_hz is None:
+                return None
+            reconstructed_p, reconstructed_n = sample.n_hz + difference_hz, sample.n_hz
+        if not (24000 <= reconstructed_p <= 1051710 and 24000 <= reconstructed_n <= 1051710):
+            return None
+        delta_uv = (nominal_voltage_uv(self.transfer_curve, round(reconstructed_p)) -
+                    nominal_voltage_uv(self.transfer_curve, round(reconstructed_n)))
+        return conductance_us(delta_uv, sample.current_ua, self.offset_uv)
+
+    @staticmethod
+    def _redundant_dlc_reference(samples, index: int) -> bool:
+        if index + 1 >= len(samples):
+            return False
+        sample, following = samples[index:index + 2]
+        return (sample.source == following.source == "dlc" and
+                sample.dlc_byte is following.dlc_byte is None and
+                sample.segment == following.segment and sample.current_ua == following.current_ua and
+                sample.p_hz == following.p_hz and sample.n_hz == following.n_hz and
+                0 <= following.time_s - sample.time_s <= min(0.03, 0.5 / max(sample.sample_hz, 0.1)))
+
+    def _draw_dlc_level_grid(self, visible, left, top, plot_w, plot_h, low, high) -> None:
+        runs = []
+        active_key = None
+        active_samples = []
+        for index, sample in enumerate(visible):
+            if SignalPlot._redundant_dlc_reference(visible, index):
+                continue
+            key = ((sample.segment, sample.dlc_log_width, sample.dlc_discard_bits,
+                    sample.dlc_reference_p, sample.sample_hz, sample.current_ua)
+                   if sample.source == "dlc" and sample.dlc_level is not None and
+                   sample.dlc_log_width is not None and sample.dlc_discard_bits is not None and
+                   sample.dlc_reference_p is not None else None)
+            if active_samples and key != active_key:
+                runs.append((active_samples, sample.time_s))
+                active_samples = []
+            if key is not None:
+                if active_samples and active_samples[-1].time_s == sample.time_s:
+                    active_samples[-1] = sample
+                else:
+                    active_samples.append(sample)
+            active_key = key
+        if active_samples:
+            runs.append((active_samples, visible[-1].time_s + 1 / max(visible[-1].sample_hz, 0.1)))
+
+        view_end = self.start_s + self.view_seconds
+        for run_samples, end in runs:
+            if end < self.start_s or run_samples[0].time_s > view_end:
+                continue
+            probes = run_samples[::max(1, len(run_samples) // 4)]
+            if probes[-1] is not run_samples[-1]:
+                probes.append(run_samples[-1])
+            level_ranges = []
+            for sample in probes:
+                scale_hz = (1 << (sample.dlc_log_width + sample.dlc_discard_bits)) * sample.sample_hz / 62
+                reference_hz = sample.p_hz if sample.dlc_reference_p else sample.n_hz
+                if reference_hz is None or scale_hz <= 0:
+                    continue
+                if sample.dlc_reference_p:
+                    minimum = max(1, math.ceil(max(0, reference_hz - 1051710) / scale_hz))
+                    maximum = math.floor((reference_hz - 24000) / scale_hz)
+                else:
+                    minimum = max(1, math.ceil(max(0, 24000 - reference_hz) / scale_hz))
+                    maximum = math.floor((1051710 - reference_hz) / scale_hz)
+                if maximum < minimum:
+                    continue
+
+                def first_at_most(target):
+                    start, stop = minimum, maximum
+                    while start < stop:
+                        middle = (start + stop) // 2
+                        value = self._dlc_level_conductance(sample, middle)
+                        if value is None or value <= target:
+                            stop = middle
+                        else:
+                            start = middle + 1
+                    return start
+
+                level_ranges.append((first_at_most(high), min(maximum, first_at_most(low) + 1)))
+            if not level_ranges:
+                continue
+            first_level = min(bounds[0] for bounds in level_ranges)
+            last_level = max(bounds[1] for bounds in level_ranges)
+            if last_level < first_level:
+                continue
+            stride = max(1, math.ceil((last_level - first_level + 1) / 80))
+            samples = run_samples[::max(1, math.ceil(len(run_samples) / 120))]
+            if samples[-1] is not run_samples[-1]:
+                samples.append(run_samples[-1])
+            for level in range(first_level, last_level + 1, stride):
+                points = []
+                last_y = None
+                for sample in samples:
+                    value = self._dlc_level_conductance(sample, level)
+                    if value is None:
+                        if len(points) >= 4:
+                            self.create_line(*points, fill="#a7b8c0", width=1,
+                                             tags="dlc_level_grid")
+                        points = []
+                        last_y = None
+                        continue
+                    x = left + plot_w * (min(max(sample.time_s, self.start_s), view_end) - self.start_s) / self.view_seconds
+                    last_y = top + plot_h * (high - value) / (high - low)
+                    points.extend((x, last_y))
+                if last_y is not None and end > samples[-1].time_s:
+                    x = left + plot_w * (min(end, view_end) - self.start_s) / self.view_seconds
+                    points.extend((x, last_y))
+                if len(points) >= 4:
+                    self.create_line(*points, fill="#a7b8c0", width=1,
+                                     tags="dlc_level_grid")
+
+    def _draw_dlc_level_arrows(self, visible, left, top, plot_w, plot_h) -> None:
+        changes = [abs(sample.dlc_level_change) for sample in visible
+                   if sample.source == "dlc" and sample.dlc_level_change]
+        largest = max(changes, default=1)
+        totals = {}
+        counts = {}
+        circles = {}
+        for sample in visible:
+            if sample.source == "dlc" and sample.dlc_level_change:
+                totals[sample.time_s] = totals.get(sample.time_s, 0) + abs(sample.dlc_level_change)
+                counts[sample.time_s] = counts.get(sample.time_s, 0) + 1
+            if sample.source == "dlc" and sample.dlc_kind in ("overflow", "time_overflow"):
+                circles[sample.time_s] = circles.get(sample.time_s, 0) + 1
+        slot_height = max(0.0, plot_h - 8) / max(counts.values(), default=1)
+        minimum_height = min(4.0, slot_height * 0.65)
+        gap = min(3.0, slot_height * 0.35)
+        available_per_level = min(
+            (max(0.0, plot_h - 8 - (minimum_height + gap) * counts[time_s] -
+                 11 * circles.get(time_s, 0)) / total)
+            for time_s, total in totals.items()
+        ) if totals else 8.0
+        pixels_per_level = min(8.0, 48.0 / largest,
+                               available_per_level)
+        stacked_height = {}
+        for sample in visible:
+            change = sample.dlc_level_change if sample.source == "dlc" else 0
+            if sample.source == "dlc" and sample.dlc_kind in ("overflow", "time_overflow"):
+                used = stacked_height.get(sample.time_s, 0.0)
+                x = left + plot_w * (sample.time_s - self.start_s) / self.view_seconds
+                center_y = top + plot_h - 6 - used
+                self.create_oval(x - 4, center_y - 4, x + 4, center_y + 4,
+                                 outline="#bac6cb", fill=UI_PLOT, width=1,
+                                 tags="dlc_time_overflow")
+                stacked_height[sample.time_s] = used + 11
+            if not change:
+                continue
+            height = max(minimum_height, pixels_per_level * abs(change))
+            used = stacked_height.get(sample.time_s, 0.0)
+            baseline = top + plot_h - 2 - used
+            tip_y = max(top + 2, baseline - height)
+            x = left + plot_w * (sample.time_s - self.start_s) / self.view_seconds
+            arrow_length = min(10.0, max(3.0, (baseline - tip_y) * 0.8))
+            arrow_width = min(8.0, arrow_length * 0.8)
+            arrow_shape = (arrow_length, arrow_width, arrow_width / 2)
+            if change > 0:
+                self.create_line(x, tip_y, x, baseline, fill="#bac6cb", width=2,
+                                 arrow=tk.LAST, arrowshape=arrow_shape, tags="dlc_level_change")
+            else:
+                self.create_line(x, baseline, x, tip_y, fill="#bac6cb", width=2,
+                                 arrow=tk.LAST, arrowshape=arrow_shape, tags="dlc_level_change")
+            stacked_height[sample.time_s] = used + height + gap
+
+    def _draw_dlc_reconstruction(self, visible, left, top, plot_w, plot_h,
+                                 low, high, color) -> None:
+        starts = sorted({sample.processing_start for sample in visible
+                         if sample.source == "dlc"})
+        view_end = self.start_s + self.view_seconds
+        for start in starts:
+            end = start
+            while (end < len(self.samples) and self.samples[end].source == "dlc" and
+                   self.samples[end].processing_start == start):
+                end += 1
+            anchors = []
+            for index in range(start, end):
+                if not self.samples[index].dlc_amplitude_knot:
+                    continue
+                value = self._average(index, "conductance_us")
+                if value is not None:
+                    point = (self.samples[index].time_s, value)
+                    if anchors and anchors[-1][0] == point[0]:
+                        anchors[-1] = point
+                    else:
+                        anchors.append(point)
+            if not anchors or anchors[-1][0] < self.start_s or anchors[0][0] > view_end:
+                continue
+            begin = max(self.start_s, anchors[0][0])
+            finish = min(view_end, anchors[-1][0])
+            if finish < begin:
+                continue
+            anchor_times = [point[0] for point in anchors]
+            anchor_values = [point[1] for point in anchors]
+            if self.dlc_interpolation in ("Quadratic", "Spline") and finish > begin:
+                count = max(3, min(1000, round(plot_w / 2)))
+                target_times = [begin + (finish - begin) * index / (count - 1)
+                                for index in range(count)]
+            else:
+                target_times = sorted({begin, finish, *(time_s for time_s in anchor_times
+                                                        if begin < time_s < finish)})
+            reconstructed = interpolate_signal(anchor_times, anchor_values, target_times,
+                                                self.dlc_interpolation)
+            points = []
+            for time_s, value in zip(target_times, reconstructed):
+                x = left + plot_w * (time_s - self.start_s) / self.view_seconds
+                y = top + plot_h * (high - min(max(float(value), low), high)) / (high - low)
+                if self.dlc_interpolation == "ZOH" and points:
+                    points.extend((x, points[-1]))
+                points.extend((x, y))
+            if len(points) >= 4:
+                self.create_line(*points, fill=color, width=2, tags="dlc_reconstruction")
+            elif points:
+                x, y = points
+                self.create_oval(x - 3, y - 3, x + 3, y + 3,
+                                 fill=color, outline="", tags="dlc_reconstruction")
+
     def redraw(self) -> None:
         self.delete("all")
         width, height = self.winfo_width(), self.winfo_height()
@@ -261,6 +573,15 @@ class SignalPlot(tk.Canvas):
         first = bisect.bisect_left(self.times, self.start_s)
         last = bisect.bisect_right(self.times, self.start_s + self.view_seconds)
         visible = self.samples[first:last]
+        for sample in visible:
+            if sample.analysis_valid and sample.phasic_peak:
+                peak_start = max(self.start_s, sample.time_s - 0.5)
+                peak_end = min(self.start_s + self.view_seconds, sample.time_s + 0.5)
+                peak_x0 = left + plot_w * (peak_start - self.start_s) / self.view_seconds
+                peak_x1 = left + plot_w * (peak_end - self.start_s) / self.view_seconds
+                self.create_rectangle(peak_x0, top, max(peak_x0 + 2, peak_x1), top + plot_h,
+                                      fill="#174b66", outline="#2c789a", width=1,
+                                      tags="phasic_peak_time")
         excluded = list(invalid_periods(self.samples[max(0, first - 1):last])) + list(self.missing_intervals)
         for begin, end in excluded:
             if end < self.start_s or begin > self.start_s + self.view_seconds:
@@ -268,6 +589,12 @@ class SignalPlot(tk.Canvas):
             x0 = left + plot_w * (max(begin, self.start_s) - self.start_s) / self.view_seconds
             x1 = left + plot_w * (min(end, self.start_s + self.view_seconds) - self.start_s) / self.view_seconds
             self.create_rectangle(x0, top, max(x0 + 2, x1), top + plot_h, fill="#49252b", outline="", tags="invalid_period")
+        for begin, end in buffer_loss_periods(self.samples[max(0, first - 1):last]):
+            if end < self.start_s or begin > self.start_s + self.view_seconds:
+                continue
+            x0 = left + plot_w * (max(begin, self.start_s) - self.start_s) / self.view_seconds
+            x1 = left + plot_w * (min(end, self.start_s + self.view_seconds) - self.start_s) / self.view_seconds
+            self.create_rectangle(x0, top, max(x0 + 3, x1), top + plot_h, fill="#77611f", outline="", tags="buffer_loss")
         values = [value for sample in visible for channel, _, _ in self.channels if (value := self._raw_value(sample, channel)) is not None]
         values.extend(value for index in range(first, last) for channel, _, _ in self.channels if (value := self._average(index, channel)) is not None)
         if self.fixed_range is not None:
@@ -290,7 +617,8 @@ class SignalPlot(tk.Canvas):
         for tick in range(5):
             y = top + plot_h * tick / 4
             value = high - (high - low) * tick / 4
-            self.create_line(left, y, width - right, y, fill="#263744")
+            if self.channels[0][0] != "conductance_us":
+                self.create_line(left, y, width - right, y, fill="#263744")
             tick_text = f"{value / self.display_scale:,.0f}" if self.fixed_range else f"{value / self.display_scale:,.2f}"
             self.create_text(left - 6, y, text=tick_text, fill="#b6c6d2", anchor="e", font=("TkDefaultFont", 9))
             if component:
@@ -301,11 +629,16 @@ class SignalPlot(tk.Canvas):
         self.create_text(13, top + plot_h / 2, text="Tonic · µS" if component else self.y_unit, angle=90, fill="#b6c6d2", font=("TkDefaultFont", 9))
         for tick in range(7):
             x = left + plot_w * tick / 6
-            self.create_line(x, top, x, top + plot_h, fill="#263744")
+            if self.channels[0][0] != "conductance_us":
+                self.create_line(x, top, x, top + plot_h, fill="#263744")
             if self.show_x_axis:
                 self.create_text(x, height - 18, text=f"{self.start_s + self.view_seconds * tick / 6:.2f}".rstrip("0").rstrip("."), fill="#b6c6d2", font=("TkDefaultFont", 9))
         if self.show_x_axis:
             self.create_text(left + plot_w / 2, height - 2, text="Shared time (s)", anchor="s", fill="#b6c6d2", font=("TkDefaultFont", 9))
+
+        if self.channels[0][0] == "conductance_us":
+            grid_samples = self.samples[max(0, first - 1):min(len(self.samples), last + 1)]
+            self._draw_dlc_level_grid(grid_samples, left, top, plot_w, plot_h, low, high)
 
         for channel, strong, faded in self.channels:
             if component: low, high = ranges[channel]
@@ -315,9 +648,11 @@ class SignalPlot(tk.Canvas):
             line_color = strong
             for index in range(first, last):
                 sample = self.samples[index]
+                if SignalPlot._redundant_dlc_reference(self.samples, index):
+                    continue
                 color = strong
                 if previous is not None and (sample.processing_start != previous.processing_start or color != line_color):
-                    if points: segments.append((points, line_color))
+                    if points: segments.append((points, line_color, previous.source == "dlc"))
                     points = []
                 previous, line_color = sample, color
                 x = left + plot_w * (sample.time_s - self.start_s) / self.view_seconds
@@ -325,51 +660,37 @@ class SignalPlot(tk.Canvas):
                 if channel not in ("tonic_us", "phasic_us") and raw_value is not None and low <= raw_value <= high:
                     raw_y = top + plot_h * (high - raw_value) / (high - low)
                     self.create_oval(x - 2, raw_y - 2, x + 2, raw_y + 2, fill=faded, outline="")
+                if channel == "conductance_us" and sample.source == "dlc":
+                    continue
                 average = self._average(index, channel)
                 if average is None:
                     if points:
-                        segments.append((points, line_color))
+                        segments.append((points, line_color, sample.source == "dlc"))
                         points = []
                     continue
                 avg_y = top + plot_h * (high - min(max(average, low), high)) / (high - low)
-                if points and channel == "conductance_us" and sample.source == "dlc":
-                    points.extend((x, points[-1]))
                 points.extend((x, avg_y))
             if points:
-                segments.append((points, line_color))
-            for segment, segment_color in segments:
+                segments.append((points, line_color, previous.source == "dlc"))
+            for segment, segment_color, _is_dlc in segments:
                 if len(segment) >= 4:
                     self.create_line(*segment, fill=segment_color, width=2)
                 else:
                     x, y = segment
                     self.create_oval(x - 3, y - 3, x + 3, y + 3, fill=segment_color, outline="")
-            if channel == "phasic_us":
-                for sample in visible:
-                    if sample.analysis_valid and sample.phasic_peak and sample.phasic_us is not None:
-                        x = left + plot_w * (sample.time_s - self.start_s) / self.view_seconds
-                        y = top + plot_h * (high - sample.phasic_us) / (high - low)
-                        self.create_polygon(x, y-6, x-5, y+3, x+5, y+3, fill="#9ee7ff", outline="#d2f5ff", tags="phasic_peak")
             if channel == "conductance_us":
-                for index in range(first, last):
-                    sample = self.samples[index]
-                    value = self._average(index, channel)
-                    if sample.source != "dlc" or sample.dlc_kind is None or value is None: continue
-                    x = left + plot_w * (sample.time_s-self.start_s)/self.view_seconds
-                    y = top + plot_h * (high-min(max(value, low), high))/(high-low)
-                    if sample.dlc_kind == "overflow":
-                        self.create_oval(x-4, y-4, x+4, y+4, outline=strong, fill="#101820", width=2, tags="dlc_overflow")
-                    elif sample.dlc_kind == "up":
-                        self.create_polygon(x, y-6, x-5, y+4, x+5, y+4, fill=strong, outline="#eadbff", tags="dlc_up")
-                    else:
-                        self.create_polygon(x, y+6, x-5, y-4, x+5, y-4, fill=strong, outline="#eadbff", tags="dlc_down")
+                reconstruction_samples = self.samples[max(0, first - 1):min(len(self.samples), last + 1)]
+                self._draw_dlc_reconstruction(reconstruction_samples, left, top, plot_w, plot_h,
+                                              low, high, strong)
+
+        if self.channels[0][0] == "conductance_us":
+            self._draw_dlc_level_arrows(visible, left, top, plot_w, plot_h)
 
         if any(sample.source == "dlc" for sample in visible) and self.channels[0][0] == "conductance_us":
-            self.create_text(width-right, 12, text="dLC: ▲ +  ▼ −  ○ overflow · faint: raw", anchor="e", fill="#c8b5ff", font=("TkDefaultFont", 8))
-        for sample in visible:
-            if sample.analysis_valid and sample.phasic_peak:
-                peak_x = left + plot_w * (sample.time_s - self.start_s) / self.view_seconds
-                self.create_line(peak_x, top, peak_x, top + plot_h, fill="#52bfff", width=2,
-                                 tags="phasic_peak_time")
+            raw_hint = " · faint dots: raw comparison" if self.compare_dlc else ""
+            self.create_text(width-right, 12,
+                             text=f"dLC {self.dlc_interpolation} · lines: levels · axis ↓↑: crossings/overloads · ○ time overflow" + raw_hint,
+                             anchor="e", fill="#c8b5ff", font=("TkDefaultFont", 8))
         if self.cursor_time is not None and self.start_s <= self.cursor_time <= self.start_s + self.view_seconds:
             cursor_x = left + plot_w * (self.cursor_time - self.start_s) / self.view_seconds
             self.create_line(cursor_x, top, cursor_x, top + plot_h, fill="#f4f7fa", width=2,
@@ -380,7 +701,8 @@ class TransferPlot(tk.Canvas):
     """Nominal VCO transfer curve with averaged measured operating points."""
 
     def __init__(self, master: tk.Misc, curve: list[tuple[float, float]], **kwargs):
-        super().__init__(master, background="#101820", highlightthickness=0, **kwargs)
+        super().__init__(master, background=UI_PLOT, highlightthickness=1,
+                         highlightbackground=UI_BORDER, **kwargs)
         self.curve = curve
         self.latest: OperatingPoint | None = None
         self.bind("<Configure>", lambda _event: self.redraw())
@@ -452,7 +774,8 @@ class TradeoffPlot(tk.Canvas):
     """Model heatmap with a marker at the averaged measured operating point."""
 
     def __init__(self, master: tk.Misc, model, metric: str, **kwargs):
-        super().__init__(master, background="#101820", highlightthickness=0, **kwargs)
+        super().__init__(master, background=UI_PLOT, highlightthickness=1,
+                         highlightbackground=UI_BORDER, **kwargs)
         self.model = model
         self.metric = metric
         self.current_ua = 0.52
@@ -490,6 +813,73 @@ class TradeoffPlot(tk.Canvas):
         self.point = None
         self._draw_marker()
 
+    @staticmethod
+    def _contour_segments(values, level: float, left: float, top: float,
+                          plot_w: float, plot_h: float):
+        rows, columns = values.shape
+
+        def point(row, column):
+            return (left + plot_w * (column + 0.5) / columns,
+                    top + plot_h * (rows - row - 0.5) / rows)
+
+        def crossing(first_point, first_value, second_point, second_value):
+            fraction = (level - first_value) / (second_value - first_value)
+            return (first_point[0] + fraction * (second_point[0] - first_point[0]),
+                    first_point[1] + fraction * (second_point[1] - first_point[1]))
+
+        segments = []
+        for row in range(rows - 1):
+            for column in range(columns - 1):
+                corner_values = (
+                    float(values[row, column]),
+                    float(values[row, column + 1]),
+                    float(values[row + 1, column + 1]),
+                    float(values[row + 1, column]),
+                )
+                if not all(math.isfinite(value) for value in corner_values):
+                    continue
+                corner_points = (
+                    point(row, column),
+                    point(row, column + 1),
+                    point(row + 1, column + 1),
+                    point(row + 1, column),
+                )
+                case = sum(1 << index for index, value in enumerate(corner_values) if value >= level)
+                edge_corners = ((0, 1), (1, 2), (2, 3), (3, 0))
+                edge_points = {}
+                for edge, (first, second) in enumerate(edge_corners):
+                    if (corner_values[first] >= level) == (corner_values[second] >= level):
+                        continue
+                    edge_points[edge] = crossing(corner_points[first], corner_values[first],
+                                                 corner_points[second], corner_values[second])
+                pairs = {
+                    1: ((3, 0),), 2: ((0, 1),), 3: ((3, 1),),
+                    4: ((1, 2),), 6: ((0, 2),), 7: ((3, 2),),
+                    8: ((2, 3),), 9: ((2, 0),), 11: ((1, 2),),
+                    12: ((1, 3),), 13: ((0, 1),), 14: ((3, 0),),
+                }.get(case, ())
+                if case in (5, 10):
+                    center_high = sum(corner_values) / 4 >= level
+                    if case == 5:
+                        pairs = ((0, 1), (2, 3)) if center_high else ((3, 0), (1, 2))
+                    else:
+                        pairs = ((3, 0), (1, 2)) if center_high else ((0, 1), (2, 3))
+                segments.extend((edge_points[first], edge_points[second])
+                                for first, second in pairs
+                                if first in edge_points and second in edge_points)
+        return segments
+
+    def _draw_iso_contours(self, low: float, high: float, left: float, top: float,
+                           plot_w: float, plot_h: float) -> None:
+        first_level = max(8 if self.metric == "resolution" else 0, math.ceil(low))
+        for level in range(first_level, math.floor(high) + 1):
+            segments = self._contour_segments(self.values, level, left, top, plot_w, plot_h)
+            if not segments:
+                continue
+            for start, end in segments:
+                self.create_line(*start, *end, fill="#ffffff", width=1, dash=(4, 3),
+                                 tags="iso_contour")
+
     def redraw(self) -> None:
         self.delete("all")
         if self.model is None or self.values is None:
@@ -500,7 +890,7 @@ class TradeoffPlot(tk.Canvas):
         plot_w, plot_h = max(width - left - right, 1), max(height - top - bottom, 1)
         rows, columns = self.values.shape
         finite = [float(value) for row in self.values for value in row if math.isfinite(float(value))]
-        low, high = (min(finite), max(finite)) if finite else (0.0, 1.0)
+        low, high = (0.0, max(0.0, max(finite))) if finite else (0.0, 1.0)
         span = max(high - low, 1e-9)
         for row in range(rows):
             for column in range(columns):
@@ -511,6 +901,7 @@ class TradeoffPlot(tk.Canvas):
                 y1 = top + plot_h * (rows - row) / rows + 1
                 color = self._color((value - low) / span) if math.isfinite(value) else "#303a43"
                 self.create_rectangle(x0, y0, x1, y1, fill=color, outline=color)
+        self._draw_iso_contours(low, high, left, top, plot_w, plot_h)
         bar_left = width - right + 15
         bar_right = bar_left + 12
         for step in range(48):
@@ -557,7 +948,7 @@ class TradeoffPlot(tk.Canvas):
         label = f"{value:.2f} {'µW' if self.metric == 'power' else 'bits'}" if math.isfinite(value) else "outside model range"
         self.create_line(x, top, x, top + plot_h, fill="white", dash=(3, 3), tags="marker")
         self.create_line(left, y, left + plot_w, y, fill="white", dash=(3, 3), tags="marker")
-        self.create_oval(x - 5, y - 5, x + 5, y + 5, fill="white", outline="#101820", tags="marker")
+        self.create_oval(x - 5, y - 5, x + 5, y + 5, fill="white", outline=UI_PLOT, tags="marker")
         self.create_text(left + plot_w / 2, 13, text=label, fill="white",
                          font=("TkDefaultFont", 8, "bold"), tags="marker")
 
@@ -565,7 +956,7 @@ class TradeoffPlot(tk.Canvas):
 class VCOGui:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("HEEPidermis · VCO GSR monitor")
+        self.root.title("VCO GSR Monitor - HEEPidermis User Interface")
         self._configure_style()
         width = min(1800, max(1100, root.winfo_screenwidth() - 80))
         height = min(950, max(700, root.winfo_screenheight() - 100))
@@ -573,6 +964,7 @@ class VCOGui:
         self.events: queue.Queue[tuple] = queue.Queue()
         self.samples: list[Sample] = []
         self.times: list[float] = []
+        self.uart_lines: list[str] = []
         self.loaded_recording: Path | None = None
         self.configuration_loading = False
         self.configuration_save_job = None
@@ -592,12 +984,19 @@ class VCOGui:
         self.dlc_origin_s = 0.0
         self.applied_mode = read_define("GSR_DIFFERENTIAL_MODE")
         self.applied_dlc = bool(read_define("GSR_DLC_ENABLED"))
+        self.applied_dlc_log_width = read_define("GSR_DLC_LOG_WIDTH")
+        self.applied_dlc_time_bits = read_define("GSR_DLC_TIME_BITS")
+        self.applied_dlc_buffer_events = read_define("GSR_DLC_BUFFER_EVENTS")
+        self.pending_dlc_config = None
+        self.dlc_request_id = 0
         self.applied_supply_setting = read_define("VCO_SUPPLY_RATE_MILLIHZ")
         self.applied_supply_hz = (self.applied_supply_setting or read_define("VCO_SAMPLE_RATE_MILLIHZ"))/1000
         self.pending_supply_millihz = None
         self.supply_request_id = 0
         self.last_raw_fields = {}
         self.last_dlc_event_sample = None
+        self.last_current_mismatch = None
+        self.current_settle_until = -math.inf
         self.analysis_generation = 0
         self.analysis_running = False
         self.analysis_dirty = True
@@ -670,11 +1069,12 @@ class VCOGui:
     def _configuration_choices(self):
         return {"project": tuple(path.parent.relative_to(APPLICATIONS).as_posix() for path in APPLICATIONS.rglob("main.c")),
                 "algorithm": ALGORITHMS, "differential_mode": DIFFERENTIAL_MODES,
+                "dlc_interpolation": DLC_INTERPOLATION_MODES,
                 "memory_color": ("Acquisition type", "Average sampling rate")}
 
     def _initialize_configuration(self):
         names = ("project", "mcu_freq", "port", "baud", "sampling_index", "current_code", "differential_mode",
-                 "supply_follow", "supply_index", "use_dlc", "dlc_width", "dlc_time_bits", "memory_color",
+                 "supply_follow", "supply_index", "use_dlc", "dlc_width", "dlc_time_bits", "dlc_buffer_events", "compare_dlc", "dlc_interpolation", "memory_color",
                  "filter_window", "rate_window", "algorithm", "smoothing", "peak_prominence", "motion_enabled",
                  "motion_window", "motion_threshold_mv", "motion_correlation", "voltage_offset_mv")
         self.configuration_variables = {name: getattr(self, name) for name in names}
@@ -708,6 +1108,8 @@ class VCOGui:
             return  # An entry can be temporarily empty while it is being edited.
         try:
             write_configuration(LAST_CONFIGURATION, values)
+            if self.session_path is not None:
+                write_configuration(recording_configuration_path(self.session_path), values)
         except OSError as error:
             self._log(f"Could not save last configuration: {error}")
 
@@ -724,12 +1126,16 @@ class VCOGui:
             self._sampling_slider_changed("")
             self._differential_mode_changed(log=False)
             self._supply_slider_changed()
+            self._compare_dlc_changed()
+            self._dlc_interpolation_changed()
         finally:
             self.configuration_loading = False
         self._filter_changed()
         self._rate_window_changed()
         self._screening_changed()
         self._configuration_changed()
+        if self.loaded_recording is not None:
+            self._set_run_configuration_enabled(False)
 
     def save_configuration(self):
         try:
@@ -798,15 +1204,40 @@ class VCOGui:
             return
         try:
             samples = read_recording(filename, self._requested_current_na() / 1000)
+            sidecar = recording_configuration_path(filename)
+            recording_configuration = read_configuration(sidecar) if sidecar.exists() else None
+            uart_sidecar = recording_uart_path(filename)
+            recording_uart = (uart_sidecar.read_text(encoding="utf-8", errors="replace").splitlines()
+                              if uart_sidecar.exists() else [])
+            if recording_configuration is not None:
+                validate_configuration(recording_configuration, self._configuration_choices(), len(SAMPLING_RATES_HZ))
             with open(filename, newline="", encoding="utf-8-sig") as stream:
                 missing_current = "injected_current_uA" not in (csv.DictReader(stream).fieldnames or ())
         except (OSError, ValueError, csv.Error) as error:
             self._log(f"Could not load recording: {error}")
             return
         self.reset_history()
+        if recording_configuration is not None:
+            self._apply_configuration(recording_configuration)
+            if "dlc_buffer_events" in recording_configuration:
+                self.applied_dlc_buffer_events = int(recording_configuration["dlc_buffer_events"])
+        for line in reversed(recording_uart):
+            fields = line.split(",")
+            if fields[0] == "B" and len(fields) == 14:
+                try:
+                    capacity = int(fields[13])
+                except ValueError:
+                    continue
+                if 1 <= capacity <= 1024:
+                    self.applied_dlc_buffer_events = capacity
+                    break
         self.loaded_recording = Path(filename)
+        self.uart_lines = recording_uart
+        self._replace_uart_output(recording_uart)
         self.samples = samples
         self.times = [sample.time_s for sample in samples]
+        self._update_uart_title()
+        self._update_dlc_options_visibility()
         self.segment_id = max(sample.segment for sample in samples) + 1
         self.history = RecordingHistory()
         for index, sample in enumerate(samples):
@@ -833,92 +1264,146 @@ class VCOGui:
         self._set_recording_state("stopped")
         self._set_run_configuration_enabled(False)
         self.recording_path_text.set(f"Explorer: {filename}")
-        self._log(f"Loaded {len(samples)} samples. Processing controls recompute this recording; Save CSV exports the result.")
+        configuration_note = " and its saved configuration" if recording_configuration is not None else " (no configuration sidecar found)"
+        uart_note = f" Raw UART: {len(recording_uart)} lines." if recording_uart else " No raw UART sidecar was found."
+        self._log(f"Loaded {len(samples)} samples{configuration_note}.{uart_note} Processing controls recompute this recording; Save CSV exports the result.")
         if missing_current:
             self._log(f"Legacy file has no injected current; using the selected {samples[0].current_ua:g} µA for this import.")
 
     def _configure_style(self) -> None:
-        self.root.configure(background="#0b131c")
-        self.root.option_add("*TCombobox*Listbox.background", "#0d1923")
-        self.root.option_add("*TCombobox*Listbox.foreground", "#ecf5f8")
-        self.root.option_add("*TCombobox*Listbox.selectBackground", "#30546b")
+        self.root.configure(background=UI_BACKGROUND)
+        for name in ("TkDefaultFont", "TkTextFont", "TkFixedFont", "TkMenuFont", "TkHeadingFont"):
+            tkfont.nametofont(name).configure(family="Helvetica")
+        self.root.option_add("*TCombobox*Listbox.background", UI_PLOT)
+        self.root.option_add("*TCombobox*Listbox.foreground", UI_TEXT)
+        self.root.option_add("*TCombobox*Listbox.selectBackground", UI_ACCENT_DARK)
+        self.root.option_add("*TButton.cursor", "hand2")
         style = ttk.Style(self.root)
         style.theme_use("clam")
-        style.configure(".", background="#111e29", foreground="#e4edf3", font=("DejaVu Sans", 10))
-        style.configure("TFrame", background="#111e29")
-        style.configure("TLabel", background="#111e29", foreground="#e4edf3")
-        style.configure("TButton", padding=(10, 7), background="#243b4c", foreground="#e9f4f8", bordercolor="#365668")
-        style.map("TButton", background=[("active", "#30546b"), ("disabled", "#1a2a36")],
-                  foreground=[("disabled", "#8495a1")])
-        style.configure("TEntry", fieldbackground="#0d1923", foreground="#ecf5f8", insertcolor="#ecf5f8")
-        style.configure("TSpinbox", fieldbackground="#0d1923", foreground="#ecf5f8", arrowcolor="#9edfe7")
-        style.configure("TCombobox", fieldbackground="#0d1923", foreground="#ecf5f8", arrowcolor="#9edfe7")
-        style.map("TCombobox", fieldbackground=[("readonly", "#0d1923")],
-                  foreground=[("readonly", "#ecf5f8")])
-        style.configure("TLabelframe", background="#111e29", bordercolor="#365668")
-        style.configure("TLabelframe.Label", background="#111e29", foreground="#c7dbe4")
-        style.configure("Warning.TLabel", background="#111e29", foreground="#ffc857", font=("DejaVu Sans", 9, "bold"))
-        style.configure("TScrollbar", background="#294456", troughcolor="#101d28", arrowcolor="#c7dbe4")
+        style.configure(".", background=UI_SURFACE, foreground=UI_TEXT, font=("Helvetica", 10))
+        style.configure("TFrame", background=UI_SURFACE)
+        style.configure("App.TFrame", background=UI_BACKGROUND)
+        style.configure("Workspace.TFrame", background=UI_BACKGROUND)
+        style.configure("Card.TFrame", background=UI_SURFACE_RAISED)
+        style.configure("TLabel", background=UI_SURFACE, foreground=UI_TEXT)
+        style.map("TLabel", foreground=[("disabled", UI_DISABLED_TEXT)],
+                  background=[("disabled", UI_SURFACE)])
+        style.configure("Workspace.TLabel", background=UI_BACKGROUND, foreground=UI_TEXT)
+        style.configure("PlotTitle.TLabel", background=UI_BACKGROUND, foreground=UI_TEXT,
+                        font=("Helvetica", 11, "bold"))
+        style.configure("Muted.TLabel", foreground=UI_MUTED, font=("Helvetica", 8))
+        style.configure("WorkspaceMuted.TLabel", background=UI_BACKGROUND, foreground=UI_MUTED,
+                        font=("Helvetica", 8))
+        style.configure("TButton", padding=(12, 7), background=UI_SURFACE_RAISED,
+                        foreground=UI_TEXT, bordercolor=UI_BORDER, focusthickness=1,
+                        focuscolor=UI_BORDER_ACTIVE)
+        style.map("TButton", background=[("active", UI_ACCENT_DARK), ("pressed", "#17444d"),
+                                          ("disabled", UI_DISABLED_BACKGROUND)],
+                  foreground=[("disabled", UI_DISABLED_TEXT)],
+                  bordercolor=[("disabled", UI_DISABLED_BORDER), ("active", UI_BORDER_ACTIVE)])
+        style.configure("Accent.TButton", background=UI_ACCENT_DARK, foreground="#effdff",
+                        bordercolor=UI_ACCENT, font=("Helvetica", 10, "bold"))
+        style.map("Accent.TButton", background=[("active", "#27717d"), ("pressed", "#17444d"),
+                                                 ("disabled", UI_DISABLED_BACKGROUND)],
+                  foreground=[("disabled", UI_DISABLED_TEXT)],
+                  bordercolor=[("disabled", UI_DISABLED_BORDER)])
+        style.configure("TEntry", padding=(7, 5), fieldbackground=UI_PLOT, foreground=UI_TEXT,
+                        insertcolor=UI_TEXT, bordercolor=UI_BORDER)
+        style.map("TEntry", fieldbackground=[("disabled", UI_DISABLED_BACKGROUND)],
+                  foreground=[("disabled", UI_DISABLED_TEXT)],
+                  bordercolor=[("disabled", UI_DISABLED_BORDER)])
+        style.configure("TSpinbox", padding=(7, 5), fieldbackground=UI_PLOT, foreground=UI_TEXT,
+                        arrowcolor=UI_ACCENT, bordercolor=UI_BORDER)
+        style.map("TSpinbox", fieldbackground=[("disabled", UI_DISABLED_BACKGROUND)],
+                  foreground=[("disabled", UI_DISABLED_TEXT)],
+                  arrowcolor=[("disabled", UI_DISABLED_TEXT)],
+                  bordercolor=[("disabled", UI_DISABLED_BORDER)])
+        style.configure("TCombobox", padding=(7, 5), fieldbackground=UI_PLOT, foreground=UI_TEXT,
+                        arrowcolor=UI_ACCENT, bordercolor=UI_BORDER)
+        style.map("TCombobox", fieldbackground=[("disabled", UI_DISABLED_BACKGROUND), ("readonly", UI_PLOT)],
+                  foreground=[("disabled", UI_DISABLED_TEXT), ("readonly", UI_TEXT)],
+                  arrowcolor=[("disabled", UI_DISABLED_TEXT)],
+                  bordercolor=[("disabled", UI_DISABLED_BORDER)])
+        style.configure("TCheckbutton", background=UI_SURFACE, foreground=UI_TEXT,
+                        indicatorbackground=UI_PLOT, indicatorforeground=UI_ACCENT)
+        style.map("TCheckbutton", background=[("active", UI_SURFACE)],
+                  foreground=[("disabled", UI_DISABLED_TEXT)],
+                  indicatorbackground=[("disabled", UI_DISABLED_BACKGROUND), ("selected", UI_ACCENT_DARK)],
+                  indicatorforeground=[("disabled", UI_DISABLED_TEXT)])
+        style.configure("TLabelframe", background=UI_SURFACE, bordercolor=UI_BORDER,
+                        relief="solid", borderwidth=1)
+        style.configure("TLabelframe.Label", background=UI_SURFACE, foreground=UI_ACCENT,
+                        font=("Helvetica", 9, "bold"))
+        style.configure("Warning.TLabel", background=UI_SURFACE, foreground=UI_WARNING,
+                        font=("Helvetica", 9, "bold"))
+        style.configure("TScrollbar", background=UI_SURFACE_RAISED, troughcolor=UI_PLOT,
+                        bordercolor=UI_BACKGROUND, arrowcolor=UI_MUTED)
 
     def _build_layout(self) -> None:
-        container = ttk.Frame(self.root, padding=12)
+        container = ttk.Frame(self.root, padding=14, style="App.TFrame")
         container.pack(fill="both", expand=True)
         container.columnconfigure(0, minsize=575)
         container.columnconfigure(1, minsize=680)
         container.columnconfigure(2, weight=1)
         container.rowconfigure(1, weight=1)
 
-        header = tk.Frame(container, background="#101820", padx=18, pady=9)
+        header = tk.Frame(container, background=UI_SURFACE_RAISED, padx=18, pady=10,
+                          highlightbackground=UI_BORDER, highlightthickness=1)
         header.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 12))
         header.columnconfigure(1, weight=1)
         self.logo_image = None
         self.qr_image = None
         try:
             self.logo_image = tk.PhotoImage(file=str(LOGO_PNG)).subsample(3)
-            tk.Label(header, image=self.logo_image, background="#101820").grid(row=0, column=0, sticky="w")
+            tk.Label(header, image=self.logo_image, background=UI_SURFACE_RAISED).grid(row=0, column=0, rowspan=2, sticky="w")
         except (OSError, tk.TclError):
-            tk.Label(header, text="HEEPidermis", background="#101820", foreground="white",
-                     font=("DejaVu Sans", 22, "bold")).grid(row=0, column=0, sticky="w")
-        tk.Label(header, text="VCO GSR MONITOR", background="#101820", foreground="#9edfe7",
-                 font=("DejaVu Sans", 15, "bold")).grid(row=0, column=1, sticky="e", padx=24)
+            tk.Label(header, text="HEEPidermis", background=UI_SURFACE_RAISED, foreground=UI_TEXT,
+                     font=("Helvetica", 22, "bold")).grid(row=0, column=0, rowspan=2, sticky="w")
+        tk.Label(header, text="HEEPidermis User Interface",
+                 background=UI_SURFACE_RAISED, foreground=UI_ACCENT,
+                 font=("Helvetica", 15, "bold")).grid(row=0, column=1, sticky="se", padx=24)
+        tk.Label(header, text="Acquisition  ·  analysis  ·  recording explorer",
+                 background=UI_SURFACE_RAISED, foreground=UI_MUTED,
+                 font=("Helvetica", 9)).grid(row=1, column=1, sticky="ne", padx=24)
         try:
             self.qr_image = tk.PhotoImage(file=str(QR_PNG)).subsample(2)
-            tk.Label(header, image=self.qr_image, background="white", padx=3, pady=3).grid(row=0, column=2, sticky="e")
+            tk.Label(header, image=self.qr_image, background="white", padx=3, pady=3).grid(row=0, column=2, rowspan=2, sticky="e")
         except (OSError, tk.TclError):
             pass
+        tk.Frame(header, background=UI_ACCENT, height=2).grid(row=2, column=0, columnspan=3,
+                                                               sticky="ew", pady=(9, 0))
 
         side = ttk.Frame(container)
         side.grid(row=1, column=0, sticky="nsew", padx=(0, 12))
         side.grid_propagate(False)
         side.columnconfigure(0, weight=1)
         side.rowconfigure(0, weight=1)
-        side_canvas = tk.Canvas(side, highlightthickness=0, background="#111e29")
+        side_canvas = tk.Canvas(side, highlightthickness=1, highlightbackground=UI_BORDER,
+                                background=UI_SURFACE)
+        self.side_canvas = side_canvas
         side_canvas.grid(row=0, column=0, sticky="nsew")
         side_scroll = ttk.Scrollbar(side, orient="vertical", command=side_canvas.yview)
         side_scroll.grid(row=0, column=1, sticky="ns")
         side_canvas.configure(yscrollcommand=side_scroll.set)
-        message_frame = ttk.LabelFrame(side, text="Messages", padding=8)
-        message_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-        message_frame.columnconfigure(0, weight=1)
-        self.messages = tk.Text(message_frame, height=7, width=1, wrap="word",
-                                background="#0d1923", foreground="#e4edf3",
-                                font=("DejaVu Sans", 10), relief="flat",
-                                padx=8, pady=6, state="disabled")
-        self.messages.grid(row=0, column=0, sticky="nsew")
-        message_scroll = ttk.Scrollbar(message_frame, command=self.messages.yview)
-        message_scroll.grid(row=0, column=1, sticky="ns")
-        self.messages.configure(yscrollcommand=message_scroll.set)
-        self.messages.tag_configure("uart", foreground="#9edfe7", spacing3=8)
-        self.messages.tag_configure("gui", foreground="#ffc857", spacing3=8)
+        bottom_row = ttk.Frame(container, style="Workspace.TFrame")
+        bottom_row.grid(row=2, column=0, columnspan=3, sticky="nsew", pady=(12, 0))
+        for column, weight, minimum in ((0, 5, 600), (1, 2, 240), (2, 2, 260), (3, 1, 195)):
+            bottom_row.columnconfigure(column, weight=weight, minsize=minimum)
+        bottom_row.rowconfigure(0, weight=1)
         controls = ttk.Frame(side_canvas, padding=14)
         controls_window = side_canvas.create_window((0, 0), window=controls, anchor="nw")
         controls.bind("<Configure>", lambda _event: side_canvas.configure(scrollregion=side_canvas.bbox("all")))
         side_canvas.bind("<Configure>", lambda event: side_canvas.itemconfigure(controls_window, width=event.width))
         controls.columnconfigure(0, weight=1)
+        self.tooltips: list[Tooltip] = []
+
+        def tip(widget, text):
+            self.tooltips.append(Tooltip(widget, text))
+            return widget
 
         def section(title, row):
-            frame = ttk.LabelFrame(controls, text=title, padding=10)
-            frame.grid(row=row, column=0, sticky="ew", pady=(0, 10))
+            frame = ttk.LabelFrame(controls, text=title, padding=12)
+            frame.grid(row=row, column=0, sticky="ew", pady=(0, 12))
             frame.columnconfigure(0, weight=1, uniform="fields")
             frame.columnconfigure(1, weight=1, uniform="fields")
             return frame
@@ -926,20 +1411,29 @@ class VCOGui:
         control_section = section("CONTROL", 0)
         parameter_section = section("PARAMETERS", 1)
         dlc_section = section("DLC MODE", 2)
-        serial_section = section("SERIAL COMMUNICATION", 3)
+        visualization_section = section("VISUALIZATION", 3)
+        processing_section = section("DECOMPOSITION", 4)
+        artifact_section = section("ARTIFACT REJECTION", 5)
+        serial_section = section("SERIAL COMMUNICATION", 6)
         self.run_configuration_roots = (control_section, parameter_section, dlc_section, serial_section)
-        visualization_section = section("VISUALIZATION", 4)
-        processing_section = section("PROCESSING", 5)
 
         projects = sorted(path.parent.relative_to(APPLICATIONS).as_posix() for path in APPLICATIONS.rglob("main.c"))
         self.project = tk.StringVar(value="gsr/demo" if "gsr/demo" in projects else (projects[0] if projects else ""))
         self.mcu_freq = tk.StringVar(value=str(self.configured_freq))
         ttk.Label(control_section, text="Application").grid(row=0, column=1, sticky="w", padx=(8, 0))
         ttk.Label(control_section, text="MCU frequency (Hz)").grid(row=0, column=0, sticky="w")
-        ttk.Combobox(control_section, textvariable=self.project, values=projects, state="readonly", width=16).grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(3, 8))
-        ttk.Entry(control_section, textvariable=self.mcu_freq, width=16).grid(row=1, column=0, sticky="ew", pady=(3, 8))
-        ttk.Button(control_section, text="Build", command=self.build).grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=4)
-        ttk.Button(control_section, text="Config. board", command=self.configure_board).grid(row=2, column=0, sticky="ew", pady=4)
+        project_box = tip(ttk.Combobox(control_section, textvariable=self.project, values=projects, state="readonly", width=16),
+                          "Selects the firmware application to compile. The GSR demo exposes the live acquisition, dLC, current, and sampling controls used by this interface.")
+        project_box.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(3, 8))
+        mcu_entry = tip(ttk.Entry(control_section, textvariable=self.mcu_freq, width=16),
+                        "Configures the board PLL and the next firmware build. It also sets UART baud and timer conversion. If OpenOCD cannot halt the MCU after a clock change, restore a known-working clock, reset hardware, and rebuild.")
+        mcu_entry.grid(row=1, column=0, sticky="ew", pady=(3, 8))
+        build_button = tip(ttk.Button(control_section, text="Build", command=self.build, style="Accent.TButton"),
+                           "Compiles the selected application with the current startup settings. Live-capable settings can still be changed after the firmware is running.")
+        build_button.grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=4)
+        configure_button = tip(ttk.Button(control_section, text="Config. board", command=self.configure_board),
+                               "Programs the FPGA/board configuration required by the selected application before opening the serial acquisition connection.")
+        configure_button.grid(row=2, column=0, sticky="ew", pady=4)
         self.board_reset_notice = tk.StringVar(value="")
         self.memory = tk.StringVar(value="Memory use appears here after Build.")
         self.memory_label = ttk.Label(control_section, textvariable=self.memory, justify="left", anchor="nw", font=("TkFixedFont", 8))
@@ -948,17 +1442,20 @@ class VCOGui:
         recording_buttons.grid(row=4, column=0, columnspan=2, sticky="ew", pady=3)
         recording_buttons.columnconfigure(0, weight=2)
         recording_buttons.columnconfigure(1, weight=1)
-        self.record_button = tk.Button(recording_buttons, text="▶  START RECORDING", command=self.toggle_recording, background="#198754", foreground="white", activebackground="#157347", activeforeground="white", relief="flat", font=("TkDefaultFont", 10, "bold"), cursor="hand2")
+        self.record_button = tk.Button(recording_buttons, text="▶  START RECORDING", command=self.toggle_recording, background="#198754", foreground="white", activebackground="#157347", activeforeground="white", relief="flat", bd=0, padx=12, pady=8, font=("Helvetica", 10, "bold"), cursor="hand2")
         self.record_button.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        tip(self.record_button, "Starts, pauses, or continues acquisition. When an offline recording is open, this starts a new live session and leaves the saved file unchanged.")
         self.reset_button = ttk.Button(recording_buttons, text="RESET", command=self.reset_history)
         self.reset_button.grid(row=0, column=1, sticky="ew")
+        tip(self.reset_button, "Clears the current plots, analysis, UART view, and in-memory history. Any recording already written to disk is kept.")
         ttk.Label(parameter_section, text="N signal sampling · 0.1–10,000 Hz").grid(row=0, column=0, columnspan=2, sticky="w", pady=(10, 0))
         initial_rate_index = min(range(len(SAMPLING_RATES_HZ)), key=lambda index: abs(math.log(SAMPLING_RATES_HZ[index] / self.applied_sampling_hz)))
         self.sampling_index = tk.IntVar(value=initial_rate_index)
         self.sampling_selection = tk.StringVar(value="")
         self.sampling_status = tk.StringVar(value="Build sets startup values; sliders update live on release.")
-        self.sampling_scale = tk.Scale(parameter_section, from_=0, to=len(SAMPLING_RATES_HZ)-1, orient="horizontal", resolution=1, showvalue=False, variable=self.sampling_index, command=self._sampling_slider_changed, background="#111e29", foreground="#e4edf3", troughcolor="#294457", activebackground="#38c6d9", highlightthickness=0, borderwidth=0, sliderlength=20)
+        self.sampling_scale = tk.Scale(parameter_section, from_=0, to=len(SAMPLING_RATES_HZ)-1, orient="horizontal", resolution=1, showvalue=False, variable=self.sampling_index, command=self._sampling_slider_changed, background=UI_SURFACE, foreground=UI_TEXT, troughcolor=UI_BORDER, activebackground=UI_ACCENT, highlightthickness=0, borderwidth=0, sliderlength=20, sliderrelief="flat", relief="flat")
         self.sampling_scale.grid(row=1, column=0, columnspan=2, sticky="ew")
+        tip(self.sampling_scale, "Sets how often the N signal channel is sampled. Releasing the slider applies the new rate at run time when the GSR firmware is connected. A 20 Hz rate can alias 50 Hz mains pickup into a conspicuous 10 Hz alternation; inspect raw P/N readings before treating it as physiology.")
         self.sampling_scale.bind("<ButtonRelease-1>", self._sampling_slider_released)
         self.sampling_scale.bind("<KeyRelease>", self._sampling_slider_released)
         self._sampling_slider_changed(str(initial_rate_index))
@@ -969,8 +1466,9 @@ class VCOGui:
         self.current_code = tk.IntVar(value=initial_code)
         self.current_selection = tk.StringVar(value="")
         self.current_status = tk.StringVar(value="Firmware current: waiting for device")
-        self.current_scale = tk.Scale(parameter_section, from_=1, to=IDAC_MAX_CODE, orient="horizontal", resolution=1, showvalue=False, variable=self.current_code, command=self._current_slider_changed, background="#111e29", foreground="#e4edf3", troughcolor="#294457", activebackground="#38c6d9", highlightthickness=0, borderwidth=0, sliderlength=20)
+        self.current_scale = tk.Scale(parameter_section, from_=1, to=IDAC_MAX_CODE, orient="horizontal", resolution=1, showvalue=False, variable=self.current_code, command=self._current_slider_changed, background=UI_SURFACE, foreground=UI_TEXT, troughcolor=UI_BORDER, activebackground=UI_ACCENT, highlightthickness=0, borderwidth=0, sliderlength=20, sliderrelief="flat", relief="flat")
         self.current_scale.grid(row=5, column=0, columnspan=2, sticky="ew")
+        tip(self.current_scale, "Sets the injected tissue current in 40 nA hardware steps. Conductance is calculated from the measured voltage drop and the current stored with each sample.")
         self.current_scale.bind("<ButtonRelease-1>", self._slider_released)
         self.current_scale.bind("<KeyRelease>", self._slider_released)
         self._current_slider_changed(str(initial_code))
@@ -984,151 +1482,229 @@ class VCOGui:
         ttk.Label(acquisition_options, text="Difference mode").grid(row=0, column=0, sticky="w")
         mode_box = ttk.Combobox(acquisition_options, textvariable=self.differential_mode, values=DIFFERENTIAL_MODES, state="readonly", width=19)
         mode_box.grid(row=0, column=1, sticky="ew", padx=8)
+        tip(mode_box, "Chooses where the P−N voltage difference is calculated: dedicated hardware, chip software, or from both raw channels in the GUI.")
         mode_box.bind("<<ComboboxSelected>>", self._differential_mode_changed)
         self.supply_options = ttk.Frame(acquisition_options)
         self.supply_options.grid(row=1, column=0, columnspan=2, sticky="ew")
         self.supply_options.columnconfigure(0, weight=1)
         self.supply_follow = tk.BooleanVar(value=self.applied_supply_setting == 0)
         self.supply_index = tk.IntVar(value=min(range(len(SAMPLING_RATES_HZ)), key=lambda i: abs(math.log(SAMPLING_RATES_HZ[i]/self.applied_supply_hz))))
-        ttk.Checkbutton(self.supply_options, text="P supply sampling follows N", variable=self.supply_follow, command=self._supply_follow_changed).grid(row=0, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        supply_follow_box = tip(ttk.Checkbutton(self.supply_options, text="P supply sampling follows N", variable=self.supply_follow, command=self._supply_follow_changed),
+                                "Keeps the P reference channel at the same sampling rate as N. Disable this to monitor the supply/reference channel at a separate rate.")
+        supply_follow_box.grid(row=0, column=0, columnspan=2, sticky="w", pady=(4, 0))
         self.supply_selection = tk.StringVar()
-        self.supply_scale = tk.Scale(self.supply_options, from_=0, to=len(SAMPLING_RATES_HZ)-1, orient="horizontal", resolution=1, showvalue=False, variable=self.supply_index, command=self._supply_slider_changed, background="#111e29", foreground="#e4edf3", troughcolor="#294457", activebackground="#38c6d9", highlightthickness=0, borderwidth=0, sliderlength=20)
+        self.supply_scale = tk.Scale(self.supply_options, from_=0, to=len(SAMPLING_RATES_HZ)-1, orient="horizontal", resolution=1, showvalue=False, variable=self.supply_index, command=self._supply_slider_changed, background=UI_SURFACE, foreground=UI_TEXT, troughcolor=UI_BORDER, activebackground=UI_ACCENT, highlightthickness=0, borderwidth=0, sliderlength=20, sliderrelief="flat", relief="flat")
         self.supply_scale.grid(row=1, column=0, sticky="ew")
+        tip(self.supply_scale, "Sets the independent P reference-channel sampling rate when follow mode is disabled. Releasing the slider applies it live.")
         ttk.Label(self.supply_options, textvariable=self.supply_selection, width=14).grid(row=1, column=1, padx=6)
         self.supply_scale.bind("<ButtonRelease-1>", self._supply_slider_released)
         self.supply_scale.bind("<KeyRelease>", self._supply_slider_released)
         self.supply_status = tk.StringVar(value="P rate updates live on release.")
         ttk.Label(self.supply_options, textvariable=self.supply_status, wraplength=440, font=("TkDefaultFont", 8)).grid(row=2, column=0, columnspan=2, sticky="w")
-        self.dlc_checkbox = ttk.Checkbutton(dlc_section, text="Use dLC (requires Build)", variable=self.use_dlc, command=self._dlc_options_changed)
+        self.dlc_checkbox = ttk.Checkbutton(dlc_section, text="Use dLC", variable=self.use_dlc,
+                                            command=self._dlc_options_changed)
         self.dlc_checkbox.grid(row=0, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        tip(self.dlc_checkbox, "Enables differential level-crossing compression. Instead of storing every fixed-rate sample, the chip emits amplitude changes and elapsed-time events.")
         self.dlc_options = ttk.Frame(dlc_section)
         self.dlc_options.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(3, 8))
         self.dlc_options.columnconfigure(0, weight=1); self.dlc_options.columnconfigure(1, weight=1)
         self.dlc_width = tk.StringVar(value=str(1 << read_define("GSR_DLC_LOG_WIDTH")))
         self.dlc_time_bits = tk.StringVar(value=str(read_define("GSR_DLC_TIME_BITS")))
+        self.dlc_buffer_events = tk.StringVar(value=str(read_define("GSR_DLC_BUFFER_EVENTS")))
         ttk.Label(self.dlc_options, text="Level width (counts)").grid(row=0, column=0, sticky="w")
         ttk.Label(self.dlc_options, text="Time bits (of 8)").grid(row=0, column=1, sticky="w", padx=8)
-        ttk.Combobox(self.dlc_options, values=tuple(1 << n for n in range(16)), textvariable=self.dlc_width, state="readonly", width=10).grid(row=1, column=0, sticky="ew")
-        ttk.Spinbox(self.dlc_options, from_=1, to=6, textvariable=self.dlc_time_bits, width=10).grid(row=1, column=1, sticky="ew", padx=(8, 0))
-        ttk.Label(self.dlc_options, text="Counts after input scaling. Both settings require Build.", wraplength=440, font=("TkDefaultFont", 8)).grid(row=2, column=0, columnspan=2, sticky="w", pady=(3, 0))
-        self.dlc_width.trace_add("write", lambda *_args: self._log("Build required to apply dLC level width."))
-        self.dlc_time_bits.trace_add("write", lambda *_args: self._log("Build required to apply dLC time bits."))
+        self.dlc_width_box = ttk.Combobox(self.dlc_options, values=tuple(1 << n for n in range(16)),
+                                          textvariable=self.dlc_width, state="readonly", width=10)
+        self.dlc_width_box.grid(row=1, column=0, sticky="ew")
+        tip(self.dlc_width_box, "Sets counter counts per dLC level, from 1 to 32768. Narrower widths can generate more packets. Time bits are never changed automatically.")
+        self.dlc_width_box.bind("<<ComboboxSelected>>", self._dlc_runtime_changed)
+        self.dlc_time_spin = ttk.Spinbox(self.dlc_options, from_=1, to=6,
+                                         textvariable=self.dlc_time_bits, width=10,
+                                         command=self._dlc_runtime_changed)
+        self.dlc_time_spin.grid(row=1, column=1, sticky="ew", padx=(8, 0))
+        tip(self.dlc_time_spin, "Allocates bits in each dLC byte to elapsed time. More time bits reduce time-overflow events but leave fewer amplitude levels per event.")
+        self.dlc_time_spin.bind("<Return>", self._dlc_runtime_changed)
+        self.dlc_time_spin.bind("<FocusOut>", self._dlc_runtime_changed)
+        ttk.Label(self.dlc_options, text="Event buffer (packets)").grid(row=2, column=0, sticky="w", pady=(7, 0))
+        self.dlc_buffer_box = tip(
+            ttk.Combobox(self.dlc_options, textvariable=self.dlc_buffer_events,
+                         values=DLC_BUFFER_CHOICES, state="normal", width=10),
+            "Maximum dLC events captured from one input before excess packets are safely discarded. Enter 1–1024; changing this static SRAM allocation requires rebuilding and loading the MCU firmware. A loss is marked yellow.")
+        self.dlc_buffer_box.grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=(7, 0))
+        self.dlc_interpolation = tk.StringVar(value="ZOH")
+        self.dlc_interpolation_label = ttk.Label(self.dlc_options, text="Reconstruction interpolation")
+        self.dlc_interpolation_label.grid(row=3, column=0, sticky="w", pady=(7, 0))
+        self.dlc_interpolation_box = tip(
+            ttk.Combobox(self.dlc_options, textvariable=self.dlc_interpolation,
+                         values=DLC_INTERPOLATION_MODES, state="readonly", width=12),
+            "Chooses how dLC crossings reconstruct the conductance trajectory. ZOH holds each level; Linear joins crossings with ramps; Quadratic uses degree-two curves; Spline uses natural cubic curves. Time-overflow packets advance the clock but are not amplitude knots.")
+        self.dlc_interpolation_box.grid(row=3, column=1, sticky="ew", padx=(8, 0), pady=(7, 0))
+        self.dlc_interpolation_box.bind("<<ComboboxSelected>>", self._dlc_interpolation_changed)
+        self.compare_dlc = tk.BooleanVar(value=False)
+        self.compare_dlc_checkbox = ttk.Checkbutton(
+            self.dlc_options, text="Compare raw conductance dots with dLC output",
+            variable=self.compare_dlc, command=self._compare_dlc_changed)
+        self.compare_dlc_checkbox.grid(row=4, column=0, columnspan=2, sticky="w", pady=(7, 0))
+        tip(self.compare_dlc_checkbox, "Overlays faint raw conductance samples with the reconstructed dLC output so compression error and event timing can be compared directly.")
+        ttk.Label(self.dlc_options, text="Axis markers: stacked arrows are level overflows; hollow circles are time overflows.",
+                  wraplength=440, font=("TkDefaultFont", 8)).grid(row=5, column=0, columnspan=2,
+                                                                    sticky="w", pady=(3, 0))
+        self.dlc_status = tk.StringVar(value="Level/time update live; changing the buffer size requires Build.")
+        ttk.Label(self.dlc_options, textvariable=self.dlc_status, wraplength=440,
+                  font=("TkDefaultFont", 8)).grid(row=6, column=0, columnspan=2, sticky="w", pady=(3, 0))
         if not self.use_dlc.get(): self.dlc_options.grid_remove()
         self._differential_mode_changed(log=False)
         ttk.Label(serial_section, text="Serial port").grid(row=0, column=0, sticky="w")
         ttk.Label(serial_section, text="Baud rate (MCU ÷ 20)").grid(row=0, column=1, sticky="w", padx=8)
         self.port = tk.StringVar(value=DEFAULT_PORT)
         self.baud = tk.StringVar(value=str(self.configured_freq // 20))
-        ttk.Entry(serial_section, textvariable=self.port, width=18).grid(row=1, column=0, sticky="ew", pady=(3, 8))
-        ttk.Entry(serial_section, textvariable=self.baud, width=12).grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(3, 8))
+        port_entry = tip(ttk.Entry(serial_section, textvariable=self.port, width=18),
+                         "Specifies the serial device used for the chip UART. A stable /dev/serial/by-id path is preferred over a changing ttyUSB number.")
+        port_entry.grid(row=1, column=0, sticky="ew", pady=(3, 8))
+        baud_entry = tip(ttk.Entry(serial_section, textvariable=self.baud, width=12),
+                         "Sets the UART baud rate expected from the running firmware. The normal value is the MCU clock divided by twenty.")
+        baud_entry.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(3, 8))
         ttk.Label(visualization_section, text="Memory bar colors").grid(row=0, column=0, columnspan=2, sticky="w")
         self.memory_color = tk.StringVar(value="Acquisition type")
-        ttk.Combobox(visualization_section, textvariable=self.memory_color, values=("Acquisition type", "Average sampling rate"), state="readonly", width=20).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(3, 8))
+        memory_color_box = tip(ttk.Combobox(visualization_section, textvariable=self.memory_color, values=("Acquisition type", "Average sampling rate"), state="readonly", width=20),
+                               "Chooses whether the memory history is colored by raw/dLC acquisition type or by the average rate at which bytes are being stored.")
+        memory_color_box.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(3, 8))
         self.memory_color.trace_add("write", lambda *_args: self._draw_capacity_bar())
-        self.rate_estimate_text = tk.StringVar(value="Average sample rate: waiting for samples")
-        ttk.Label(visualization_section, textvariable=self.rate_estimate_text, wraplength=440).grid(row=2, column=0, columnspan=2, sticky="w")
-        self.recording_path_text = tk.StringVar(value="Recording starts with the first sample.")
-        ttk.Label(visualization_section, textvariable=self.recording_path_text, wraplength=440, font=("TkDefaultFont", 8)).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(8, 0))
-        ttk.Label(processing_section, text="Moving average (samples)").grid(row=0, column=0, sticky="w")
-        ttk.Label(processing_section, text="Rate estimate (samples)").grid(row=0, column=1, sticky="w", padx=8)
+        ttk.Label(visualization_section, text="Moving average (samples)").grid(row=2, column=0, sticky="w")
+        ttk.Label(visualization_section, text="Rate estimate (samples)").grid(row=2, column=1, sticky="w", padx=8)
         self.filter_window = tk.StringVar(value="10")
         self.rate_window = tk.StringVar(value="100")
-        ttk.Spinbox(processing_section, from_=1, to=100000, textvariable=self.filter_window, width=10).grid(row=1, column=0, sticky="ew", pady=(3, 8))
-        ttk.Spinbox(processing_section, from_=2, to=100000, textvariable=self.rate_window, width=10).grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(3, 8))
+        filter_spin = tip(ttk.Spinbox(visualization_section, from_=1, to=100000, textvariable=self.filter_window, width=10),
+                          "Sets the number of valid samples averaged for the displayed P, N, and conductance lines. A larger window reduces noise but reacts more slowly.")
+        filter_spin.grid(row=3, column=0, sticky="ew", pady=(3, 8))
+        rate_spin = tip(ttk.Spinbox(visualization_section, from_=2, to=100000, textvariable=self.rate_window, width=10),
+                        "Sets how many recent stored entries are used to estimate the average storage rate and the remaining recording capacity.")
+        rate_spin.grid(row=3, column=1, sticky="ew", padx=(8, 0), pady=(3, 8))
         self.filter_window.trace_add("write", self._filter_changed)
         self.rate_window.trace_add("write", self._rate_window_changed)
-        ttk.Label(processing_section, text="Tonic/phasic algorithm (Python, live)").grid(row=2, column=0, columnspan=2, sticky="w")
+        self.recording_path_text = tk.StringVar(value="Recording starts with the first sample.")
+        ttk.Label(visualization_section, textvariable=self.recording_path_text, wraplength=440, font=("TkDefaultFont", 8)).grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Label(processing_section, text="Tonic/phasic algorithm (Python, live)").grid(row=0, column=0, columnspan=2, sticky="w")
         self.algorithm = tk.StringVar(value=ALGORITHMS[1])
-        ttk.Combobox(processing_section, textvariable=self.algorithm, values=ALGORITHMS, state="readonly", width=20).grid(row=3, column=0, columnspan=2, sticky="ew", pady=(3, 8))
+        algorithm_box = tip(ttk.Combobox(processing_section, textvariable=self.algorithm, values=ALGORITHMS, state="readonly", width=20),
+                            "Selects the Python method that separates conductance into tonic and phasic components. Changing it recomputes the current recording without altering raw data.")
+        algorithm_box.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(3, 8))
         self.algorithm.trace_add("write", self._analysis_changed)
-        ttk.Label(processing_section, text="Smoothing λ").grid(row=4, column=0, sticky="w")
-        ttk.Label(processing_section, text="Peak prominence (µS)").grid(row=4, column=1, sticky="w", padx=8)
+        ttk.Label(processing_section, text="Smoothing λ").grid(row=2, column=0, sticky="w")
+        ttk.Label(processing_section, text="Peak prominence (µS)").grid(row=2, column=1, sticky="w", padx=8)
         self.smoothing = tk.StringVar(value="1")
         self.peak_prominence = tk.StringVar(value="0.01")
-        ttk.Spinbox(processing_section, from_=0.1, to=1000, increment=1, textvariable=self.smoothing, width=10).grid(row=5, column=0, sticky="ew", pady=(3, 8))
-        ttk.Spinbox(processing_section, from_=0.001, to=10, increment=0.01, textvariable=self.peak_prominence, width=10).grid(row=5, column=1, sticky="ew", padx=(8, 0), pady=(3, 8))
+        smoothing_spin = tip(ttk.Spinbox(processing_section, from_=0.1, to=1000, increment=1, textvariable=self.smoothing, width=10),
+                             "Controls the strength of tonic/phasic smoothing. Higher values favor a smoother tonic baseline and assign faster changes to the phasic component.")
+        smoothing_spin.grid(row=3, column=0, sticky="ew", pady=(3, 8))
+        prominence_spin = tip(ttk.Spinbox(processing_section, from_=0.001, to=10, increment=0.01, textvariable=self.peak_prominence, width=10),
+                              "Sets the minimum phasic prominence required to mark a response peak. Increase it to reject small fluctuations and decrease it to detect subtler responses.")
+        prominence_spin.grid(row=3, column=1, sticky="ew", padx=(8, 0), pady=(3, 8))
         self.smoothing.trace_add("write", self._analysis_changed)
         self.peak_prominence.trace_add("write", self._analysis_changed)
         self.analysis_status = tk.StringVar(value="Analysis: waiting for samples")
-        ttk.Label(processing_section, textvariable=self.analysis_status, wraplength=440, font=("TkDefaultFont", 8)).grid(row=6, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Label(processing_section, textvariable=self.analysis_status, wraplength=440, font=("TkDefaultFont", 8)).grid(row=4, column=0, columnspan=2, sticky="w", pady=(6, 0))
         self.motion_enabled = tk.BooleanVar(value=True)
         self.motion_window = tk.StringVar(value="2")
         self.motion_threshold_mv = tk.StringVar(value="1")
         self.motion_correlation = tk.StringVar(value="0.8")
         self.voltage_offset_mv = tk.StringVar(value="0")
-        ttk.Checkbutton(processing_section, text="Exclude P/N movement artifacts (red)", variable=self.motion_enabled).grid(row=7, column=0, columnspan=2, sticky="w", pady=(10, 3))
-        for row, label, variable, low, high, step in (
-            (8, "Motion window (s)", self.motion_window, 0.1, 30, 0.1),
-            (9, "Minimum P movement (mV)", self.motion_threshold_mv, 0.001, 100, 0.1),
-            (10, "P/N correlation threshold", self.motion_correlation, 0.1, 1, 0.05),
-            (11, "Calibrated P−N offset (mV)", self.voltage_offset_mv, -500, 500, 0.1),
+        motion_box = tip(ttk.Checkbutton(artifact_section, text="Exclude P/N movement artifacts (red)", variable=self.motion_enabled),
+                         "Marks intervals invalid when the P reference moves enough and correlates with N, which indicates common movement rather than a tissue-only conductance change.")
+        motion_box.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 3))
+        for row, label, variable, low, high, step, explanation in (
+            (1, "Motion window (s)", self.motion_window, 0.1, 30, 0.1, "Sets the time span used to compare P reference movement with the N signal when detecting movement artifacts."),
+            (2, "Minimum P movement (mV)", self.motion_threshold_mv, 0.001, 100, 0.1, "Requires at least this much P reference variation before an interval can be classified as a movement artifact."),
+            (3, "P/N correlation threshold", self.motion_correlation, 0.1, 1, 0.05, "Sets how similarly P and N must move within the detection window before the interval is rejected as common movement."),
+            (4, "Calibrated P−N offset (mV)", self.voltage_offset_mv, -500, 500, 0.1, "Subtracts a differential voltage offset measured with a known calibration load. Leave this at zero unless a calibration established another value."),
         ):
-            ttk.Label(processing_section, text=label).grid(row=row, column=0, sticky="w", pady=2)
-            ttk.Spinbox(processing_section, from_=low, to=high, increment=step, textvariable=variable, width=10).grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=2)
-        ttk.Label(processing_section, text="Offset defaults to zero; set only from a known-load calibration.", wraplength=515, font=("TkDefaultFont", 8)).grid(row=12, column=0, columnspan=2, sticky="w", pady=(3, 5))
+            ttk.Label(artifact_section, text=label).grid(row=row, column=0, sticky="w", pady=2)
+            motion_control = tip(ttk.Spinbox(artifact_section, from_=low, to=high, increment=step, textvariable=variable, width=10), explanation)
+            motion_control.grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=2)
+        ttk.Label(artifact_section, text="Offset defaults to zero; set only from a known-load calibration.", wraplength=515, font=("TkDefaultFont", 8)).grid(row=5, column=0, columnspan=2, sticky="w", pady=(3, 5))
         for variable in (self.motion_enabled, self.motion_window, self.motion_threshold_mv, self.motion_correlation, self.voltage_offset_mv):
             variable.trace_add("write", self._screening_changed)
-        files = ttk.Frame(side)
-        files.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        files = ttk.LabelFrame(bottom_row, text="SAVE / LOAD", padding=8)
+        files.grid(row=0, column=2, sticky="nsew", padx=(0, 10))
         files.columnconfigure((0, 1), weight=1)
-        ttk.Button(files, text="Save CSV…", command=self.save_csv).grid(row=0, column=0, sticky="ew", padx=(0, 3))
-        ttk.Button(files, text="Load recording…", command=self.load_recording).grid(row=0, column=1, sticky="ew", padx=(3, 0))
-        ttk.Button(files, text="Save configuration…", command=self.save_configuration).grid(row=1, column=0, sticky="ew", padx=(0, 3), pady=(4, 0))
-        ttk.Button(files, text="Load configuration…", command=self.load_configuration).grid(row=1, column=1, sticky="ew", padx=(3, 0), pady=(4, 0))
-        operating_host = ttk.Frame(container)
+        save_csv_button = tip(ttk.Button(files, text="Save CSV…", command=self.save_csv),
+                              "Exports the displayed recording together with a configuration JSON sidecar and a raw UART text sidecar using the same filename prefix.")
+        save_csv_button.grid(row=0, column=0, sticky="ew", padx=(0, 3))
+        load_recording_button = tip(ttk.Button(files, text="Load recording…", command=self.load_recording, style="Accent.TButton"),
+                                    "Opens a saved recording as an offline explorer and restores its configuration and raw UART sidecars when they are available.")
+        load_recording_button.grid(row=0, column=1, sticky="ew", padx=(3, 0))
+        save_configuration_button = tip(ttk.Button(files, text="Save config…", command=self.save_configuration),
+                                        "Saves the current GUI, acquisition, dLC, screening, and processing settings as a reusable JSON configuration file.")
+        save_configuration_button.grid(row=1, column=0, sticky="ew", padx=(0, 3), pady=(4, 0))
+        load_configuration_button = tip(ttk.Button(files, text="Load config…", command=self.load_configuration),
+                                        "Loads a previously saved JSON configuration. Acquisition settings become startup values at build time and supported controls update live.")
+        load_configuration_button.grid(row=1, column=1, sticky="ew", padx=(3, 0), pady=(4, 0))
+        operating_host = ttk.Frame(container, style="Workspace.TFrame")
         operating_host.grid(row=1, column=1, sticky="nsew", padx=(0, 12))
         operating_host.columnconfigure(0, weight=1)
         for plot_row in (1, 4, 6):
             operating_host.rowconfigure(plot_row, weight=1, uniform="operating_plots")
         ttk.Label(operating_host, textvariable=self.operating_time_text,
-                  font=("TkDefaultFont", 11, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 3))
-        transfer_plot_cell = ttk.Frame(operating_host)
+                  style="PlotTitle.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
+        transfer_plot_cell = ttk.Frame(operating_host, style="Workspace.TFrame")
         transfer_plot_cell.grid(row=1, column=0, sticky="nsew")
         self.transfer_plot = TransferPlot(transfer_plot_cell, self.transfer_curve, height=1)
         self.transfer_plot.place(x=0, y=0, relwidth=1, relheight=0.95)
         ttk.Label(operating_host, text="Solid: averaged P/N · ring: nominal curve", wraplength=640,
-                  font=("TkDefaultFont", 8)).grid(row=2, column=0, sticky="w", pady=(3, 5))
-        ttk.Label(operating_host, text="Estimated sensing power · µW", wraplength=640,
-                  font=("TkDefaultFont", 10, "bold")).grid(row=3, column=0, sticky="w", pady=(2, 3))
-        power_plot_cell = ttk.Frame(operating_host)
-        power_plot_cell.grid(row=4, column=0, sticky="nsew")
-        self.power_plot = TradeoffPlot(power_plot_cell, self.tradeoff_model, "power", height=1)
-        self.power_plot.place(x=0, y=0, relwidth=1, relheight=0.95)
+                  style="WorkspaceMuted.TLabel").grid(row=2, column=0, sticky="w", pady=(4, 7))
         ttk.Label(operating_host, text="Estimated resolution · bits", wraplength=640,
-                  font=("TkDefaultFont", 10, "bold")).grid(row=5, column=0, sticky="w", pady=(4, 3))
-        resolution_plot_cell = ttk.Frame(operating_host)
-        resolution_plot_cell.grid(row=6, column=0, sticky="nsew")
+                  style="PlotTitle.TLabel").grid(row=3, column=0, sticky="w", pady=(2, 5))
+        resolution_plot_cell = ttk.Frame(operating_host, style="Workspace.TFrame")
+        resolution_plot_cell.grid(row=4, column=0, sticky="nsew")
         self.resolution_plot = TradeoffPlot(resolution_plot_cell, self.tradeoff_model, "resolution", height=1)
         self.resolution_plot.place(x=0, y=0, relwidth=1, relheight=0.95)
+        ttk.Label(operating_host, text="Estimated sensing power · µW", wraplength=640,
+                  style="PlotTitle.TLabel").grid(row=5, column=0, sticky="w", pady=(6, 5))
+        power_plot_cell = ttk.Frame(operating_host, style="Workspace.TFrame")
+        power_plot_cell.grid(row=6, column=0, sticky="nsew")
+        self.power_plot = TradeoffPlot(power_plot_cell, self.tradeoff_model, "power", height=1)
+        self.power_plot.place(x=0, y=0, relwidth=1, relheight=0.95)
         self.resolution_plot.set_operating(None, 0.0, 0.0, self.applied_current_ua, self.applied_sampling_hz)
+        self.rate_estimate_text = tk.StringVar(value="Average stored rate: waiting for 2 events")
+        rate_label = ttk.Label(operating_host, textvariable=self.rate_estimate_text,
+                               style="WorkspaceMuted.TLabel", width=1)
+        rate_label.grid(row=7, column=0, sticky="ew", pady=(8, 0))
         self.capacity_legend = tk.StringVar(value="Red: fixed rate · green: dLC")
-        ttk.Label(operating_host, textvariable=self.capacity_legend, font=("TkDefaultFont", 8), wraplength=630).grid(row=8, column=0, sticky="w", pady=(3, 0))
-        self.capacity_bar = tk.Canvas(operating_host, height=16, background="#101820", highlightthickness=0)
-        self.capacity_bar.grid(row=7, column=0, sticky="ew", pady=(8, 0))
+        capacity_legend_label = ttk.Label(operating_host, textvariable=self.capacity_legend,
+                                          style="WorkspaceMuted.TLabel", width=1)
+        capacity_legend_label.grid(row=8, column=0, sticky="ew", pady=(2, 3))
+        for label in (rate_label, capacity_legend_label):
+            label.bind("<Configure>", lambda event: event.widget.configure(wraplength=max(1, event.width - 4)))
+        self.capacity_bar = tk.Canvas(operating_host, height=16, background=UI_PLOT,
+                                      highlightthickness=1, highlightbackground=UI_BORDER)
+        self.capacity_bar.grid(row=9, column=0, sticky="ew")
         self.capacity_bar.bind("<Configure>", lambda _event: self._draw_capacity_bar())
         self._draw_capacity_bar()
 
-        plots = ttk.Frame(container)
+        plots = ttk.Frame(container, style="Workspace.TFrame")
+        self.plots_host = plots
         plots.grid(row=1, column=2, sticky="nsew")
         plots.columnconfigure(0, weight=1)
         for row in (1, 3, 5):
             plots.rowconfigure(row, weight=1, uniform="signals")
-        ttk.Label(plots, text="VCO P and VCO N · mV", font=("TkDefaultFont", 12, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 6))
+        ttk.Label(plots, text="VCO P and VCO N · mV", style="PlotTitle.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
         self.main_plot = SignalPlot(plots, [("p_uv", "#ffb000", "#86611b"), ("n_uv", "#38c6d9", "#2c6b74")], y_unit="mV", display_scale=1000, show_x_axis=False, height=1)
         self.main_plot.grid(row=1, column=0, sticky="nsew", pady=(0, 14))
         self.main_plot.bind("<Button-1>", self._select_cursor_from_event)
         self.main_plot.bind("<B1-Motion>", self._select_cursor_from_event)
-        ttk.Label(plots, text="Tissue conductance · µS", font=("TkDefaultFont", 12, "bold")).grid(row=2, column=0, sticky="w", pady=(0, 6))
+        ttk.Label(plots, text="Tissue conductance · µS", style="PlotTitle.TLabel").grid(row=2, column=0, sticky="w", pady=(0, 6))
         self.diff_plot = SignalPlot(plots, [("conductance_us", "#b895ff", "#68558d")], y_unit="µS", show_x_axis=False, height=1)
+        self.diff_plot.transfer_curve = self.transfer_curve
         self.diff_plot.grid(row=3, column=0, sticky="nsew")
         self.diff_plot.bind("<Button-1>", self._select_cursor_from_event)
         self.diff_plot.bind("<B1-Motion>", self._select_cursor_from_event)
-        ttk.Label(plots, text="Tonic / phasic · µS · independent scales", font=("TkDefaultFont", 11, "bold")).grid(row=4, column=0, sticky="w", pady=(8, 4))
+        ttk.Label(plots, text="Tonic / phasic · µS · independent scales", style="PlotTitle.TLabel").grid(row=4, column=0, sticky="w", pady=(8, 5))
         self.component_plot = SignalPlot(plots, [("tonic_us", "#f4d56c", "#f4d56c"), ("phasic_us", "#eb90ff", "#eb90ff")], y_unit="µS", height=1)
         self.component_plot.grid(row=5, column=0, sticky="nsew")
         self.component_plot.bind("<Button-1>", self._select_cursor_from_event)
         self.component_plot.bind("<B1-Motion>", self._select_cursor_from_event)
-        self.timeline_bar = tk.Canvas(plots, height=35, background="#101820", highlightthickness=0)
+        self.timeline_bar = tk.Canvas(plots, height=40, background=UI_PLOT,
+                                      highlightthickness=1, highlightbackground=UI_BORDER)
         self.timeline_bar.grid(row=6, column=0, sticky="ew", pady=(5, 0))
         self.timeline_bar.bind("<Configure>", lambda _event: self._draw_timeline())
         self.timeline_bar.bind("<Button-1>", self._timeline_click)
@@ -1136,27 +1712,110 @@ class VCOGui:
         self.timeline_scroll = ttk.Scrollbar(plots, orient="horizontal", command=self._scroll_signals)
         self.timeline_scroll.grid(row=7, column=0, sticky="ew", pady=(8, 0))
         self.timeline_scroll.set(0, 1)
+        plot_legend = ttk.Label(
+            plots,
+            text="Dots: raw · lines: processed · red: invalid · yellow: dLC buffer loss · blue: peak · dashed white: cursor",
+            style="WorkspaceMuted.TLabel", width=1,
+        )
+        plot_legend.grid(row=8, column=0, sticky="ew", pady=(5, 0))
+        plot_legend.bind("<Configure>", lambda event: event.widget.configure(wraplength=max(1, event.width - 4)))
 
-        terminal_frame = ttk.LabelFrame(container, text="Terminal output", padding=5)
-        terminal_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
-        terminal_frame.columnconfigure(0, weight=1)
-        terminal_frame.rowconfigure(0, weight=1)
-        self.terminal = tk.Text(terminal_frame, height=3, wrap="none", background="#101820", foreground="#d8e2e9", insertbackground="#d8e2e9", state="disabled")
-        self.terminal.grid(row=0, column=0, sticky="nsew")
+        terminal_frame = ttk.LabelFrame(bottom_row, text="OUTPUT", padding=8)
+        terminal_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        terminal_frame.columnconfigure(0, weight=1, uniform="output")
+        terminal_frame.columnconfigure(3, weight=1, uniform="output")
+        terminal_frame.rowconfigure(1, weight=1)
+        ttk.Label(terminal_frame, text="SYSTEM / BUILD", style="Muted.TLabel").grid(row=0, column=0,
+                                                                                      sticky="w", pady=(0, 4))
+        self.uart_title = ttk.Label(
+            terminal_frame,
+            text="RAW UART",
+            style="Muted.TLabel", width=1, justify="left")
+        self.uart_title.grid(row=0, column=3, sticky="ew", pady=(0, 4))
+        self.uart_title.bind("<Configure>", lambda event: event.widget.configure(wraplength=max(1, event.width - 4)))
+        self._update_uart_title()
+        self.terminal = tk.Text(terminal_frame, height=3, wrap="none", background=UI_PLOT,
+                                foreground="#c8d9df", insertbackground=UI_TEXT, relief="flat",
+                                padx=9, pady=7, highlightthickness=1,
+                                highlightbackground=UI_BORDER, state="disabled")
+        self.terminal.grid(row=1, column=0, sticky="nsew")
         scrollbar = ttk.Scrollbar(terminal_frame, command=self.terminal.yview)
-        scrollbar.grid(row=0, column=1, sticky="ns")
+        scrollbar.grid(row=1, column=1, sticky="ns", padx=(0, 8))
         self.terminal.configure(yscrollcommand=scrollbar.set)
-        bottom_controls = ttk.Frame(container)
-        bottom_controls.grid(row=2, column=2, sticky="nsew", padx=(10, 0), pady=(12, 0))
+        self.uart_terminal = tk.Text(terminal_frame, height=3, wrap="none", background=UI_PLOT,
+                                     foreground=UI_ACCENT, insertbackground=UI_TEXT, relief="flat",
+                                     padx=9, pady=7, highlightthickness=1,
+                                     highlightbackground=UI_BORDER, state="disabled")
+        self.uart_terminal.grid(row=1, column=3, sticky="nsew")
+        uart_scrollbar = ttk.Scrollbar(terminal_frame, command=self.uart_terminal.yview)
+        uart_scrollbar.grid(row=1, column=4, sticky="ns")
+        self.uart_terminal.configure(yscrollcommand=uart_scrollbar.set)
+        message_frame = ttk.LabelFrame(bottom_row, text="MESSAGES", padding=8)
+        message_frame.grid(row=0, column=1, sticky="nsew", padx=(0, 10))
+        message_frame.columnconfigure(0, weight=1)
+        message_frame.rowconfigure(0, weight=1)
+        self.messages = tk.Text(message_frame, height=3, width=1, wrap="word",
+                                background=UI_PLOT, foreground=UI_TEXT,
+                                font=("Helvetica", 10), relief="flat",
+                                padx=10, pady=8, state="disabled",
+                                highlightthickness=1, highlightbackground=UI_BORDER)
+        self.messages.grid(row=0, column=0, sticky="nsew")
+        message_scroll = ttk.Scrollbar(message_frame, command=self.messages.yview)
+        message_scroll.grid(row=0, column=1, sticky="ns")
+        self.messages.configure(yscrollcommand=message_scroll.set)
+        self.messages.tag_configure("uart", foreground=UI_ACCENT, spacing3=8)
+        self.messages.tag_configure("gui", foreground=UI_WARNING, spacing3=8)
+        bottom_controls = ttk.LabelFrame(bottom_row, text="NAVIGATION", padding=(12, 8))
+        bottom_controls.grid(row=0, column=3, sticky="nsew")
         ttk.Label(bottom_controls, textvariable=self.zoom_text,
-                  font=("TkDefaultFont", 8, "bold")).grid(row=0, column=0, columnspan=3,
-                                                            sticky="w", pady=(4, 0))
+                  font=("Helvetica", 9, "bold")).grid(row=0, column=0, columnspan=3,
+                                                          sticky="w", pady=(2, 5))
         ttk.Button(bottom_controls, text="−", width=4, command=lambda: self._zoom_signals(2.0)).grid(row=1, column=0, padx=(0, 3))
         ttk.Button(bottom_controls, text="+", width=4, command=lambda: self._zoom_signals(0.5)).grid(row=1, column=1, padx=3)
-        ttk.Button(bottom_controls, text="Live", command=self._go_live).grid(row=1, column=2, padx=(3, 0))
-        ttk.Label(bottom_controls, text="Click/drag a plot to inspect a sample",
-                  wraplength=240, font=("TkDefaultFont", 8)).grid(row=2, column=0,
-                                                                   columnspan=3, sticky="w", pady=(4, 0))
+        ttk.Button(bottom_controls, text="Live", command=self._go_live,
+                   style="Accent.TButton").grid(row=1, column=2, padx=(3, 0))
+        ttk.Label(bottom_controls, text="Click/drag to inspect · wheel/touchpad to move through time",
+                  wraplength=175, style="Muted.TLabel").grid(row=2, column=0,
+                                                               columnspan=3, sticky="w", pady=(6, 0))
+        self.root.bind_all("<MouseWheel>", self._wheel_navigation, add="+")
+        self.root.bind_all("<Shift-MouseWheel>", self._wheel_navigation, add="+")
+        self.root.bind_all("<Button-4>", self._wheel_navigation, add="+")
+        self.root.bind_all("<Button-5>", self._wheel_navigation, add="+")
+        value_fields = (tk.Entry, tk.Scale, ttk.Entry, ttk.Spinbox, ttk.Combobox)
+        for widget in controls.winfo_children():
+            pending = [widget]
+            while pending:
+                candidate = pending.pop()
+                pending.extend(candidate.winfo_children())
+                if isinstance(candidate, value_fields):
+                    for sequence in ("<MouseWheel>", "<Shift-MouseWheel>", "<Button-4>", "<Button-5>"):
+                        candidate.bind(sequence, self._wheel_over_value_field, add="+")
+
+    @staticmethod
+    def _widget_within(widget: tk.Misc | None, ancestor: tk.Misc) -> bool:
+        return widget is not None and (widget is ancestor or str(widget).startswith(f"{ancestor}."))
+
+    def _wheel_navigation(self, event: tk.Event):
+        widget = self.root.winfo_containing(event.x_root, event.y_root)
+        if getattr(event, "num", None) == 4 or getattr(event, "delta", 0) > 0:
+            direction = -1
+        elif getattr(event, "num", None) == 5 or getattr(event, "delta", 0) < 0:
+            direction = 1
+        else:
+            return None
+        if self._widget_within(widget, self.side_canvas):
+            self.side_canvas.yview_scroll(direction, "units")
+            return "break"
+        if self._widget_within(widget, self.plots_host):
+            if self.times:
+                self._scroll_signals("scroll", str(direction), "units")
+            return "break"
+        return None
+
+    def _wheel_over_value_field(self, event: tk.Event):
+        self._wheel_navigation(event)
+        return "break"
+
     def _set_recording_state(self, state: str) -> None:
         previous_state = self.recording_state
         self.recording_state = state
@@ -1179,6 +1838,7 @@ class VCOGui:
         if self.loaded_recording is not None and state == "stopped":
             label = "▶  START NEW RECORDING"
         self.record_button.configure(text=label, background=background, activebackground=active_background, state=enabled)
+        self.dlc_buffer_box.configure(state="normal" if state == "stopped" and self.loaded_recording is None else "disabled")
 
     def _set_run_configuration_enabled(self, enabled):
         if enabled:
@@ -1187,12 +1847,20 @@ class VCOGui:
             for widget, state in saved_states.items():
                 try:
                     widget.configure(state=state)
+                    if isinstance(widget, tk.Scale):
+                        widget.configure(troughcolor=UI_BORDER, activebackground=UI_ACCENT)
                 except tk.TclError:
                     pass
             self._differential_mode_changed(log=False)
             self._supply_slider_changed()
+            self.dlc_buffer_box.configure(state="normal" if self.recording_state == "stopped" else "disabled")
             return
         if self.run_configuration_widget_states:
+            for widget in self.run_configuration_widget_states:
+                try:
+                    widget.configure(state="disabled")
+                except tk.TclError:
+                    pass
             return
 
         def descendants(parent):
@@ -1201,13 +1869,17 @@ class VCOGui:
                 yield from descendants(child)
 
         configurable = (tk.Button, tk.Scale, ttk.Button, ttk.Checkbutton,
-                        ttk.Combobox, ttk.Entry, ttk.Spinbox)
+                        ttk.Combobox, ttk.Entry, ttk.Spinbox, ttk.Label)
         for root in self.run_configuration_roots:
             for widget in descendants(root):
-                if widget is self.reset_button or not isinstance(widget, configurable):
+                if widget in (self.reset_button, self.dlc_interpolation_label,
+                              self.dlc_interpolation_box) or not isinstance(widget, configurable):
                     continue
                 self.run_configuration_widget_states[widget] = str(widget.cget("state"))
                 widget.configure(state="disabled")
+                if isinstance(widget, tk.Scale):
+                    widget.configure(troughcolor=UI_DISABLED_BACKGROUND,
+                                     activebackground=UI_DISABLED_TEXT)
 
     def toggle_recording(self) -> None:
         if self.recording_state == "stopped":
@@ -1230,7 +1902,12 @@ class VCOGui:
         self.dlc_origin_s -= self._elapsed()
         self.history_start_clock = time.monotonic()
         self.samples.clear()
+        self._update_uart_title()
+        self._update_dlc_options_visibility()
+        self.uart_lines.clear()
         self.last_dlc_event_sample = None
+        self.last_current_mismatch = None
+        self.current_settle_until = -math.inf
         self.times.clear()
         self.prefix_p = [0]
         self.prefix_n = [0]
@@ -1263,8 +1940,11 @@ class VCOGui:
         self.terminal.configure(state="normal")
         self.terminal.delete("1.0", "end")
         self.terminal.configure(state="disabled")
+        self.uart_terminal.configure(state="normal")
+        self.uart_terminal.delete("1.0", "end")
+        self.uart_terminal.configure(state="disabled")
         self.recording_path_text.set("Recording starts with the next sample.")
-        self.rate_estimate_text.set("Average sample rate: waiting for samples")
+        self.rate_estimate_text.set("Average stored rate: waiting for 2 events")
         self._draw_capacity_bar()
         self._set_recording_state(self.recording_state)
         self._log(f"History reset. Previous file kept: {previous_file}" if previous_file else "History reset.")
@@ -1357,6 +2037,7 @@ class VCOGui:
         return self.view_seconds
 
     def _refresh_plots(self) -> None:
+        self._update_uart_title()
         full_end = self._timeline_end()
         visible_seconds = self._visible_seconds()
         self.zoom_text.set(f"TIME ZOOM · {visible_seconds:g} s")
@@ -1415,9 +2096,86 @@ class VCOGui:
     def _dlc_options_changed(self) -> None:
         if DIFFERENTIAL_MODES.index(self.differential_mode.get()) == 2:
             self.use_dlc.set(False)
-        if self.use_dlc.get(): self.dlc_options.grid()
-        else: self.dlc_options.grid_remove()
-        self._log("Build required to change acquisition mode or dLC configuration. Moving average is bypassed with dLC.")
+        self._update_dlc_options_visibility()
+        self._update_uart_title()
+        self._compare_dlc_changed()
+        self._dlc_runtime_changed()
+
+    def _update_dlc_options_visibility(self) -> None:
+        exploring_dlc = self.loaded_recording is not None and any(
+            sample.source == "dlc" for sample in self.samples)
+        if self.use_dlc.get() or exploring_dlc:
+            self.dlc_options.grid()
+        else:
+            self.dlc_options.grid_remove()
+
+    def _update_uart_title(self) -> None:
+        if not hasattr(self, "uart_title"):
+            return
+        if self.loaded_recording is not None and self.samples:
+            index = max(0, bisect.bisect_right(self.times, self.cursor_time or self.times[0]) - 1)
+            selected = self.samples[index]
+            mode, use_dlc = selected.differential_mode, selected.source == "dlc"
+        elif self.recording_state == "running":
+            mode, use_dlc = self.applied_mode, self.applied_dlc
+        else:
+            mode = DIFFERENTIAL_MODES.index(self.differential_mode.get())
+            use_dlc = bool(self.use_dlc.get())
+        difference = ("hardware Δ counts" if mode == 0 else
+                      "chip-software Δ counts" if mode == 1 else
+                      "Δ counts=0 (GUI computes P−N)")
+        if use_dlc:
+            title = (f"RAW UART · dLC ({DIFFERENTIAL_MODES[mode]}) · "
+                     "D: sequence, cycle, current nA/code, P/N Hz, hex dt/sign/magnitude packets · "
+                     "X: cycle, buffer capacity on loss\n"
+                     "Raw comparison · R: index, cycle, current nA/code, P/N Hz, coarse/fine, "
+                     f"{difference}, Δ-rate, valid")
+        else:
+            title = (f"RAW UART · {DIFFERENTIAL_MODES[mode]} · "
+                     "R: index, cycle, current nA/code, P/N Hz, P/N coarse/fine, "
+                     f"{difference}, Δ-rate, valid")
+        if self.uart_title.cget("text") != title:
+            self.uart_title.configure(text=title)
+
+    def _compare_dlc_changed(self) -> None:
+        if hasattr(self, "diff_plot"):
+            self.diff_plot.compare_dlc = bool(self.compare_dlc.get())
+            self.diff_plot.redraw()
+
+    def _dlc_interpolation_changed(self, _event=None) -> None:
+        mode = self.dlc_interpolation.get()
+        if mode not in DLC_INTERPOLATION_MODES:
+            return
+        if hasattr(self, "diff_plot"):
+            self.diff_plot.dlc_interpolation = mode
+            self.diff_plot.redraw()
+        self._analysis_changed()
+
+    def _requested_dlc_config(self):
+        width, time_bits = int(self.dlc_width.get()), int(self.dlc_time_bits.get())
+        if width < 1 or width > 32768 or width & (width - 1):
+            raise ValueError("dLC level width must be a power of two from 1 to 32768 counts.")
+        log_width = width.bit_length() - 1
+        if not 1 <= time_bits <= 6:
+            raise ValueError("dLC time bits must be between 1 and 6.")
+        return bool(self.use_dlc.get()), log_width, time_bits
+
+    def _dlc_runtime_changed(self, _event=None) -> None:
+        if self.configuration_loading or self.loaded_recording is not None:
+            return
+        try:
+            enabled, log_width, time_bits = self._requested_dlc_config()
+            if self.project.get() == "gsr/demo":
+                write_defines({"GSR_DLC_ENABLED": int(enabled), "GSR_DLC_LOG_WIDTH": log_width,
+                               "GSR_DLC_TIME_BITS": time_bits}, DEMO_SOURCE)
+        except (OSError, ValueError) as error:
+            self.dlc_status.set(str(error))
+            self._log(f"Could not save dLC configuration: {error}")
+            return
+        if self.recording_state == "running" and self.firmware_is_demo:
+            self.apply_dlc_configuration()
+        else:
+            self.dlc_status.set("Startup dLC settings saved; Build applies them to the firmware image.")
 
     def _differential_mode_changed(self, _event=None, *, log=True):
         mode = DIFFERENTIAL_MODES.index(self.differential_mode.get())
@@ -1427,10 +2185,11 @@ class VCOGui:
             self.use_dlc.set(False)
             self.dlc_checkbox.configure(state="disabled")
         else: self.dlc_checkbox.configure(state="normal")
-        if self.use_dlc.get(): self.dlc_options.grid()
-        else: self.dlc_options.grid_remove()
+        self._update_dlc_options_visibility()
+        self._update_uart_title()
+        self._compare_dlc_changed()
         self._supply_slider_changed()
-        if log: self._log("Build required to apply the selected difference mode. Hardware mode synchronizes P and N; GUI mode disables dLC.")
+        if log: self._log("Build required to apply the selected difference mode. dLC settings update live after that firmware starts.")
 
     def _requested_supply_millihz(self):
         if DIFFERENTIAL_MODES.index(self.differential_mode.get()) == 0 or self.supply_follow.get(): return 0
@@ -1474,13 +2233,16 @@ class VCOGui:
             bar.create_rectangle(width*first/end, 0, width*last/end, 16, fill=colors[status], outline="")
         for first, last in invalid_periods(self.samples):
             bar.create_rectangle(width*first/end, 0, min(width, max(width*last/end, width*first/end+2)), 16, fill="#c86464", outline="", tags="invalid_period")
+        for first, last in buffer_loss_periods(self.samples):
+            bar.create_rectangle(width*first/end, 0, min(width, max(width*last/end, width*first/end+3)), 16, fill="#e4bb4d", outline="", tags="buffer_loss")
         for sample in self.samples:
             if sample.analysis_valid and sample.phasic_peak:
                 x = width*sample.time_s/end
                 bar.create_rectangle(x-1, 0, x+2, 6, fill="#9ee7ff", outline="")
         bar.create_rectangle(width*self.view_start/end, 0, min(width, width*(self.view_start+self._visible_seconds())/end), 16,
                              outline="#e4edf3", width=1)
-        bar.create_text(2, 20, text="green: valid  red: missing / invalid / motion  gray: paused  blue: peak", anchor="nw", fill="#b6c6d2", font=("TkDefaultFont", 8))
+        bar.create_text(2, 20, text="Green valid · red invalid/missing · yellow dLC buffer loss · gray paused · blue peak",
+                        anchor="nw", width=max(1, width - 4), fill="#b6c6d2", font=("TkDefaultFont", 8))
 
     def _timeline_click(self, event) -> None:
         total = max(self.history.end, self.times[-1] if self.times else 0.0, 0.1)
@@ -1533,7 +2295,8 @@ class VCOGui:
             values.append((conductance_us(delta, current, self.offset_uv) or math.nan) if sample.analysis_valid else math.nan)
             segments.append(sample.processing_start)
         return (list(self.times), values, segments, self.algorithm.get(), smoothing, prominence,
-                [sample.sample_hz for sample in self.samples], [sample.source for sample in self.samples])
+                [sample.sample_hz for sample in self.samples], [sample.source for sample in self.samples],
+                self.dlc_interpolation.get(), [sample.dlc_amplitude_knot for sample in self.samples])
 
     def _apply_analysis(self, result) -> None:
         tonic, phasic, peaks = result
@@ -1543,7 +2306,8 @@ class VCOGui:
             sample.phasic_peak = bool(peak)
         artifacts = sum(sample.motion_artifact for sample in self.samples)
         edge = "recording explorer" if self.loaded_recording is not None else "live edge provisional"
-        self.analysis_status.set(f"{self.algorithm.get()} · {sum(peaks)} peaks · {artifacts} motion exclusions · {edge}")
+        reconstruction = (f" · dLC {self.dlc_interpolation.get()}" if any(sample.source == "dlc" for sample in self.samples) else "")
+        self.analysis_status.set(f"{self.algorithm.get()}{reconstruction} · {sum(peaks)} peaks · {artifacts} motion exclusions · {edge}")
         self.plots_dirty = True
 
     def _start_analysis(self, now):
@@ -1565,30 +2329,62 @@ class VCOGui:
         self.dlc_previous_cycle = cycle
         return self.dlc_origin_s + self.dlc_elapsed_s
 
+    def _current_code_valid(self, current_na, current_code):
+        if current_code is None:
+            return True
+        expected = current_na // IDAC_STEP_NA if current_na % IDAC_STEP_NA == 0 else None
+        mismatch = (current_na, current_code, expected)
+        if expected != current_code:
+            if mismatch != self.last_current_mismatch:
+                self._log(f"iDAC mismatch: UART reports {current_na} nA but hardware code {current_code}; expected code {expected}.")
+            self.last_current_mismatch = mismatch
+            return False
+        self.last_current_mismatch = None
+        return True
+
     def _handle_acquisition_line(self, line, received_at):
         if not line.startswith(("A,", "R,")): return False
         if self.recording_state != "running": return True
         try:
             fields = line.split(",")
             if fields[0] == "A":
-                if len(fields) != 8: raise ValueError("Bad acquisition metadata")
-                mode, clock, rate, supply, current, cycle, dlc = map(int, fields[1:])
+                if len(fields) == 9:
+                    mode, clock, rate, supply, current, current_code, cycle, dlc = map(int, fields[1:])
+                elif len(fields) == 8:
+                    mode, clock, rate, supply, current, cycle, dlc = map(int, fields[1:])
+                    current_code = None
+                else:
+                    raise ValueError("Bad acquisition metadata")
                 if mode not in range(3) or clock <= 0 or not 100 <= rate <= 10000000 or not 100 <= supply <= 10000000 or dlc not in (0, 1) or mode == 2 and dlc:
                     raise ValueError("Invalid acquisition configuration")
+                self._current_code_valid(current, current_code)
                 self.applied_mode, self.applied_dlc = mode, bool(dlc)
+                self._update_uart_title()
                 self.applied_sampling_hz, self.applied_supply_hz = rate/1000, supply/1000
                 self.applied_current_ua = current/1000
+                if current_code is not None:
+                    self.current_status.set(
+                        f"Firmware current: {current / 1000:.2f} µA · hardware code {current_code}")
                 self.dlc_clock_hz, self.dlc_previous_cycle = clock, cycle
                 self.dlc_origin_s, self.dlc_elapsed_s = self._elapsed(received_at), 0.0
                 self.dlc_decoder = None
                 self.last_raw_fields = {}
                 self.last_dlc_event_sample = None
                 self.segment_id += 1
-                self._log(f"Device: {DIFFERENTIAL_MODES[mode]} · N {rate/1000:g} Hz · P {supply/1000:g} Hz" + (" · dLC (no moving average)" if dlc else ""))
+                if self.pending_dlc_config is not None and not self.pending_dlc_config[0] and not self.applied_dlc:
+                    self._finish_dlc_request("dLC disabled at runtime.")
+                current_note = f" · current {current / 1000:g} µA / code {current_code}" if current_code is not None else ""
+                self._log(f"Device: {DIFFERENTIAL_MODES[mode]} · N {rate/1000:g} Hz · P {supply/1000:g} Hz" + current_note + (" · dLC (no moving average)" if dlc else ""))
                 return True
-            if len(fields) != 13: raise ValueError("Bad raw counter record")
-            index, cycle, current, p_hz, n_hz, p_count, n_count, p_fine, n_fine, difference, difference_rate, valid = map(int, fields[1:])
+            if len(fields) == 14:
+                index, cycle, current, current_code, p_hz, n_hz, p_count, n_count, p_fine, n_fine, difference, difference_rate, valid = map(int, fields[1:])
+            elif len(fields) == 13:
+                index, cycle, current, p_hz, n_hz, p_count, n_count, p_fine, n_fine, difference, difference_rate, valid = map(int, fields[1:])
+                current_code = None
+            else:
+                raise ValueError("Bad raw counter record")
             if difference_rate <= 0 or valid not in (0, 1): raise ValueError("Bad raw integration rate")
+            valid = bool(valid and self._current_code_valid(current, current_code))
             stamp = self._dlc_time(cycle)
             self.last_raw_fields = dict(p_count=p_count, n_count=n_count, p_fine=p_fine, n_fine=n_fine,
                                         difference_counts=difference if self.applied_mode != 2 else None)
@@ -1611,55 +2407,98 @@ class VCOGui:
             self._record_sample(p_uv, n_uv, p_hz, n_hz, received_at, current,
                                 source="dlc" if self.applied_dlc else "raw", stored_bytes=0 if self.applied_dlc else 2,
                                 elapsed_s=stamp, valid=bool(valid), measured_delta_uv=measured,
-                                differential_mode=self.applied_mode, supply_hz=self.applied_supply_hz, **self.last_raw_fields)
+                                differential_mode=self.applied_mode, supply_hz=self.applied_supply_hz,
+                                current_code=current_code, **self.last_raw_fields)
         except (ValueError, OverflowError) as error:
             self._log(f"Invalid counter stream: {error}")
         return True
 
     def _handle_dlc_line(self, line, received_at):
-        if not line.startswith(("B,", "D,", "H,")): return False
+        if not line.startswith(("B,", "D,", "H,", "X,")): return False
         if self.recording_state != "running": return True
         try:
             fields = line.split(",")
             if fields[0] == "B":
-                if len(fields) not in (10, 12): raise ValueError("Bad dLC metadata length")
-                clock, rate, log_width, time_bits, discard, level, reference, current, cycle = map(int, fields[1:10])
-                new_protocol = len(fields) == 12
+                if len(fields) not in (10, 11, 12, 13, 14): raise ValueError("Bad dLC metadata length")
+                has_current_code = len(fields) in (11, 13, 14)
+                new_protocol = len(fields) in (12, 13, 14)
+                if has_current_code:
+                    clock, rate, log_width, time_bits, discard, level, reference, current, current_code, cycle = map(int, fields[1:11])
+                else:
+                    clock, rate, log_width, time_bits, discard, level, reference, current, cycle = map(int, fields[1:10])
+                    current_code = None
                 if new_protocol:
-                    mode, supply = map(int, fields[10:])
+                    mode, supply = map(int, fields[11:13] if has_current_code else fields[10:12])
                     if mode not in (0, 1): raise ValueError("dLC requires HW or chip software mode")
                     self.applied_mode, self.applied_supply_hz = mode, supply/1000
+                if len(fields) == 14:
+                    buffer_events = int(fields[13])
+                    if not 1 <= buffer_events <= 1024:
+                        raise ValueError("Bad dLC buffer size")
+                    self.applied_dlc_buffer_events = buffer_events
                 if not (clock > 0 and 100 <= rate <= 10000000 and 0 <= log_width <= 15 and 1 <= time_bits <= 6 and 0 <= discard <= 15):
                     raise ValueError("Bad dLC configuration")
+                if not self._current_code_valid(current, current_code):
+                    raise ValueError("iDAC current/code mismatch")
                 self.dlc_decoder = DLCDecoder(level, log_width, time_bits, discard, max(1.0, rate/1000), reference, reference_p=new_protocol)
+                self.applied_dlc_log_width, self.applied_dlc_time_bits = log_width, time_bits
                 self.last_dlc_event_sample = None
                 self.dlc_clock_hz, self.dlc_previous_cycle = clock, cycle
                 self.dlc_origin_s, self.dlc_elapsed_s = self._elapsed(received_at), 0.0
                 self.applied_sampling_hz, self.applied_dlc = rate/1000, True
+                self._update_uart_title()
                 self.segment_id += 1
+                if self.pending_dlc_config == (True, log_width, time_bits):
+                    self._finish_dlc_request(
+                        f"dLC applied: width {1 << log_width} counts · {time_bits} time bits.")
                 self._log(f"dLC reconstruction: width {1<<log_width} counts, {time_bits} time bits; moving average bypassed.")
+                return True
+            if fields[0] == "X":
+                if len(fields) != 3: raise ValueError("Bad dLC buffer-loss frame")
+                cycle, capacity = map(int, fields[1:])
+                if not 1 <= capacity <= 1024: raise ValueError("Bad dLC buffer capacity")
+                self._dlc_time(cycle)
+                reference = next((sample for sample in reversed(self.samples)
+                                  if sample.source == "dlc" and sample.dlc_byte is None), None)
+                if reference is not None:
+                    reference.buffer_loss = True
+                    self._analysis_changed()
+                    self.plots_dirty = True
+                    self._draw_timeline()
+                self.dlc_decoder = None
+                self._log(f"dLC event buffer overflow ({capacity} packets): sample lost; firmware reseeding. Yellow marks the affected interval.")
                 return True
             decoder = self.dlc_decoder
             if decoder is None: return True
             if fields[0] == "H":
-                if len(fields) == 5:
+                if len(fields) == 6:
+                    cycle, p_hz, n_hz, current, current_code = map(int, fields[1:])
+                elif len(fields) == 5:
                     cycle, p_hz, n_hz, current = map(int, fields[1:])
+                    current_code = None
                 elif len(fields) == 4:
                     cycle, n_hz, current = map(int, fields[1:])
                     p_hz = round(n_hz+decoder.difference_hz)
+                    current_code = None
                 else: raise ValueError("Bad dLC heartbeat")
                 decoder.n_hz = p_hz if decoder.reference_p else n_hz
                 stamp = self._dlc_time(cycle)
-                self._record_reconstructed(p_hz, n_hz, current, received_at, stamp, None)
+                if not self.last_raw_fields:
+                    self._record_reconstructed(p_hz, n_hz, current, received_at, stamp, None,
+                                               current_code=current_code)
             else:
-                if len(fields) == 7:
+                if len(fields) == 8:
+                    sequence, cycle, current, current_code, p_hz, n_hz = map(int, fields[1:7])
+                elif len(fields) == 7:
                     sequence, cycle, current, p_hz, n_hz = map(int, fields[1:6])
+                    current_code = None
                 elif len(fields) == 6:
                     sequence, cycle, current, n_hz = map(int, fields[1:5])
                     p_hz = round(n_hz+decoder.difference_hz)
+                    current_code = None
                 else: raise ValueError("Bad dLC packet")
                 payload = bytes.fromhex(fields[-1])
-                if not payload or len(payload) > 512: raise ValueError("Bad dLC event length")
+                if not payload or len(payload) > 1024: raise ValueError("Bad dLC event length")
                 if sequence != decoder.sequence:
                     self.dlc_decoder = None
                     self._log("dLC packets were lost; pause/start recording to reseed reconstruction.")
@@ -1667,17 +2506,17 @@ class VCOGui:
                 decoder.sequence += 1
                 decoder.n_hz = p_hz if decoder.reference_p else n_hz
                 stamp = self._dlc_time(cycle)
-                points = list(decoder.decode(payload))
+                points = list(decoder.decode_events(payload))
                 final_ticks = points[-1][0]
-                for position, (byte, (ticks, reconstructed_p, reconstructed_n)) in enumerate(zip(payload, points)):
+                for position, (byte, (ticks, reconstructed_p, reconstructed_n, level, level_change)) in enumerate(zip(payload, points)):
                     event_time = (stamp if decoder.reference_p and self.applied_mode == 1 else
                                   max(self.dlc_origin_s, stamp-(final_ticks-ticks)/self.applied_sampling_hz))
                     kind = decoder.event_kind(byte, payload[position+1] if position+1 < len(payload) else None)
-                    if byte >> (8-decoder.time_bits) == 0 and self.last_dlc_event_sample is not None:
-                        self.last_dlc_event_sample.dlc_kind = "overflow"
                     # Pass each decoded level explicitly; decode() has already advanced to the final level.
                     sample = self._record_reconstructed(p_hz if decoder.reference_p else reconstructed_p, n_hz, current, received_at,
-                                               event_time, byte, kind, reconstructed_p, reconstructed_n)
+                                               stamp, byte, kind, reconstructed_p, reconstructed_n,
+                                               current_code=current_code, dlc_level=level,
+                                               dlc_level_change=level_change)
                     if sample is not None:
                         self.last_dlc_event_sample = sample
         except (ValueError, OverflowError) as error:
@@ -1686,7 +2525,8 @@ class VCOGui:
         return True
 
     def _record_reconstructed(self, p_hz, n_hz, current, received_at, stamp, byte,
-                              kind=None, reconstructed_p=None, reconstructed_n=None):
+                              kind=None, reconstructed_p=None, reconstructed_n=None,
+                              current_code=None, dlc_level=None, dlc_level_change=0):
         decoder = self.dlc_decoder
         if reconstructed_p is None:
             reconstructed_p = p_hz if decoder.reference_p else n_hz+decoder.difference_hz
@@ -1694,12 +2534,17 @@ class VCOGui:
         p_uv = nominal_voltage_uv(self.transfer_curve, max(0, p_hz))
         n_uv = nominal_voltage_uv(self.transfer_curve, max(0, n_hz))
         measured = nominal_voltage_uv(self.transfer_curve, round(max(0, reconstructed_p)))-nominal_voltage_uv(self.transfer_curve, round(max(0, reconstructed_n)))
-        valid = (24000 <= p_hz <= 1051710 and 24000 <= n_hz <= 1051710 and
+        valid = (self._current_code_valid(current, current_code) and
+                 24000 <= p_hz <= 1051710 and 24000 <= n_hz <= 1051710 and
                  24000 <= reconstructed_p <= 1051710 and 24000 <= reconstructed_n <= 1051710)
         return self._record_sample(p_uv, n_uv, p_hz, n_hz, received_at, current, source="dlc",
                             stored_bytes=1 if byte is not None else 0, dlc_byte=byte, elapsed_s=stamp, valid=valid,
                             measured_delta_uv=measured, dlc_kind=kind, differential_mode=self.applied_mode,
-                            supply_hz=self.applied_supply_hz, **self.last_raw_fields)
+                            supply_hz=self.applied_supply_hz, current_code=current_code,
+                            dlc_level=decoder.level if dlc_level is None else dlc_level,
+                            dlc_level_change=dlc_level_change, dlc_log_width=decoder.log_width,
+                            dlc_discard_bits=decoder.discard_bits, dlc_reference_p=decoder.reference_p,
+                            **self.last_raw_fields)
 
     def _record_sample(self, p_uv: int, n_uv: int, p_hz: int | None, n_hz: int | None,
                        clock: float, current_nA: int | None = None, *, source="raw", stored_bytes=2, dlc_byte=None, elapsed_s=None, valid=True, **extra) -> Sample | None:
@@ -1712,6 +2557,9 @@ class VCOGui:
         if self.times:
             elapsed = max(elapsed, self.times[-1])
         current_ua = current_nA / 1000 if current_nA is not None else self.applied_current_ua
+        if self.samples and self.samples[-1].current_ua != current_ua:
+            self.current_settle_until = elapsed + 1.0
+        current_settling = elapsed < self.current_settle_until
         if self.last_data_clock is not None and clock-self.last_data_clock > max(3.0, 2.5/max(0.1, self.applied_sampling_hz)) and self.history.status == "recording":
             self.history.change(self._elapsed(self.last_data_clock)+max(3.0, 2.5/max(0.1, self.applied_sampling_hz)), "missing")
         valid = bool(valid and all(hz is None or 24000 <= hz <= 1051710 for hz in (p_hz, n_hz)))
@@ -1723,6 +2571,7 @@ class VCOGui:
         self.history.change(elapsed, "recording")
         sample = Sample(elapsed, p_uv, n_uv, p_hz, n_hz, current_ua, source, self.segment_id, self.applied_sampling_hz, dlc_byte, stored_bytes)
         sample.valid = valid
+        sample.current_settling = current_settling
         for name, value in extra.items(): setattr(sample, name, value)
         self._screen_sample(sample, len(self.samples))
         if p_hz is not None and n_hz is not None:
@@ -1756,7 +2605,14 @@ class VCOGui:
         self.prefix_n_hz_count.append(self.prefix_n_hz_count[-1] + (sample.n_hz is not None))
 
     def _update_capacity(self) -> None:
-        self.memory_saturated = self.memory_used >= 16384
+        self.memory_saturated = self.memory_used >= self._sample_capacity_bytes()
+
+    def _sample_capacity_bytes(self):
+        if self.samples:
+            mode = self.samples[-1].differential_mode
+        else:
+            mode = DIFFERENTIAL_MODES.index(self.differential_mode.get())
+        return SAMPLE_BANK_BYTES - (2 * (self.applied_dlc_buffer_events + 1) if mode != 2 else 0)
 
     def _memory_rates(self):
         try:
@@ -1783,22 +2639,23 @@ class VCOGui:
         width, height = max(canvas.winfo_width(), 1), max(canvas.winfo_height(), 1)
         canvas.create_rectangle(0, 0, width, height, fill="#263946", outline="")
         rates = self._memory_rates() if self.memory_color.get() == "Average sampling rate" else None
+        capacity = self._sample_capacity_bytes()
         used, blocks = 0, {}
         # Aggregate to screen pixels; recoloring always uses original timestamps.
         for index, (_stamp, size, source, _segment) in enumerate(self.memory_entries):
-            if used >= 16384: break
-            end = min(16384, used + size)
+            if used >= capacity: break
+            end = min(capacity, used + size)
             color = (TradeoffPlot._color((math.log10(max(0.1, rates[index])) + 1) / 5)
                      if rates is not None else ("#269e63" if source == "dlc" else "#dc554b"))
-            pixel = int(width * used / 16384)
-            blocks[pixel] = (max(pixel+1, width * end / 16384), color)
+            pixel = int(width * used / capacity)
+            blocks[pixel] = (max(pixel+1, width * end / capacity), color)
             used = end
         if self.memory_saturated:
             canvas.create_rectangle(0, 0, width, height, fill="#e74c3c", outline="")
         else:
             for pixel, (end, color) in blocks.items():
                 canvas.create_rectangle(pixel, 0, end, height, fill=color, outline="")
-        text = f"{'BANK FULL · ' if self.memory_saturated else ''}{used:,} / 16,384 B · {used/16384*100:.1f}%"
+        text = f"{'BANK FULL · ' if self.memory_saturated else ''}{used:,} / {capacity:,} B · {used/capacity*100:.1f}%"
         canvas.create_text(width/2, height/2, text=text, fill="white", font=("TkDefaultFont", 8, "bold"))
         self.capacity_legend.set("Red: fixed rate · green: dLC · 2 B/raw or 1 B/event" if rates is None else
                                  "Rate: blue 0.1 Hz → red 10,000 Hz (log scale)")
@@ -1820,9 +2677,11 @@ class VCOGui:
             self.rate_estimate_text.set("Average stored rate: waiting for 2 events")
             return
         size = self.memory_entries[-1][1]
-        duration_s = 16384 / size / rate
+        capacity = self._sample_capacity_bytes()
+        duration_s = capacity / size / rate
         duration = f"{duration_s/3600:.2f} h" if duration_s >= 3600 else f"{duration_s/60:.1f} min"
-        self.rate_estimate_text.set(f"Average stored rate: {rate:.3g} Hz · {size*8} bits · 16 KB ≈ {duration}")
+        self.rate_estimate_text.set(
+            f"Average stored rate: {rate:.3g} Hz · {size*8} bits · {capacity / 1024:.1f} KB ≈ {duration}")
 
     def _rate_window_changed(self, *_args: str) -> None:
         self._update_rate_estimate()
@@ -1836,6 +2695,8 @@ class VCOGui:
                 with new_path.open("w", newline="") as stream:
                     csv.writer(stream).writerow(("time_s", "vco_p_uV", "vco_n_uV", "delta_v_uV", "conductance_uS", "vco_p_Hz", "vco_n_Hz", "injected_current_uA", "source", "sample_rate_Hz", "stored_bytes", "dlc_byte", "segment", "valid") + DIFFERENTIAL_CSV_COLUMNS)
                 self.session_path = new_path
+                write_configuration(recording_configuration_path(new_path), self._configuration_snapshot())
+                self._write_uart_log(recording_uart_path(new_path))
                 self.recording_path_text.set(f"Recording: {self.session_path}")
             with self.session_path.open("a", newline="") as stream:
                 conductance = conductance_us(sample.delta_uv, sample.current_ua, self.offset_uv) if sample.analysis_valid else None
@@ -1846,11 +2707,16 @@ class VCOGui:
     def _counter_csv_values(self, sample):
         raw_valid = all(hz is None or 24000 <= hz <= 1051710 for hz in (sample.p_hz, sample.n_hz))
         raw_g = conductance_us(sample.raw_delta_uv, sample.current_ua, self.offset_uv) if raw_valid else None
-        return (DIFFERENTIAL_MODES[sample.differential_mode], sample.supply_hz,
+        return (DIFFERENTIAL_MODES[sample.differential_mode], sample.current_code if sample.current_code is not None else "", sample.supply_hz,
                 sample.p_count, sample.n_count, sample.p_fine, sample.n_fine, sample.difference_counts,
                 sample.difference_word, sample.difference_shift,
                 sample.raw_delta_uv, f"{raw_g:.9g}" if raw_g is not None else "", sample.dlc_kind,
-                int(sample.valid), int(sample.motion_artifact), self.offset_uv / 1000)
+                int(sample.valid), int(sample.motion_artifact), int(sample.current_settling), self.offset_uv / 1000,
+                sample.dlc_level if sample.dlc_level is not None else "", sample.dlc_level_change,
+                sample.dlc_log_width if sample.dlc_log_width is not None else "",
+                sample.dlc_discard_bits if sample.dlc_discard_bits is not None else "",
+                int(sample.dlc_reference_p) if sample.dlc_reference_p is not None else "",
+                int(sample.buffer_loss))
 
     def save_csv(self) -> None:
         if not self.samples:
@@ -1886,7 +2752,11 @@ class VCOGui:
                                      f"{sample.phasic_us:.9g}" if sample.phasic_us is not None else "",
                                      int(sample.phasic_peak), f"{sample.tonic_us+sample.phasic_us:.9g}" if sample.tonic_us is not None and sample.phasic_us is not None else "", self.algorithm.get(), sample.source, sample.sample_hz,
                                      sample.stored_bytes, sample.dlc_byte if sample.dlc_byte is not None else "", sample.segment, int(sample.analysis_valid), sample.p_hz, sample.n_hz) + self._counter_csv_values(sample))
-            self._log(f"Saved {len(self.samples)} samples to {output_path}")
+            sidecar = recording_configuration_path(output_path)
+            write_configuration(sidecar, self._configuration_snapshot())
+            uart_sidecar = recording_uart_path(output_path)
+            self._write_uart_log(uart_sidecar)
+            self._log(f"Saved {len(self.samples)} samples to {output_path}, configuration to {sidecar.name}, and raw UART to {uart_sidecar.name}")
         except (OSError, ValueError, tk.TclError) as error:
             self._log(f"Could not save CSV: {error}")
 
@@ -1914,13 +2784,39 @@ class VCOGui:
             self._show_message(message[3:].strip(), "uart")
         elif message_source is not None:
             self._show_message(message, message_source)
-        self.terminal.configure(state="normal")
-        self.terminal.insert("end", message + "\n")
-        lines = int(self.terminal.index("end-1c").split(".")[0])
+        self._append_output(self.terminal, message)
+
+    def _append_output(self, widget: tk.Text, message: str) -> None:
+        widget.configure(state="normal")
+        widget.insert("end", message + "\n")
+        lines = int(widget.index("end-1c").split(".")[0])
         if lines > TERMINAL_LINES:
-            self.terminal.delete("1.0", f"{lines - TERMINAL_LINES + 1}.0")
-        self.terminal.see("end")
-        self.terminal.configure(state="disabled")
+            widget.delete("1.0", f"{lines - TERMINAL_LINES + 1}.0")
+        widget.see("end")
+        widget.configure(state="disabled")
+
+    def _append_uart_output(self, message: str) -> None:
+        line = message.rstrip("\r\n")
+        self.uart_lines.append(line)
+        self._append_output(self.uart_terminal, line)
+        if self.session_path is not None:
+            try:
+                with recording_uart_path(self.session_path).open("a", encoding="utf-8") as stream:
+                    stream.write(line + "\n")
+            except OSError as error:
+                self._log(f"Could not write raw UART output: {error}")
+
+    def _replace_uart_output(self, lines: list[str]) -> None:
+        self.uart_terminal.configure(state="normal")
+        self.uart_terminal.delete("1.0", "end")
+        if lines:
+            self.uart_terminal.insert("end", "\n".join(lines[-TERMINAL_LINES:]) + "\n")
+            self.uart_terminal.see("end")
+        self.uart_terminal.configure(state="disabled")
+
+    def _write_uart_log(self, path: Path) -> None:
+        content = "\n".join(self.uart_lines)
+        path.write_text(content + ("\n" if content else ""), encoding="utf-8")
 
     @staticmethod
     def _positive_int(value: str, name: str) -> int:
@@ -1995,6 +2891,58 @@ class VCOGui:
         self.supply_status.set(status)
         self._log(status)
 
+    def _finish_dlc_request(self, status):
+        self.pending_dlc_config = None
+        if self.loaded_recording is None:
+            mode = DIFFERENTIAL_MODES.index(self.differential_mode.get())
+            self.dlc_checkbox.configure(state="disabled" if mode == 2 else "normal")
+            self.dlc_width_box.configure(state="readonly")
+            self.dlc_time_spin.configure(state="normal")
+        self.dlc_status.set(status)
+        self._log(status)
+
+    def _dlc_request_timeout(self, request_id):
+        if request_id == self.dlc_request_id and self.pending_dlc_config is not None:
+            self._finish_dlc_request("No dLC confirmation; check the raw UART output.")
+
+    def apply_dlc_configuration(self):
+        if self.applied_mode == 2:
+            self.dlc_status.set("dLC is unavailable in GUI P−N mode.")
+            return
+        if self.recording_state != "running" or not self.firmware_is_demo or self.serial_port is None:
+            return
+        if (self.run_pending or self.pending_current_na is not None or self.pending_sample_millihz is not None or
+                self.pending_supply_millihz is not None or self.pending_dlc_config is not None):
+            self._log("Wait for the runtime setting operation to finish.")
+            return
+        try:
+            requested = self._requested_dlc_config()
+        except ValueError as error:
+            self.dlc_status.set(str(error))
+            return
+        if requested == (self.applied_dlc, self.applied_dlc_log_width, self.applied_dlc_time_bits):
+            self.dlc_status.set("Firmware dLC configuration already matches.")
+            return
+        self.dlc_request_id += 1
+        request_id = self.dlc_request_id
+        self.pending_dlc_config = requested
+        self.dlc_checkbox.configure(state="disabled")
+        self.dlc_width_box.configure(state="disabled")
+        self.dlc_time_spin.configure(state="disabled")
+        self.dlc_status.set("Applying dLC configuration via JTAG…")
+        enabled, log_width, time_bits = requested
+
+        def worker():
+            try:
+                addresses = write_runtime_words({"gsr_dlc_log_width": log_width,
+                                                 "gsr_dlc_time_bits": time_bits,
+                                                 "gsr_dlc_enabled": int(enabled)})
+                self.events.put(("dlc_write_done", request_id, requested, addresses, None))
+            except (OSError, ValueError, RuntimeError) as error:
+                self.events.put(("dlc_write_done", request_id, requested, None, str(error)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _supply_request_timeout(self, request_id):
         if request_id == self.supply_request_id and self.pending_supply_millihz is not None:
             self._finish_supply_request("No P sampling confirmation; check Messages.")
@@ -2004,7 +2952,7 @@ class VCOGui:
             self._log("Build the selected SW or GUI mode before changing P supply sampling."); return
         if self.recording_state != "running" or not self.firmware_is_demo or self.serial_port is None:
             return
-        if self.run_pending or self.pending_current_na is not None or self.pending_sample_millihz is not None or self.pending_supply_millihz is not None:
+        if self.run_pending or self.pending_current_na is not None or self.pending_sample_millihz is not None or self.pending_supply_millihz is not None or self.pending_dlc_config is not None:
             self._log("Wait for the runtime setting operation to finish."); return
         requested = self._requested_supply_millihz()
         rate = requested/1000 if requested else SAMPLING_RATES_HZ[self.sampling_index.get()]
@@ -2036,7 +2984,7 @@ class VCOGui:
         if self.recording_state != "running" or not self.firmware_is_demo or self.serial_port is None:
             self._log("Record with gsr/demo and wait for its startup message before applying sample rate.")
             return
-        if self.run_pending or self.pending_current_na is not None or self.pending_sample_millihz is not None or self.pending_supply_millihz is not None:
+        if self.run_pending or self.pending_current_na is not None or self.pending_sample_millihz is not None or self.pending_supply_millihz is not None or self.pending_dlc_config is not None:
             self._log("Wait for the runtime setting operation to finish.")
             return
         rate = SAMPLING_RATES_HZ[self.sampling_index.get()]
@@ -2074,7 +3022,7 @@ class VCOGui:
         if self.recording_state != "running" or not self.firmware_is_demo or self.serial_port is None:
             self._log("Record with gsr/demo and wait for its startup message before applying current.")
             return
-        if self.run_pending or self.pending_current_na is not None or self.pending_sample_millihz is not None or self.pending_supply_millihz is not None:
+        if self.run_pending or self.pending_current_na is not None or self.pending_sample_millihz is not None or self.pending_supply_millihz is not None or self.pending_dlc_config is not None:
             self._log("Wait for the runtime setting operation to finish.")
             return
         try:
@@ -2224,12 +3172,11 @@ class VCOGui:
                     log_width = width.bit_length()-1
                     if not 0 <= log_width <= 15 or not 1 <= time_bits <= 6:
                         raise ValueError("dLC level exponent must be 0..15 and time bits 1..6.")
-                    magnitude = (1 << (7-time_bits))-1
-                    max_events = ((65535 >> log_width)+magnitude-1)//magnitude+2
-                    if self.use_dlc.get() and max_events > 512:
-                        raise ValueError("Increase dLC level width or reduce time bits: worst-case output must fit 512 events.")
+                    buffer_events = int(self.dlc_buffer_events.get())
+                    if not 1 <= buffer_events <= 1024:
+                        raise ValueError("dLC event buffer must be 1–1024 packets.")
                     changes.update(GSR_DLC_ENABLED=int(self.use_dlc.get()), GSR_DLC_LOG_WIDTH=log_width, GSR_DLC_TIME_BITS=time_bits,
-                                   GSR_DIFFERENTIAL_MODE=mode, VCO_SUPPLY_RATE_MILLIHZ=supply)
+                                   GSR_DLC_BUFFER_EVENTS=buffer_events, GSR_DIFFERENTIAL_MODE=mode, VCO_SUPPLY_RATE_MILLIHZ=supply)
                 write_defines(changes, DEMO_SOURCE if project == "gsr/demo" else TEST_SOURCE)
                 if project == "gsr/demo" and sampling < 1:
                     self._log(f"Sub-Hz output: VCO refreshes at 1 Hz; UART emits about {sampling:g} samples/s.")
@@ -2242,6 +3189,8 @@ class VCOGui:
         def built() -> None:
             if project in ("gsr/demo", "test_VCO_counter"):
                 self.applied_sampling_hz = sampling
+            if project == "gsr/demo":
+                self.applied_dlc_buffer_events = buffer_events
             if applied_current is not None:
                 self.applied_current_ua = applied_current
                 self.current_status.set(f"Built startup current: {applied_current:.2f} µA")
@@ -2285,12 +3234,21 @@ class VCOGui:
         if self.shutting_down or generation != self.connection_generation or self.recording_state != "starting":
             return
         log_path = ROOT / ".openocd.log"
+        openocd_failed = False
         if log_path.is_file():
             try:
-                for line in log_path.read_text(errors="replace").splitlines()[-8:]:
+                log_lines = log_path.read_text(errors="replace").splitlines()
+                openocd_failed = any("failed to halt during examine" in line or
+                                     "target not examined yet" in line.lower() for line in log_lines)
+                for line in log_lines[-8:]:
                     self._log("OpenOCD: " + line, message_source=None)
             except OSError as error:
                 self._log(f"Could not read OpenOCD output: {error}")
+        if openocd_failed:
+            self._log("OpenOCD could not halt the MCU. The selected board clock may be unstable; "
+                      "try the known-working 10 MHz clock, reset hardware, then rebuild.")
+            self.close_device()
+            return
         try:
             pid = int((ROOT / ".openocd.pid").read_text().strip())
             os.kill(pid, 0)
@@ -2384,6 +3342,7 @@ class VCOGui:
         self.current_request_id += 1
         self.sample_request_id += 1
         self.supply_request_id += 1
+        self.dlc_request_id += 1
         if self.pending_supply_millihz is not None: self._finish_supply_request("P supply sampling: device stopped")
         if self.pending_current_na is not None:
             self._finish_current_request("Firmware current: device stopped")
@@ -2393,6 +3352,10 @@ class VCOGui:
             self._finish_sampling_request("Firmware sampling rate: device stopped")
         else:
             self.sampling_status.set("Firmware sampling rate: device stopped")
+        if self.pending_dlc_config is not None:
+            self._finish_dlc_request("dLC configuration: device stopped")
+        else:
+            self.dlc_status.set("dLC configuration: device stopped")
         self._stop_serial()
         self.firmware_is_demo = False
         self.gdb_opened = False
@@ -2416,12 +3379,14 @@ class VCOGui:
                 self._log(event[1], message_source=None)
             elif event[0] == "serial_output":
                 _, line, received_at = event
+                self._append_uart_output(line)
+                if line.startswith("[i]"):
+                    self._show_message(line[3:].strip(), "uart")
                 if received_at >= self.history_start_clock:
                     if self._handle_acquisition_line(line, received_at) or self._handle_dlc_line(line, received_at):
                         continue
                     if SAMPLE_RECORD.fullmatch(line):
                         continue
-                    uart_line = line
                     if line.startswith("[i]"):
                         line = line[3:].strip()
                     if line.startswith("Lead-off:") and self.recording_state == "running":
@@ -2493,7 +3458,6 @@ class VCOGui:
                         self._sampling_slider_changed(str(self.sampling_index.get()))
                     if line.startswith("Sampling change failed:") and self.pending_supply_millihz is not None:
                         self._finish_supply_request(line)
-                    self._log(uart_line, message_source=None)
             elif event[0] == "sample":
                 _, p_uv, n_uv, p_hz, n_hz, clock, current_na = event
                 if clock >= self.history_start_clock and self.recording_state == "running":
@@ -2538,6 +3502,15 @@ class VCOGui:
                     else:
                         self._log(f"JTAG wrote P supply setting to 0x{address:08x}; waiting for firmware confirmation.")
                         self.root.after(6000, self._supply_request_timeout, request_id)
+            elif event[0] == "dlc_write_done":
+                _, request_id, requested, addresses, error = event
+                if request_id == self.dlc_request_id and self.pending_dlc_config == requested:
+                    if error:
+                        self._finish_dlc_request(f"dLC update failed: {error}")
+                    else:
+                        locations = ", ".join(f"0x{address:08x}" for address in addresses.values())
+                        self._log(f"JTAG wrote dLC settings at {locations}; waiting for firmware metadata.")
+                        self.root.after(6000, self._dlc_request_timeout, request_id)
             elif event[0] == "analysis_done":
                 self.analysis_running = False
                 _, generation, result, error = event

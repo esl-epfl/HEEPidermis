@@ -18,7 +18,7 @@
 #define SYS_FCLK_HZ 10000000
 #define VCO_FS_HZ 10
 #define VCO_SAMPLE_RATE_MILLIHZ 10000
-#define INJECTED_CURRENT_NA 200
+#define INJECTED_CURRENT_NA 1200
 
 #define IDAC_LSB_NA 40
 #define IDAC_MAX_CODE 255
@@ -26,18 +26,24 @@
 #define IDAC_DEFAULT_CAL 15
 #define VREF_DEFAULT_CAL 1023
 #ifndef GSR_DLC_ENABLED
-#define GSR_DLC_ENABLED 0
+#define GSR_DLC_ENABLED 1
 #endif
 #ifndef GSR_DLC_LOG_WIDTH
-#define GSR_DLC_LOG_WIDTH 11
+#define GSR_DLC_LOG_WIDTH 7
 #endif
 #ifndef GSR_DLC_TIME_BITS
-#define GSR_DLC_TIME_BITS 5
+#define GSR_DLC_TIME_BITS 6
+#endif
+#ifndef GSR_DLC_BUFFER_EVENTS
+#define GSR_DLC_BUFFER_EVENTS 16
+#endif
+#if GSR_DLC_BUFFER_EVENTS < 1 || GSR_DLC_BUFFER_EVENTS > 1024
+#error "dLC event buffer size must be between 1 and 1024"
 #endif
 
 // 0: hardware register; 1: chip software; 2: host GUI.
 #ifndef GSR_DIFFERENTIAL_MODE
-#define GSR_DIFFERENTIAL_MODE 2
+#define GSR_DIFFERENTIAL_MODE 1
 #endif
 #ifndef VCO_SUPPLY_RATE_MILLIHZ
 #define VCO_SUPPLY_RATE_MILLIHZ 0
@@ -48,7 +54,7 @@
 #if GSR_DLC_ENABLED && GSR_DIFFERENTIAL_MODE == 2
 #error "GUI differential mode does not support dLC"
 #endif
-#if GSR_DLC_ENABLED
+#if GSR_DIFFERENTIAL_MODE != 2
 #define GSR_USE_DLC
 #endif
 #define FEEDBACK_PERIOD_CC ((SYS_FCLK_HZ <= UINT32_MAX / 3U) ? (SYS_FCLK_HZ * 3U) : UINT32_MAX)
@@ -58,6 +64,9 @@ volatile uint32_t gsr_injected_current_nA = INJECTED_CURRENT_NA;
 volatile uint32_t gsr_sample_rate_millihz = VCO_SAMPLE_RATE_MILLIHZ;
 // Zero follows the signal sampling rate; nonzero selects independent P integration.
 volatile uint32_t gsr_supply_rate_millihz = VCO_SUPPLY_RATE_MILLIHZ;
+volatile uint32_t gsr_dlc_enabled = GSR_DLC_ENABLED;
+volatile uint32_t gsr_dlc_log_width = GSR_DLC_LOG_WIDTH;
+volatile uint32_t gsr_dlc_time_bits = GSR_DLC_TIME_BITS;
 
 #if VCO_FS_HZ < 1 || (SYS_FCLK_HZ / VCO_FS_HZ) < 100
 #error "Sampling period must be at least 100 MCU cycles"
@@ -91,6 +100,11 @@ static void signed_field(int32_t value) {
     _writestr(",");
     if (value < 0) _writestr("-");
     number(value < 0 ? (uint32_t)(-(int64_t)value) : (uint32_t)value);
+}
+
+static uint32_t idac_current_code(void) {
+    return mmio_region_read32(mmio_region_from_addr((uintptr_t)IDAC_CTRL_START_ADDRESS),
+                              IDAC_CTRL_CURRENT_REG_OFFSET) & IDAC_CTRL_CURRENT_CURRENT_1_MASK;
 }
 
 static void print_setting(const char *name, uint32_t value, const char *unit) {

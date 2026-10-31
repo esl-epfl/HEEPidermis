@@ -20,6 +20,7 @@ def validate_configuration(values, choices, rate_count):
         "motion_window": (0.1, 30, False), "motion_threshold_mv": (0.001, 100, False),
         "motion_correlation": (0.1, 1, False), "voltage_offset_mv": (-500, 500, False),
         "view_seconds": (0.1, 86400 * 365, False), "dlc_width": (1, 32768, True),
+        "dlc_buffer_events": (1, 1024, True),
     }
     for name, value in values.items():
         if name == "version":
@@ -32,7 +33,7 @@ def validate_configuration(values, choices, rate_count):
             if name == "dlc_width" and int(number) & (int(number) - 1):
                 raise ValueError("dLC level width must be a power of two")
             result[name] = int(number) if integer else number
-        elif name in ("use_dlc", "supply_follow", "motion_enabled"):
+        elif name in ("use_dlc", "compare_dlc", "supply_follow", "motion_enabled"):
             if not isinstance(value, bool):
                 raise ValueError(f"{name} must be true or false")
             result[name] = value

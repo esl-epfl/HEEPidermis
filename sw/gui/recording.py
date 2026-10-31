@@ -6,10 +6,25 @@ from collections import deque
 import csv
 from dataclasses import dataclass
 import math
+from pathlib import Path
 from statistics import median
+
+from acquisition import DLCDecoder
 
 
 DIFFERENTIAL_MODES = ("Hardware P−N", "Chip software P−N", "GUI P−N")
+
+
+def recording_configuration_path(path):
+    """Return the JSON sidecar used to preserve a recording's GUI settings."""
+    path = Path(path)
+    return path.with_suffix(path.suffix + ".configuration.json")
+
+
+def recording_uart_path(path):
+    """Return the text sidecar containing a recording's raw UART stream."""
+    path = Path(path)
+    return path.with_suffix(path.suffix + ".uart.log")
 
 
 @dataclass
@@ -43,10 +58,24 @@ class Sample:
     motion_artifact: bool = False
     voltage_invalid: bool = False
     processing_start: int = 0
+    current_code: int | None = None
+    current_settling: bool = False
+    dlc_level: int | None = None
+    dlc_level_change: int = 0
+    dlc_log_width: int | None = None
+    dlc_discard_bits: int | None = None
+    dlc_reference_p: bool | None = None
+    buffer_loss: bool = False
 
     @property
     def raw_delta_uv(self):
         return self.p_uv - self.n_uv
+
+    @property
+    def dlc_amplitude_knot(self):
+        return (self.dlc_byte not in (None, 0) and
+                self.dlc_kind not in ("overflow", "time_overflow") and
+                (self.dlc_level is None or self.dlc_level_change != 0))
 
     @property
     def delta_uv(self):
@@ -54,7 +83,7 @@ class Sample:
 
     @property
     def analysis_valid(self):
-        return self.valid and not self.motion_artifact and not self.voltage_invalid
+        return self.valid and not self.motion_artifact and not self.voltage_invalid and not self.current_settling and not self.buffer_loss
 
     @property
     def acquisition_key(self):
@@ -92,6 +121,86 @@ def invalid_periods(samples):
             start = end = None
     if start is not None:
         yield start, end
+
+
+def buffer_loss_periods(samples):
+    for sample in samples:
+        if sample.buffer_loss:
+            yield sample.time_s, sample.time_s + 1 / sample.sample_hz
+
+
+def restore_buffer_loss(samples, uart_lines):
+    references = iter(sample for sample in samples if sample.source == "dlc" and sample.dlc_byte is None)
+    last_reference = None
+    dlc_active = False
+    for line in uart_lines:
+        kind = line.split(",", 1)[0]
+        if kind == "A":
+            dlc_active = False
+            last_reference = None
+        elif kind == "B":
+            dlc_active = True
+        elif kind == "R" and dlc_active:
+            last_reference = next(references, None)
+        elif kind == "X" and last_reference is not None:
+            last_reference.buffer_loss = True
+
+
+def restore_dlc_metadata(samples, uart_lines):
+    """Recover historical dLC levels and widths from a recording's UART log."""
+    events = []
+    decoder = None
+    for line in uart_lines:
+        fields = line.strip().split(",")
+        try:
+            if fields[0] == "A":
+                decoder = None
+            elif fields[0] == "B" and len(fields) in (10, 11, 12, 13, 14):
+                decoder = DLCDecoder(int(fields[6]), int(fields[3]), int(fields[4]),
+                                     int(fields[5]), int(fields[2]) / 1000, int(fields[7]),
+                                     reference_p=len(fields) in (12, 13, 14))
+            elif decoder is not None and fields[0] in ("R", "H"):
+                if fields[0] == "R":
+                    if len(fields) not in (13, 14):
+                        continue
+                    p_hz, n_hz = map(int, fields[5:7] if len(fields) == 14 else fields[4:6])
+                elif len(fields) in (5, 6):
+                    p_hz, n_hz = map(int, fields[2:4])
+                elif len(fields) == 4:
+                    n_hz = int(fields[2])
+                    p_hz = round(n_hz + decoder.difference_hz)
+                else:
+                    continue
+                events.append((None, p_hz, n_hz, decoder.level, 0,
+                               decoder.log_width, decoder.discard_bits, decoder.reference_p))
+            elif decoder is not None and fields[0] == "D" and len(fields) in (6, 7, 8):
+                p_hz = int(fields[5] if len(fields) == 8 else fields[4]) if len(fields) != 6 else None
+                n_hz = int(fields[6] if len(fields) == 8 else fields[5] if len(fields) == 7 else fields[4])
+                for byte in bytes.fromhex(fields[-1]):
+                    change = decoder.level_change(byte)
+                    decoder.level += change
+                    events.append((byte, p_hz, n_hz, decoder.level, change,
+                                   decoder.log_width, decoder.discard_bits, decoder.reference_p))
+        except (ValueError, IndexError):
+            continue
+
+    position = 0
+    for sample in samples:
+        if sample.source != "dlc" or sample.dlc_level is not None:
+            continue
+        for event_index in range(position, len(events)):
+            byte, p_hz, n_hz, level, change, log_width, discard_bits, reference_p = events[event_index]
+            if sample.dlc_byte != byte or sample.n_hz is not None and sample.n_hz != n_hz:
+                continue
+            if (byte is None or reference_p) and sample.p_hz is not None and sample.p_hz != p_hz:
+                continue
+            sample.dlc_level = level
+            sample.dlc_level_change = change
+            sample.dlc_log_width = log_width
+            sample.dlc_discard_bits = discard_bits
+            sample.dlc_reference_p = reference_p
+            position = event_index + 1
+            break
 
 
 class MotionDetector:
@@ -185,6 +294,8 @@ def read_recording(path, default_current_ua=0.52):
                 if mode not in range(3):
                     raise ValueError("Unknown differential mode")
                 artifact = number("motion_artifact", 0, True)
+                buffer_loss = number("buffer_loss", 0, True)
+                settling = number("current_settling", 0, True)
                 valid = number("acquisition_valid", None, True)
                 if valid is None:
                     valid = number("valid", 1, True)
@@ -192,6 +303,9 @@ def read_recording(path, default_current_ua=0.52):
                     # recovers a motion-only exclusion from intermediate files.
                     if artifact:
                         valid = 1
+                reference_p = number("dlc_reference_p", integer=True)
+                if reference_p not in (None, 0, 1):
+                    raise ValueError("Invalid dlc_reference_p")
                 sample = Sample(
                     number("time_s"), number("vco_p_uV", integer=True), number("vco_n_uV", integer=True),
                     number("vco_p_Hz", integer=True), number("vco_n_Hz", integer=True),
@@ -204,17 +318,29 @@ def read_recording(path, default_current_ua=0.52):
                     difference_counts=number("difference_phase_counts", integer=True),
                     difference_word=number("difference_word_int16", integer=True),
                     difference_shift=number("difference_word_shift", 0, True), dlc_kind=row.get("dlc_event_kind") or None,
-                    motion_artifact=bool(artifact))
+                    motion_artifact=bool(artifact), current_code=number("idac_code", integer=True),
+                    current_settling=bool(settling), dlc_level=number("dlc_level", integer=True),
+                    dlc_level_change=number("dlc_level_change", 0, True),
+                    dlc_log_width=number("dlc_log_width", integer=True),
+                    dlc_discard_bits=number("dlc_discard_bits", integer=True),
+                    dlc_reference_p=bool(reference_p) if reference_p is not None else None,
+                    buffer_loss=bool(buffer_loss))
                 if (sample.time_s is None or sample.p_uv is None or sample.n_uv is None or sample.current_ua is None or
                     sample.time_s < 0 or sample.current_ua <= 0 or sample.sample_hz <= 0 or sample.supply_hz <= 0 or
                     sample.stored_bytes < 0 or sample.source not in ("raw", "dlc") or
-                    valid not in (0, 1) or artifact not in (0, 1) or
-                    sample.dlc_byte is not None and not 0 <= sample.dlc_byte <= 255):
+                    valid not in (0, 1) or artifact not in (0, 1) or settling not in (0, 1) or buffer_loss not in (0, 1) or
+                    sample.current_code is not None and not 0 <= sample.current_code <= 255 or
+                    sample.dlc_byte is not None and not 0 <= sample.dlc_byte <= 255 or
+                    sample.dlc_log_width is not None and not 0 <= sample.dlc_log_width <= 15 or
+                    sample.dlc_discard_bits is not None and not 0 <= sample.dlc_discard_bits <= 15):
                     raise ValueError("Invalid sample values")
                 if samples and sample.time_s < samples[-1].time_s:
                     raise ValueError("Timestamps must be nondecreasing")
                 sample.valid = sample.valid and all(hz is None or 24000 <= hz <= 1051710
                                                     for hz in (sample.p_hz, sample.n_hz))
+                if sample.current_code is not None:
+                    sample.valid = sample.valid and math.isclose(
+                        sample.current_ua * 1000, sample.current_code * 40, abs_tol=1e-6)
                 samples.append(sample)
             except (ValueError, TypeError) as error:
                 raise ValueError(f"CSV row {line}: {error}") from error
@@ -226,4 +352,10 @@ def read_recording(path, default_current_ua=0.52):
         rate = 1 / median(intervals) if intervals else 10.0
         for sample in samples:
             sample.sample_hz = sample.supply_hz = rate
+    uart_path = recording_uart_path(path)
+    if uart_path.exists():
+        uart_lines = uart_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        restore_buffer_loss(samples, uart_lines)
+        if any(sample.source == "dlc" and sample.dlc_level is None for sample in samples):
+            restore_dlc_metadata(samples, uart_lines)
     return samples

@@ -26,8 +26,8 @@ MEMORY
 }
 
 /*
- * All firmware code and runtime sections are packed into sram0. The separate
- * 16 KiB ram1 region is intentionally left unallocated for acquisition data.
+ * Firmware code and runtime sections are packed into sram0. The dLC DMA buffer
+ * uses the beginning of ram1; the remainder is reserved for acquisition data.
 */
 
 SECTIONS
@@ -308,6 +308,11 @@ SECTIONS
   _end_ram0_program = .; PROVIDE (_end_ram0_program = .);
   ASSERT(ADDR(.stack) + SIZEOF(.stack) <= ORIGIN(ram1),
          "Firmware code/data exceeds sram0; ram1 is reserved for acquisition data")
+
+  .gsr_dlc_buffer (NOLOAD) : ALIGN(4)
+  {
+    *(.gsr_dlc_buffer)
+  } >ram1
 
 % for i, section in enumerate(xheep.iter_linker_sections()):
 % if not section.name in ["code", "data"]:

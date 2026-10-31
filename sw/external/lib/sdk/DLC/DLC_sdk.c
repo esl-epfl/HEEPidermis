@@ -25,7 +25,9 @@ dlc_status_t dlc_init(
     uint16_t                 buf_size,
     uint32_t                 input_samples
 ) {
-    if (!config || !src_ptr || !results_buf || buf_size == 0 || input_samples == 0) {
+    if (!config || !src_ptr || !results_buf || buf_size == 0 || input_samples == 0 ||
+        (config->single_shot && (buf_size % (config->halfword_output ? 2U : 1U) != 0U ||
+                                  buf_size / (config->halfword_output ? 2U : 1U) > 8191U))) {
         return DLC_STATUS_INVALID_ARGUMENT;
     }
     uint8_t time_bits = config->time_bits ? config->time_bits : DLC_TIME_BITS;
@@ -83,7 +85,8 @@ dlc_status_t dlc_init(
     s_trans.dim        = DMA_DIM_CONF_1D;
     s_trans.channel    = 0;
     s_trans.size_d1_du = input_samples;
-    s_trans.win_du     = config->single_shot ? 0U : buf_size;
+    s_trans.win_du     = config->single_shot
+                         ? buf_size / (config->halfword_output ? 2U : 1U) : buf_size;
     s_trans.end        = config->single_shot ? DMA_TRANS_END_POLLING : DMA_TRANS_END_INTR;
     s_trans.mode       = config->single_shot ? DMA_TRANS_MODE_SINGLE : DMA_TRANS_MODE_CIRCULAR;
     s_trans.hw_fifo_en = true;

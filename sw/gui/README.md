@@ -1,4 +1,4 @@
-# VCO GSR monitor
+# HEEPidermis GUI
 
 Launch the desktop interface from the repository root with:
 
@@ -33,7 +33,12 @@ of that frequency, updates `SYS_FCLK_HZ` in the demo and legacy VCO applications
 and reconnects the serial port if it is open. After **Config. board** succeeds,
 the GUI asks you to reset the hardware. That reminder clears after GDB successfully
 opens the target. Rebuild the application to apply the new timer setting. The serial
-port and baud rate are also editable.
+port and baud rate are also editable. Board PLL programming alone does not verify
+that the MCU can run or halt at the selected frequency. If OpenOCD reports
+`Hart 0 failed to halt during examine()`, the GUI stops before attempting GDB;
+return to a known-working clock (10 MHz on the tested board), reset the board,
+and rebuild. The physical cause of a failed halt needs a board-level clock,
+power, and JTAG check; changing the firmware clock constant cannot repair it.
 
 Set **Sampling frequency** with the slider below **Record**. It offers
 0.1–0.9 Hz, 1–9 Hz, 10–90 Hz, and the same 1–9 steps through 10,000 Hz. It
@@ -56,18 +61,31 @@ bottom. The legacy `test_VCO_counter` application remains
 selectable; its sampling frequency is also applied at Build. Very high rates
 can exceed the UART's capacity to print every sample.
 
+In the saved UART trace from 2026-10-31, changing N sampling from 10 to 20 Hz
+produced a strong alternating N-frequency component while P stayed comparatively
+steady; reducing the MCU clock to 5 MHz did not remove it. This is consistent
+with 50 Hz mains pickup aliasing to 10 Hz at the 20 Hz Nyquist frequency,
+although hardware confirmation is still needed. Check grounding, electrode
+contact and shielding, and compare another sampling rate such as 10 or 30 Hz.
+The raw UART view and raw plot points are intentionally not filtered; the
+moving-average control affects only processed lines and decomposition.
+
 The demo configures the iDAC and reads synchronized coarse/fine counters and
 the signed hardware difference through the VCO SDK. Startup, stale and missed
 frames are excluded. Fresh out-of-range frames remain available for diagnostics,
 but do not enter conductance analysis or peak detection. The SDK is given the
 configured board clock and real hardware timing by the demo.
 
-The **Messages** panel stays visible at the bottom of the left column. Firmware
-information starts with `[i]` on UART and appears in cyan with a timestamp;
+The bottom row contains **Output**, **Messages**, **Save / Load**, and
+**Navigation**. Firmware information starts with `[i]` on UART and appears in cyan with a timestamp;
 GUI guidance appears in amber. It includes rebuild/reset reminders, pending
-settings changes, acknowledgments, and acquisition feedback. The bottom terminal
-keeps the full compiler and debug output. Consecutive identical messages are
-collapsed in the Messages panel.
+settings changes, acknowledgments, and acquisition feedback. The bottom output
+area has two columns: system/build/debug output on the left and the exact raw
+UART lines from the chip on the right. Its header describes only the selected
+raw (`R`) and dLC (`D`) acquisition formats that are actually being transmitted,
+with one format per line rather than every control frame.
+The average stored rate and color legend appear above the memory-capacity bar. Consecutive
+identical messages are collapsed only in the Messages panel.
 
 Missing fresh counters, out-of-range channels and missed refreshes generate
 throttled `[i]` feedback about checking contact, adjusting current or lowering
@@ -87,7 +105,9 @@ for the complete protocol. The legacy four-integer format is still accepted.
 The GUI inverts the nominal VCO transfer curve to estimate voltages for plotting.
 Informative lines are separate from samples. `[i] Current set: <nA> nA` and
 `[i] Sampling set: <mHz> mHz` confirm settings even when no valid signal is present.
-The GUI waits for these firmware acknowledgments after JTAG writes. The demo still accepts
+The dLC enable, level width and time-bit controls use the same atomic JTAG/readback
+path and wait for `A`/`B` metadata confirmation. The GUI waits for these firmware
+acknowledgments after JTAG writes. The demo still accepts
 `I=<nA>` commands on UART for use outside the GUI.
 
 The upper right plot shows P and N in mV, auto-scaled
@@ -100,7 +120,10 @@ conductance line is calculated from the moving average of P − N. Set the
 averaging window to 1 to see the unfiltered signal. The x axes show seconds
 since recording started, including pauses and missing data. Use the **Time zoom −/+** buttons to adjust the visible
 time range, drag the horizontal scrollbar to review earlier samples, and press
-**Live** to return to the newest data.
+**Live** to return to the newest data. The mouse wheel or a two-finger touchpad
+gesture scrolls vertically over the left menu and horizontally through time
+when the pointer is over the plots. Wheel gestures over entries, spinboxes,
+comboboxes and sliders navigate without changing their values.
 
 All three plots in the right column use the same time viewport, plot bounds,
 cursor and vertical grid. The time labels are shown once on the bottom plot as
@@ -117,6 +140,9 @@ corrected voltage drop should scale with current. A channel offset can cause
 apparent current dependence, especially at low currents. Verify the nominal
 VCO conversion and actual iDAC current against a known resistor before relying
 on absolute conductance values.
+After a live current step, the first second is marked invalid while the iDAC,
+tissue and VCO measurements settle, preventing transition samples from appearing
+as a conductance jump.
 
 Click or drag over any right-hand plot to place a shared vertical time cursor.
 The middle column then shows the transfer operating point and estimates averaged
@@ -129,9 +155,16 @@ appended immediately to a session CSV under `sw/gui/outs/`.
 is the time of the Save action in `yyyy_mm_dd_hhmm.csv` format. Exported conductance is
 `current_µA × 1,000,000 / (P_µV − N_µV − offset_µV)` in µS; it is blank
 when the corrected drop is zero or negative.
-Each sample retains the current active when it was recorded. Both the session
+Each sample retains the current active when it was recorded. New firmware also
+reports the hardware iDAC code in every acquisition frame; the GUI checks that
+`code × 40 nA` matches the reported current and rejects mismatches. Both the session
 and exported CSV include that current, so a change between recordings does
 not alter earlier conductance values.
+Each CSV is accompanied by `<recording>.csv.configuration.json` and
+`<recording>.csv.uart.log`. The first sidecar preserves the GUI configuration;
+the second preserves every raw line received from the chip. Both are updated
+with a live session, written with Save CSV, and automatically restored before a
+recording enters explorer mode. Legacy CSVs without sidecars still load.
 
 **Load recording…** opens either a continuously written session CSV or an
 exported CSV without connecting to hardware. The loaded data can be browsed,
@@ -150,6 +183,8 @@ Every GUI parameter is atomically mirrored to
 **Save configuration…** writes a named JSON configuration and **Load
 configuration…** validates and applies one; acquisition settings take effect on
 the device after the corresponding Build or live update.
+Hover over a configuration control for one second to see a short explanation
+of what it changes and whether it acts at build time, run time, or in analysis.
 
 The left column is 575 pixels wide (15% wider than before); the extra 75 pixels
 come from the right column, leaving the middle column at its existing width.
@@ -163,11 +198,13 @@ The wider middle column shares its available height evenly among the transfer,
 power, and resolution plots, keeping all three visible. The interface uses a
 dark theme.
 
-Below the transfer curve, the power map shows estimated sensing power across
-conductance and injected current. The resolution map shows estimated bits
-across conductance and sample rate at the current injection setting. The white
+Below the transfer curve, the resolution map shows estimated bits across
+conductance and sample rate at the current injection setting. The power map is
+below it and shows estimated sensing power across conductance and injected current. The white
 crosshairs mark the moving-average operating point and show its numeric
-estimate. Each map has a labeled color scale. These maps use the transfer curve
+estimate. White dashed integer contours mark equal resolution from 8 bits
+upward and equal sensing power in µW without numeric labels. Both color scales
+start at zero. These maps use the transfer curve
 and Allan-deviation data from
 `hw/vendor/analog-library/VCO/VCO_characteristics/data/`, following the
 equations and axes of `sensitivity.py`. Power includes both VCO channels and
@@ -218,7 +255,9 @@ solvers, so block-edge estimates may differ slightly.
 
 Analysis uses the plotted conductance, resampled at up to 10 Hz. The moving
 average is bypassed when dLC is active.
-Raw data is interpolated; dLC reconstruction uses a zero-order hold. Pauses,
+Raw data is linearly interpolated. dLC reconstruction can use zero-order hold
+(the default), linear interpolation or a natural cubic spline; the selected
+reconstructed signal is the input to tonic/phasic decomposition. Pauses,
 acquisition gaps, current/rate changes and invalid conductance values delimit
 independent analysis intervals. Solves run in a worker so they do not block UART
 reading. Live right-edge estimates, including peaks, are provisional and can
@@ -242,7 +281,8 @@ red on every signal plot and red on the timeline. The same full-height red
 shading is used for lead-off, missing acquisition, invalid hardware samples and
 invalid conductance. These periods split filtering/decomposition segments and
 are recorded separately from hardware acquisition validity in CSV. Detected
-phasic peaks are drawn as blue vertical markers through all three plots. The
+phasic peaks are drawn as one-second-wide blue background bands through all
+three plots, without a separate point marker. The
 motion threshold, window and minimum correlation are adjustable under
 **PROCESSING**.
 Defaults are a 2 s window, at least 1 mV of reference movement, correlation
@@ -252,7 +292,8 @@ review flagged periods against the raw P/N traces. Turning screening off or
 changing its settings recomputes exclusions for the full in-memory recording.
 CSV `valid` reflects the resulting analysis validity; `acquisition_valid`
 preserves the original hardware validity, `motion_artifact` records the motion
-decision, and `voltage_offset_mV` records the calibration used. Session CSV
+decision, `current_settling` identifies the one-second exclusion after an iDAC
+step, and `voltage_offset_mV` records the calibration used. Session CSV
 rows retain the screening/calibration active when appended; Save CSV recomputes
 and exports the full session with the current settings.
 
@@ -318,10 +359,13 @@ in SRAM1 yet. Timestamp/metadata overhead is excluded from this estimate.
 
 ## Optional dLC acquisition
 
-Select **Use dLC** before Build in hardware or chip software mode. GUI mode
-unchecks and disables it. Level width and time bits (1–6 of eight) are compile-time
-settings. Acquisition branches use `#if`/`#ifdef`; unused code is removed from
-the image. All firmware state and DMA buffers remain in SRAM0.
+Build hardware or chip software mode to make dLC available; GUI mode unchecks
+and disables it. **Use dLC**, level width and time bits (1–6 of eight) can then
+be changed while recording. The GUI atomically writes all three volatile words,
+firmware drains any pending DMA transaction, reconfigures acquisition and emits
+fresh metadata. Startup values still come from Build. The guarded 34-byte DMA
+buffer occupies the beginning of SRAM1 in hardware/software mode; the GUI capacity
+bar uses the remaining 16,350 bytes for its acquisition-history estimate.
 
 Hardware mode passes the **hardware P−N decoder register** directly through DMA
 and the hardware dLC. Software mode writes its difference into an aligned,
@@ -336,37 +380,85 @@ Neither mode performs dLC encoding or reconstruction in software on the chip.
 
 Python reconstructs the encoded frequency difference (62 phase counts per VCO
 cycle), then recovers N from the raw P supply reference. Both raw channels are
-still transmitted and retained as ground truth. An invalid raw channel or
+still transmitted and retained as ground truth. Enable **Compare raw conductance
+dots with dLC output** to overlay both only on the tissue-conductance plot. An invalid raw channel or
 reconstructed frequency excludes that row from decomposition and peaks.
 
-The GSR trace uses **steps**, in its usual color, with **▲** for positive
-crossings, **▼** for negative crossings, and **○** for time overflow or
-zero-time amplitude-overflow continuations. Maximum-magnitude packets followed
-by a zero-time continuation are also marked as overflow. The eight-bit layout
-has no separate overflow flag. Phasic peak markers and timeline bars are light
-blue. Moving averaging is bypassed throughout dLC plotting and analysis.
+The **Reconstruction interpolation** option beside the dLC width/time controls
+switches between zero-order hold, linear, quadratic and natural cubic spline reconstruction.
+Only stored amplitude crossings anchor the trajectory. Time-overflow packets
+advance the decoder clock and locate later crossings but do not become amplitude
+knots. In chip-software dLC mode, the UART cycle remains the event timestamp
+because DMA input-read ticks do not represent uniform ADC samples. Reference
+and heartbeat frames are not knots either. The selected
+trajectory is also the signal passed to decomposition, including while exploring
+a loaded recording.
+
+The conductance background uses thin quantizer level lines instead of a regular
+horizontal grid. Levels are converted from counter
+differences through the VCO transfer curve and conductance equation using the
+reference voltage at that time. They are therefore nonuniform and can curve as
+the reference changes. Each sample stores
+its dLC level index, signed level change, width, discarded-bit count and reference
+side, so a runtime width change affects the grid only from its firmware-confirmed
+change onward and remains visible when reviewing or reloading the recording. Small
+arrows on the conductance x-axis show crossing direction and scale with the number
+of levels crossed. Because conductance is inverse to P−N voltage, the arrow
+direction is opposite to the dLC level sign. Amplitude-overflow packets sharing
+one timestamp are stacked, while their final cumulative level is the sole
+interpolation knot at that time. Redundant raw/heartbeat reference points are
+not drawn twice.
+Each amplitude-overflow packet and its final crossing have separate, larger
+arrows stacked at their shared timestamp; time overflow remains a hollow circle.
+Older recordings can recover these fields from their saved raw UART sidecar.
+
+The GSR trace uses steps in its usual color. Crossings and amplitude overflows
+appear as upward or downward arrows on the time axis; zero-time amplitude
+continuations stack at the same timestamp. A hollow **○** on the axis marks
+time overflow only. Phasic peak
+markers and timeline bars are light blue. Moving averaging is bypassed throughout
+dLC plotting and analysis.
 
 Input scaling discards enough low bits to fit the signed 16-bit hardware input.
 Level width is expressed after this scaling; metadata supplies the scale.
 Hysteresis is disabled because this RTL updates its level on suppressed reversals.
-Finite DMA transactions and sentinel guards bound the buffer. Configurations
-requiring more than 512 events per input are rejected before Build; a valid
-configuration can still fail the SRAM0 linker limit if its buffer is too large.
+The **Event buffer** selector allocates 1–1024 dLC packets (16 by default) plus one guard word
+in SRAM. It is a build-time setting: rebuild the MCU application after changing
+it. The FPGA dLC
+must wait until its input and output FIFOs are empty before asserting done, and
+the DMA write side must drain the entire output burst rather than stopping at
+the one-input-word transfer count. Updating only the MCU application cannot
+repair an FPGA image with the old DMA/dLC handshake; rebuild and load the FPGA
+bitstream as well. The updated DMA uses its output window to stop writing at the
+guard word, drains any additional packets safely, and signals that the sample
+was lost. Firmware emits `X`, reseeds the dLC, and the GUI shades the affected
+interval yellow on the signal plots and timeline; it excludes that sample from
+decomposition. In chip-software mode, a `D` frame carries all events from
+one input sample and uses the same chip cycle as its corresponding `R` frame.
+All power-of-two level widths from 1 to 32768 counts and all 1–6 time-bit allocations are selectable
+independently; neither the GUI nor firmware rejects a combination based on a
+theoretical maximum event count. A burst beyond the chosen capacity is not
+lossless: it is flagged, not silently reconstructed. This remains a single-shot
+DMA path, not a streaming ring. An FPGA bitstream predating the output cap is
+not protected against memory overwrite, regardless of the selected size.
 
 UART protocol (all numeric fields are integers; event payload is hexadecimal):
 
 ```text
-A,mode,MCU_Hz,signal_rate_mHz,supply_rate_mHz,current_nA,cycle_count,dlc_enabled
-R,sample_number,cycle_count,current_nA,P_Hz,N_Hz,P_coarse,N_coarse,P_fine,N_fine,difference_phase_counts,difference_rate_Hz,valid
-B,MCU_Hz,signal_rate_mHz,log2_width,time_bits,discard_bits,initial_signed_level,P_Hz,current_nA,cycle_count,mode,supply_rate_mHz
-D,packet_sequence,cycle_count,current_nA,P_Hz,N_Hz,event_bytes_in_hex
-H,cycle_count,P_Hz,N_Hz,current_nA
+A,mode,MCU_Hz,signal_rate_mHz,supply_rate_mHz,current_nA,idac_code,cycle_count,dlc_enabled
+R,sample_number,cycle_count,current_nA,idac_code,P_Hz,N_Hz,P_coarse,N_coarse,P_fine,N_fine,difference_phase_counts,difference_rate_Hz,valid
+B,MCU_Hz,signal_rate_mHz,log2_width,time_bits,discard_bits,initial_signed_level,P_Hz,current_nA,idac_code,cycle_count,mode,supply_rate_mHz,buffer_events
+D,packet_sequence,cycle_count,current_nA,idac_code,P_Hz,N_Hz,event_bytes_in_hex
+H,cycle_count,P_Hz,N_Hz,current_nA,idac_code
+X,cycle_count,buffer_events
 ```
 
 Modes are 0 (hardware), 1 (chip software), 2 (GUI). GUI-mode `R` puts zero in
 `difference_phase_counts`; the GUI computes the difference itself. `A` is sent
 at startup and rate changes; `B` additionally seeds the dLC decoder. `D` carries
 real hardware bytes, including time-only overflow and large-crossing continuation.
+`X` reports that more than `buffer_events` packets were produced for one input;
+the excess was discarded and the dLC was reseeded.
 `H` is a held-value/liveness heartbeat during quiet periods. Cycle counters handle
 32-bit rollover; packet gaps invalidate reconstruction and request pause/start.
 The GUI remains compatible with the previous B/D/H and legacy sample formats.

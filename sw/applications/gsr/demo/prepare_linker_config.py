@@ -21,9 +21,9 @@ def main():
         if section["name"] != "debug_mem"
     ]
     # Keep the GSR demo's static footprint within SRAM0. This app does not use
-    # dynamic allocation; retain a small heap and a 1.5 KiB stack.
-    config["linker_script"]["heap_size"] = "0x100"
-    config["linker_script"]["stack_size"] = "0x600"
+    # dynamic allocation; retain a minimal heap and a 1.2 KiB stack.
+    config["linker_script"]["heap_size"] = "0x40"
+    config["linker_script"]["stack_size"] = "0x4c0"
 
     with open(args.destination, "w", encoding="utf-8") as destination_file:
         hjson.dump(config, destination_file)
