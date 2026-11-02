@@ -12,6 +12,7 @@
 # Global configuration
 ROOT_DIR			:= $(realpath .)
 BUILD_DIR 			:= build
+PROJECT             ?= gsr/demo
 
 # FUSESOC and Python values (default)
 ifndef CONDA_DEFAULT_ENV
@@ -106,6 +107,9 @@ CDEFS				?=
 # Software build configuration
 SW_DIR		:= sw
 LINK_FOLDER := $(shell dirname "$(realpath $(firstword $(MAKEFILE_LIST)))")/sw/linker
+GSR_LINK_FOLDER := $(ROOT_DIR)/build/gsr-linker
+GSR_LINK_TEMPLATE := $(ROOT_DIR)/sw/linker/link.ld.tpl
+GSR_LINK_CONFIG := $(GSR_LINK_FOLDER)/cheep_configs.hjson
 
 # Testing flags
 # Optional TEST_FLAGS options are '--compile-only'
@@ -120,6 +124,7 @@ PLL_FREQ ?= 1000000
 # For this computation check hw/vendor/x-heep/sw/target/sim/x-heep.h
 UART_BAUD := $(shell echo "$(PLL_FREQ) / 20" | bc | xargs printf "%.0f")
 UART_TERMINAL ?= xterm
+GUI_SERIAL ?= 0
 UART_PORT = /dev/serial/by-id/usb-FTDI_Quad_RS232-HS-if02-port0
 PICO_FLAGS = -b $(UART_BAUD) --echo --imap lfcrlf --omap crcrlf --flow n -g uart.log
 XTERM_CMD = xterm -hold -e "picocom $(PICO_FLAGS) $(UART_PORT)"
@@ -361,7 +366,7 @@ ifneq ($(APP_MAKE),)
 endif
 ifeq ($(TOOLCHAIN), GCC)
 	@echo "### Building application for SRAM execution with GCC compiler..."
-	CDEFS=$(CDEFS) $(MAKE) -f $(XHEEP_MAKE) $(MAKECMDGOALS) LINKER=$(LINKER) LINK_FOLDER=$(LINK_FOLDER) ARCH=$(ARCH) RISCV=$(RISCV)
+	CDEFS=$(CDEFS) $(MAKE) -f $(XHEEP_MAKE) $(MAKECMDGOALS) PROJECT=$(PROJECT) LINKER=$(LINKER) LINK_FOLDER=$(LINK_FOLDER) ARCH=$(ARCH) RISCV=$(RISCV)
 		TOOLCHAIN=$(TOOLCHAIN) $(FUSESOC_FLAGS) $(FUSESOC_ARGS)
 	find sw/build/ -maxdepth 1 -type f -name "main.*" -exec cp '{}' $(BUILD_DIR)/sw/app/ \;
 else
@@ -428,36 +433,71 @@ plotter:
 # Open openOCD
 .PHONY: openocd
 openocd:
-	(xterm -hold -e "openocd -f hw/vendor/x-heep/tb/core-v-mini-mcu-pynq-z2-esl-programmer.cfg; exec bash" & \
+ifeq ($(GUI_SERIAL),1)
+	(openocd -f hw/vendor/x-heep/tb/core-v-mini-mcu-pynq-z2-esl-programmer.cfg </dev/null >.openocd.log 2>&1 & \
 	echo $$! > .openocd.pid )
+else
+	(xterm -hold -e "openocd -f hw/vendor/x-heep/tb/core-v-mini-mcu-pynq-z2-esl-programmer.cfg; exec bash" </dev/null >/dev/null 2>&1 & \
+	echo $$! > .openocd.pid )
+endif
 
 # Open UART
 .PHONY: uart
 uart:
 	@echo "Starting UART terminal using $(UART_TERMINAL)..."
-	($(TERM_EXEC) & echo $$! > .uart.pid)
+	($(TERM_EXEC) </dev/null >/dev/null 2>&1 & echo $$! > .uart.pid)
 
 # Open openOCD and uart
 .PHONY: jtag_open
-jtag_open: openocd uart
+jtag_open: openocd $(if $(filter 1,$(GUI_SERIAL)),,uart)
 
 # Close the generated terminals
 .PHONY: jtag_close
 jtag_close:
-	kill `cat .openocd.pid` 2>/dev/null
-	kill `cat .uart.pid`     2>/dev/null
-	rm -f .openocd.pid .uart.pid
+	@if [ -f .openocd.pid ]; then kill "$$(cat .openocd.pid)" 2>/dev/null || true; fi
+	@if [ -f .uart.pid ]; then kill "$$(cat .uart.pid)" 2>/dev/null || true; fi
+	@rm -f .openocd.pid .uart.pid
 
 # Open GDB
 .PHONY: jtag_run
 jtag_run:
+ifeq ($(GUI_MODE),1)
+	# Load and detach so the GUI can use OpenOCD's Tcl port for live current changes.
+	$(RISCV_XHEEP)/bin/riscv32-unknown-elf-gdb -q -batch sw/build/main.elf -x scripts/asic/gdbGuiInit
+else
 	$(RISCV_XHEEP)/bin/riscv32-unknown-elf-gdb sw/build/main.elf -x scripts/asic/gdbInit || true
+endif
 
 # Compile an app with all the requirements to work for jtag configuration
 .PHONY: jtag_build
 jtag_build:
-	$(MAKE) app BOOT_MODE=jtag
+	$(MAKE) app BOOT_MODE=jtag LINK_FOLDER=$(LINK_FOLDER) COMPILER_FLAGS="$(COMPILER_FLAGS)"
+
+# Generate an app-specific on-chip linker script so the GSR firmware's
+# constants and runtime state stay in SRAM0, leaving SRAM1 open for samples.
+.PHONY: gsr-linker-gen
+gsr-linker-gen:
+	mkdir -p $(GSR_LINK_FOLDER)
+	$(PYTHON) sw/applications/gsr/demo/prepare_linker_config.py $(CHEEP_CFG) $(GSR_LINK_CONFIG)
+	$(PYTHON) $(XHEEP_DIR)/util/mcu_gen.py \
+		--config $(GSR_LINK_CONFIG) \
+		--cfg_peripherals $(GSR_LINK_CONFIG) \
+		--pads_cfg $(PAD_CFG) \
+		--external_domains $(EXTERNAL_DOMAINS) \
+		--outdir $(GSR_LINK_FOLDER) \
+		--linker_script $(GSR_LINK_TEMPLATE)
+
+ifeq ($(PROJECT),gsr/demo)
+jtag_build: gsr-linker-gen
+jtag_build: LINK_FOLDER=$(GSR_LINK_FOLDER)
+jtag_build: COMPILER_FLAGS += -Os
+endif
 #COMPILER_FLAGS="-DUART_BAUDRATE=$(UART_BAUD) -DREFERENCE_CLOCK_Hz=$(PLL_FREQ)"
+
+## Launch the Python VCO measurement GUI
+.PHONY: gui
+gui:
+	python3 sw/gui/gui.py
 
 ## @section CHEEP boards control
 

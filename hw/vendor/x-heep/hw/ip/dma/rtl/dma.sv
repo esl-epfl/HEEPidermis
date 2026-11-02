@@ -140,6 +140,8 @@ module dma
   logic write_buffer_push;
   logic [31:0] write_buffer_output;
   logic [31:0] write_buffer_input;
+  logic [12:0] hw_fifo_output_count;
+  logic hw_fifo_output_limit;
 
   /* Trigger signals */
   logic wait_for_rx;
@@ -519,7 +521,7 @@ module dma
   assign data_addr_in_rvalid = dma_addr_resp_i.rvalid;
   assign data_addr_in_rdata = dma_addr_resp_i.rdata;
 
-  assign dma_write_req_o.req = data_out_req;
+  assign dma_write_req_o.req = data_out_req & ~hw_fifo_output_limit;
   assign dma_write_req_o.we = data_out_we;
   assign dma_write_req_o.be = data_out_be;
   assign dma_write_req_o.addr = data_out_addr;
@@ -551,7 +553,8 @@ module dma
   assign read_addr_buffer_output = read_addr_buffer_resp.data;
 
   assign write_buffer_req.push = write_buffer_push;
-  assign write_buffer_req.pop = (dma_state_q == DMA_RUNNING) & data_out_gnt;
+  assign write_buffer_req.pop = (dma_state_q == DMA_RUNNING) &
+      (data_out_gnt | (hw_fifo_output_limit & ~write_buffer_empty));
   assign write_buffer_req.flush = general_buffer_flush;
   assign write_buffer_req.data = write_buffer_input;
 
@@ -574,6 +577,16 @@ module dma
   assign circular_mode = reg2hw.mode.q == 1;
   assign address_mode = reg2hw.mode.q == 2;
   assign hw_fifo_mode = reg2hw.hw_fifo_en.q;
+  assign hw_fifo_output_limit = hw_fifo_mode &&
+      ({3'b0, reg2hw.window_size.q} > reg2hw.size_d1.q) &&
+      (hw_fifo_output_count >= reg2hw.window_size.q);
+
+  always_ff @(posedge clk_cg or negedge rst_ni) begin
+    if (!rst_ni) hw_fifo_output_count <= '0;
+    else if (dma_start) hw_fifo_output_count <= '0;
+    else if (hw_fifo_mode && data_out_gnt && data_out_req)
+      hw_fifo_output_count <= hw_fifo_output_count + 1'b1;
+  end
 
   assign wait_for_rx = |(reg2hw.slot.rx_trigger_slot.q[SLOT_NUM-1:0] & (~trigger_slot_i));
   assign wait_for_tx = |(reg2hw.slot.tx_trigger_slot.q[SLOT_NUM-1:0] & (~trigger_slot_i));

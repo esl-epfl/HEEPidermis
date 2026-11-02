@@ -7,11 +7,10 @@
 // Description: Implementation of the VCO SDK functions
 
 #include "VCO_sdk.h"
-#define TARGET_SIM 1
 
 #define TABLE_SIZE 25
 #define VCO_GAIN 1
-#define VCO_ACCEL_RATIO 100 // The ratio by which the VCO is accelerated in simulation to allow faster testing. The refresh rate and integration rate are divided by this factor in simulation mode.
+#define VCO_ACCEL_RATIO 100 // Legacy simulation default; hardware applications override it with vco_set_clock_config().
 #define VCO_DECODER_PHASES 62u
 #define VCO_READOUT_DELAY_CC 3u
 
@@ -30,11 +29,11 @@ const uint32_t _table_Vin_uV[TABLE_SIZE] ={
     720000, 740000, 760000, 780000, 800000
 };
 const uint32_t _table_fosc_Hz[TABLE_SIZE] = {
-    24000, 26130, 31330, 37320, 45270,
+    VCO_MIN_FREQUENCY_HZ, 26130, 31330, 37320, 45270,
     55150, 67270, 82680, 99870, 121190,
     146020, 175270, 208990, 247770, 291780,
     341260, 396650, 457900, 525140, 598560, 
-    677660, 762750, 853760, 950200, 1051710
+    677660, 762750, 853760, 950200, VCO_MAX_FREQUENCY_HZ
 };
 
 const uint32_t _table_kvco_Hz_per_V[TABLE_SIZE] = {
@@ -57,7 +56,18 @@ const uint32_t _table_kvco_Hz_per_V[TABLE_SIZE] = {
 #define VCO_FLAG_OVERFLOW        (1U << 4)
 
 static uint32_t g_refresh_rate_Hz = 0;
+
+static uint32_t g_system_clock_Hz = SYS_FCLK_HZ;
+
+uint32_t vco_get_clock_hz(void) { return g_system_clock_Hz; }
+static uint32_t g_acceleration = VCO_ACCEL_RATIO;
 static vco_sdk_t vco_data;
+static bool pair_seeded = false;
+static bool pair_has_prev = false;
+static uint32_t pair_last_timestamp;
+static uint32_t pair_prev_p;
+static uint32_t pair_prev_n;
+static uint8_t pair_prev_p_phase, pair_prev_n_phase;
 
 static bool vco_flag_is_set(uint8_t flag) {
     return (vco_data.flags & flag) != 0U;
@@ -76,11 +86,17 @@ static uint32_t vco_get_refresh_cycles(void) {
 }
 
 static uint32_t freq_to_cc(uint32_t frequency_Hz) {
-#if TARGET_SIM
-    return SYS_FCLK_HZ / (VCO_ACCEL_RATIO * frequency_Hz);
-#else
-    return SYS_FCLK_HZ / frequency_Hz;
-#endif
+    uint64_t denominator = (uint64_t)g_acceleration * frequency_Hz;
+    return denominator ? (uint32_t)(g_system_clock_Hz / denominator) : 0U;
+}
+
+vco_status_t vco_set_clock_config(uint32_t system_clock_Hz, uint32_t acceleration) {
+    if (system_clock_Hz == 0U || acceleration == 0U || g_refresh_rate_Hz != 0U) {
+        return VCO_STATUS_INVALID_ARGUMENT;
+    }
+    g_system_clock_Hz = system_clock_Hz;
+    g_acceleration = acceleration;
+    return VCO_STATUS_OK;
 }
 
 static void timer_irq_disable_local(void) {
@@ -156,7 +172,7 @@ used as either NONE, P Channel, N channel, or Pseudo Differential mode.
 vco_status_t vco_initialize(vco_channel_t channel, uint32_t refresh_rate_Hz){
     
     //Check if valid refresh rate (avoid division by 0)
-    if (refresh_rate_Hz == 0) {
+    if (refresh_rate_Hz == 0 || freq_to_cc(refresh_rate_Hz) <= VCO_READOUT_DELAY_CC) {
         return VCO_STATUS_INVALID_ARGUMENT;
     }
     // clean start
@@ -177,6 +193,8 @@ vco_status_t vco_initialize(vco_channel_t channel, uint32_t refresh_rate_Hz){
     vco_data.last_timestamp = 0;
     vco_data.flags &= (uint8_t)~(VCO_FLAG_HAS_PREV | VCO_FLAG_CONFIG_CHANGED);
     vco_data.channel = (uint8_t)channel;
+    pair_seeded = false;
+    pair_has_prev = false;
 
     return VCO_STATUS_OK;
 }
@@ -188,7 +206,10 @@ vco_status_t vco_config(vco_channel_t channel, uint32_t refresh_rate_Hz, uint8_t
     
     if (channel == VCO_CHANNEL_NONE || channel != (vco_channel_t)vco_data.channel) return VCO_STATUS_INVALID_CONFIGURATION;
 
-    if (refresh_rate_Hz == 0  || duty_cycle_code == 0U) return VCO_STATUS_INVALID_ARGUMENT;
+    if (refresh_rate_Hz == 0 || duty_cycle_code == 0U ||
+        freq_to_cc(refresh_rate_Hz) / duty_cycle_code <= VCO_READOUT_DELAY_CC) {
+        return VCO_STATUS_INVALID_ARGUMENT;
+    }
     
     /* 
         1. Refresh rate setup
@@ -201,6 +222,8 @@ vco_status_t vco_config(vco_channel_t channel, uint32_t refresh_rate_Hz, uint8_t
     VCO_set_refresh_rate(vco_data.on_cycles);
     VCO_trigger();
     vco_flag_set(VCO_FLAG_CONFIG_CHANGED); // set the configuration changed flag since changing config biases timestamp that we use in vco_get_Vin_uV.
+    pair_seeded = false;
+    pair_has_prev = false;
     
     /* 
         2. Duty cycling setup
@@ -358,6 +381,108 @@ vco_status_t vco_get_Vin_uV(uint32_t* vin_uV){
         return VCO_STATUS_OVERFLOW;
     }
     
+    return VCO_STATUS_OK;
+}
+
+static uint8_t vco_phase(uint32_t fine) {
+    uint32_t bits = fine >> 1;
+    uint8_t ones = 0;
+    while (bits) { ones += bits & 1U; bits >>= 1; }
+    return (fine & 1U) ? ones : 61U - ones;
+}
+
+static bool vco_read_stable_pair(vco_pair_sample_t *sample) {
+    // Both coarse registers latch on the same refresh. Reading twice detects
+    // a refresh that occurs between the P and N bus transactions.
+    uint32_t first_p = VCOp_get_coarse();
+    uint32_t first_n = VCOn_get_coarse();
+    uint32_t p_fine = VCOp_get_fine(), n_fine = VCOn_get_fine();
+    int32_t difference = (int32_t)VCO_get_count();
+    uint32_t second_p = VCOp_get_coarse();
+    uint32_t second_n = VCOn_get_coarse();
+    if (first_p != second_p || first_n != second_n ||
+        p_fine != VCOp_get_fine() || n_fine != VCOn_get_fine() ||
+        difference != (int32_t)VCO_get_count()) return false;
+    sample->p_count = second_p; sample->n_count = second_n;
+    sample->p_fine = p_fine; sample->n_fine = n_fine;
+    sample->differential_count = difference;
+    return true;
+}
+
+vco_status_t vco_get_pair(vco_pair_sample_t *sample) {
+    if (sample == 0) return VCO_STATUS_INVALID_ARGUMENT;
+    if (g_refresh_rate_Hz == 0U || vco_data.channel != VCO_CHANNEL_DIFFERENTIAL ||
+        vco_data.duty_cycle_code != 1U) {
+        return VCO_STATUS_NOT_INITIALIZED;
+    }
+
+    uint32_t refresh_cycles = vco_get_refresh_cycles();
+    if (!vco_read_stable_pair(sample)) return VCO_STATUS_NO_NEW_SAMPLE;
+    uint32_t p = sample->p_count, n = sample->n_count;
+    uint8_t p_phase = vco_phase(sample->p_fine), n_phase = vco_phase(sample->n_fine);
+    uint32_t now = timer_get_cycles();
+
+    if (!pair_seeded) {
+        pair_prev_p = p;
+        pair_prev_n = n;
+        pair_prev_p_phase = p_phase; pair_prev_n_phase = n_phase;
+        pair_seeded = true;
+        return VCO_STATUS_NO_NEW_SAMPLE;
+    }
+    if (!pair_has_prev) {
+        if (p == pair_prev_p && n == pair_prev_n) return VCO_STATUS_NO_NEW_SAMPLE;
+        pair_prev_p = p;
+        pair_prev_n = n;
+        pair_prev_p_phase = p_phase; pair_prev_n_phase = n_phase;
+        pair_last_timestamp = now;
+        pair_has_prev = true;
+        return VCO_STATUS_NO_NEW_SAMPLE;
+    }
+
+    uint32_t elapsed = now - pair_last_timestamp;
+    if ((uint64_t)elapsed < (uint64_t)refresh_cycles + VCO_READOUT_DELAY_CC) {
+        return VCO_STATUS_NO_NEW_SAMPLE;
+    }
+    // Reads much later than one period could contain two refreshes. Re-anchor.
+    if ((uint64_t)elapsed > (uint64_t)refresh_cycles + refresh_cycles / 2U) {
+        pair_prev_p = p;
+        pair_prev_n = n;
+        pair_has_prev = false;
+        return VCO_STATUS_MISSED_UPDATE;
+    }
+
+    uint32_t delta_p = (p - pair_prev_p) & VCO_DECODER_ADC_P_COARSE_OUT_ADC_P_COARSE_OUT_MASK;
+    uint32_t delta_n = (n - pair_prev_n) & VCO_DECODER_ADC_N_COARSE_OUT_ADC_N_COARSE_OUT_MASK;
+    if (delta_p == 0U && delta_n == 0U && p_phase == pair_prev_p_phase && n_phase == pair_prev_n_phase)
+        return VCO_STATUS_NO_NEW_SAMPLE;
+
+    int32_t fine_p = (int32_t)p_phase - pair_prev_p_phase;
+    int32_t fine_n = (int32_t)n_phase - pair_prev_n_phase;
+    uint32_t coarse_p = delta_p * VCO_DECODER_PHASES, coarse_n = delta_n * VCO_DECODER_PHASES;
+    // With an unpowered/disconnected VCO its fine phases can move backwards
+    // while the coarse counter stays zero. Do not wrap that into ~4G counts.
+    sample->p_phase_counts = fine_p < 0 && coarse_p < (uint32_t)-fine_p ? 0U : coarse_p + fine_p;
+    sample->n_phase_counts = fine_n < 0 && coarse_n < (uint32_t)-fine_n ? 0U : coarse_n + fine_n;
+    pair_prev_p_phase = p_phase; pair_prev_n_phase = n_phase;
+
+    pair_prev_p = p;
+    pair_prev_n = n;
+    pair_last_timestamp += refresh_cycles;
+
+    // The differential decoder register cannot recover both inputs; each
+    // coarse counter records VCO cycles during one configured refresh period.
+    uint64_t denominator = (uint64_t)refresh_cycles * g_acceleration * VCO_DECODER_PHASES;
+    uint32_t p_Hz = (uint32_t)(((uint64_t)sample->p_phase_counts * g_system_clock_Hz) / denominator);
+    uint32_t n_Hz = (uint32_t)(((uint64_t)sample->n_phase_counts * g_system_clock_Hz) / denominator);
+    sample->p_Hz = p_Hz;
+    sample->n_Hz = n_Hz;
+    sample->p_uV = interpolate_Vin_uV(p_Hz);
+    sample->n_uV = interpolate_Vin_uV(n_Hz);
+    if (p_Hz < _table_fosc_Hz[0] || n_Hz < _table_fosc_Hz[0]) return VCO_STATUS_UNDERFLOW;
+    if (p_Hz > _table_fosc_Hz[TABLE_SIZE - 1] || n_Hz > _table_fosc_Hz[TABLE_SIZE - 1]) {
+        return VCO_STATUS_OVERFLOW;
+    }
+
     return VCO_STATUS_OK;
 }
 

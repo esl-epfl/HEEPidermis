@@ -63,7 +63,7 @@ for i, v in enumerate(voltages):
         axes[2].loglog(taus, adev_d, color=colors[i], alpha=0.8, label=f"{v}V")
 
 # Formatting
-titles = ['VCO N (Input)', 'VCO P (Supply Ref)', 'Pseudo-Differential (N-P)']
+titles = ['VCO N (Supply Ref)', 'VCO P (Input)', 'Pseudo-Differential (N-P)']
 for ax, title in zip(axes, titles):
     ax.set_title(title, fontweight='bold')
     ax.set_xlabel('Tau (s)')

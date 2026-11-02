@@ -49,7 +49,8 @@ if (${COMPILER} MATCHES "clang")
 endif()
 
 # set the project name
-project(${PROJECT} ASM C CXX)
+string(REPLACE "/" "_" CMAKE_SAFE_PROJECT "${PROJECT}")
+project(${CMAKE_SAFE_PROJECT} ASM C CXX)
 
 # set the required CMake standard
 set(CMAKE_CXX_STANDARD 14)

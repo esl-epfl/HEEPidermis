@@ -48,11 +48,28 @@ For all HEEPidermis-specific documentation, please refer to the documentation be
   - [CHEEP-boards](./hw/vendor/cheep-boards/) - To program and provide power
   - [Breakout board](./hw/vendor/breakout-board/) - To solder the cheep and connect it to the CHEEP-boards.
 
+- **Software**
+  - [Desktop GUI](./sw/gui/README.md)
+
 - **Related documents**
   - [HEEPidermis](https://arxiv.org/abs/2509.04528)
   - [ΔΣ Decimation theory](https://ieeexplore.ieee.org/abstract/document/11044062)
   - [iDAC precursor](https://ieeexplore.ieee.org/document/11044212)
   - [VCO Design](https://arxiv.org/abs/2509.06698)
+
+## Desktop GUI
+
+HEEPidermis includes a desktop GUI to configure the board, build firmware, record GSR signals, and visualize and analyze recordings. Adjust the injected current and sampling frequency live, explore saved recordings, and export your data to CSV.
+
+<p align="center"><img src="./docs/img/Example-gui.gif" alt="HEEPidermis desktop GUI demo" width="100%"></p>
+
+Launch it from the repository root with:
+
+```sh
+make gui
+```
+
+See the [GUI documentation](./sw/gui/README.md) for installation requirements and usage instructions.
 
 ## Evaluating trade-offs in GSR recording
 

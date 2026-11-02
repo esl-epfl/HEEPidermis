@@ -30,8 +30,13 @@ sw/linker/link_flash_load.ld
 hw/vendor/x-heep/tb/ext_bus.sv
 environment.yml
 
+
 # Python outputs
 **/__pycache__
+sw/gui/last_configuration.json
+sw/gui/last_configuration.json.tmp
+**configuration.json
+
 
 # Questasim files
 transcipt

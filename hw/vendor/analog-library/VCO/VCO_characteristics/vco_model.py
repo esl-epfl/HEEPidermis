@@ -7,7 +7,6 @@
 # Description: Implementation of the VCO model and analysis functions
 
 from dataclasses import dataclass
-import sys
 import numpy as np
 import pandas as pd
 from scipy.optimize import curve_fit
@@ -43,7 +42,10 @@ class VCOParams:
 
 class VCOADCModel:
     def __init__(self, data_folder='data', params=None, representation="lut"):
-        self.data_folder = sys.path[0] + '/' + data_folder
+        self.data_folder = os.path.abspath(
+            data_folder if os.path.isabs(data_folder)
+            else os.path.join(os.path.dirname(__file__), data_folder)
+        )
         self.params = params if params is not None else VCOParams()
         self.representation = representation.lower()
         
@@ -80,9 +82,13 @@ class VCOADCModel:
         self.fosc_active_kHz = self.fosc_data[self.vin_data >= self.piecewise_threshold]
 
         # Variability (Allen Deviation)
+        df_p = self._clean_csv(filename="VCO variability - summary P.csv")
+        v_p, taus, grid_p = self._build_adev_grid(df_p)
         df_n = self._clean_csv(filename="VCO variability - summary N.csv")
-        v_n, taus, grid = self._build_adev_grid(df_n)
-        self.interp_adev = RegularGridInterpolator((v_n, taus), grid, bounds_error=False, fill_value=None)
+        v_n, _, grid_n = self._build_adev_grid(df_n)
+        self.interp_adev_p = RegularGridInterpolator((v_p, taus), grid_p, bounds_error=False, fill_value=None)
+        self.interp_adev_n = RegularGridInterpolator((v_n, taus), grid_n, bounds_error=False, fill_value=None)
+        self.interp_adev = self.interp_adev_p  # Single-channel calculations use the P input.
         
         if self.representation == "lut":
             # Precompute the derivative LUT for dV/dF to speed up delta_G calculations
@@ -118,14 +124,14 @@ class VCOADCModel:
 
         return dydx
     
-    def _build_adev_grid(self, df_n, fs_orig=10):
-        voltages = np.array([float(c) for c in df_n.columns])
+    def _build_adev_grid(self, data, fs_orig=10):
+        voltages = np.array([float(c) for c in data.columns])
         taus = np.logspace(np.log10(0.1), np.log10(5.0), 20)
         grid = np.zeros((len(voltages), len(taus)))
 
-        for i, col in enumerate(df_n.columns):
-            data = df_n[col].dropna().values
-            y = data / np.mean(data)
+        for i, col in enumerate(data.columns):
+            samples = data[col].dropna().values
+            y = samples / np.mean(samples)
             for j, tau in enumerate(taus):
                 m = int(round(tau * fs_orig))
                 if 2 * m > len(y):
@@ -427,8 +433,8 @@ class VCOADCModel:
             # ADEV lookups for both P and N branches
             pts_p = np.stack([vp.ravel(), tau.ravel()], axis=-1)
             pts_n = np.stack([vn.ravel(), tau.ravel()], axis=-1)
-            adev_p = self.interp_adev(pts_p).reshape(vin_v.shape)
-            adev_n = self.interp_adev(pts_n).reshape(vin_v.shape)
+            adev_p = self.interp_adev_p(pts_p).reshape(vin_v.shape)
+            adev_n = self.interp_adev_n(pts_n).reshape(vin_v.shape)
             ire_V = np.sqrt((adev_p*self.interp_freq(vp))**2 + (adev_n*self.interp_freq(vn))**2) / (2*np.abs(k))
             pvco = self.interp_pvco(vp)
             pcnt = self.interp_pcnt(vp)

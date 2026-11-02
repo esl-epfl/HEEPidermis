@@ -114,7 +114,8 @@ module dlc #(
     end
   end
 
-  assign dlc_done_o = (trans_counter == 0);
+  assign dlc_done_o = (trans_counter == 0) && hw_r_fifo_empty &&
+                      (dlc_state == DLC_RUN) && hw_fifo_resp_o.empty;
 
   always_ff @(posedge clk_i or negedge rst_ni) begin
     if (~rst_ni) begin

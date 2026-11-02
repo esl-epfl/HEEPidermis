@@ -226,13 +226,13 @@ module dma_write_unit
       DMA_WRITE_UNIT_ON: begin
         // If all data has been written, exit
         if (dma_done_override == 1'b0) begin
-          if (dma_conf_1d == 1'b1) begin
+          if (dma_conf_1d == 1'b1 && !reg2hw.hw_fifo_en.q) begin
             // 1D DMA case
             if (|dma_dst_cnt_d1 == 1'b0) begin
               dma_write_unit_n_state = DMA_WRITE_UNIT_IDLE;
               dma_done = 1'b1;
             end
-          end else if (dma_conf_2d == 1'b1) begin
+          end else if (dma_conf_2d == 1'b1 && !reg2hw.hw_fifo_en.q) begin
             // 2D DMA case: exit only if 2d counter is 0
             if (|dma_dst_cnt_d2 == 1'b0) begin
               dma_write_unit_n_state = DMA_WRITE_UNIT_IDLE;
