@@ -29,7 +29,7 @@
 #define GSR_DLC_ENABLED 0
 #endif
 #ifndef GSR_DLC_LOG_WIDTH
-#define GSR_DLC_LOG_WIDTH 7
+#define GSR_DLC_LOG_WIDTH 6
 #endif
 #ifndef GSR_DLC_TIME_BITS
 #define GSR_DLC_TIME_BITS 6
@@ -43,7 +43,7 @@
 
 // 0: hardware register; 1: chip software; 2: host GUI.
 #ifndef GSR_DIFFERENTIAL_MODE
-#define GSR_DIFFERENTIAL_MODE 1
+#define GSR_DIFFERENTIAL_MODE 0
 #endif
 #ifndef VCO_SUPPLY_RATE_MILLIHZ
 #define VCO_SUPPLY_RATE_MILLIHZ 0

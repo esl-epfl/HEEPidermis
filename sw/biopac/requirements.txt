@@ -1,0 +1,3 @@
+# Tkinter is provided by the system (Debian/Ubuntu: python3-tk).
+numpy>=1.20
+scipy>=1.7

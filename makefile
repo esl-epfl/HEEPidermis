@@ -142,7 +142,7 @@ REQS_XHEEP 	:= hw/vendor/x-heep/util/python-requirements.txt
 REQS_CHEEP 	:= util/cheep-python-requirements.txt
 ENV_NAME 	:= heepidermis
 
-CHEEP_BOARDS ?= hw/vendor/cheep-boards
+	CHEEP_BOARDS ?= hw/vendor/cheep-boards
 
 # ----- BUILD RULES ----- #
 
@@ -498,6 +498,12 @@ endif
 .PHONY: gui
 gui:
 	python3 sw/gui/gui.py
+
+## Launch the BioNomadix EDA setup (override BIOPAC_ARGS for another device or --demo)
+BIOPAC_ARGS ?= --profile bionomadix-ppged-r --interface enxa0cec8057fcf --ip 169.254.154.56
+.PHONY: biopac
+biopac:
+	python3 sw/biopac/gui.py $(BIOPAC_ARGS)
 
 ## @section CHEEP boards control
 

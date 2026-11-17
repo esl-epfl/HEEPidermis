@@ -9,6 +9,7 @@ matplotlib
 scipy
 voila
 pyserial
+pyftdi
 # Remember to leave an empty line at the end
 
 git+https://github.com/davideschiavone/fusesoc.git@ot#egg=fusesoc >= 1.11.0

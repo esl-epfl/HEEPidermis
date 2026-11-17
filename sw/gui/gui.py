@@ -19,7 +19,15 @@ import threading
 import time
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, font as tkfont, ttk
+from tkinter import filedialog, ttk
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from gui_common.theme import (UI_BACKGROUND, UI_SURFACE, UI_SURFACE_RAISED, UI_PLOT,
+                              UI_BORDER, UI_BORDER_ACTIVE, UI_TEXT, UI_MUTED,
+                              UI_ACCENT, UI_ACCENT_DARK, UI_WARNING,
+                              UI_DISABLED_BACKGROUND, UI_DISABLED_BORDER,
+                              UI_DISABLED_TEXT, configure_style)
+from gui_common.widgets import Tooltip
 
 from acquisition import DLCDecoder, RecordingHistory
 from recording import (Sample, MotionDetector, conductance_us, read_recording,
@@ -67,21 +75,6 @@ DIFFERENTIAL_CSV_COLUMNS = ("differential_mode", "idac_code", "supply_sample_rat
                             "raw_delta_v_uV", "raw_conductance_uS", "dlc_event_kind",
                             "acquisition_valid", "motion_artifact", "current_settling", "voltage_offset_mV",
                             "dlc_level", "dlc_level_change", "dlc_log_width", "dlc_discard_bits", "dlc_reference_p", "buffer_loss")
-
-UI_BACKGROUND = "#071019"
-UI_SURFACE = "#0e1b25"
-UI_SURFACE_RAISED = "#132530"
-UI_PLOT = "#09151e"
-UI_BORDER = "#294552"
-UI_BORDER_ACTIVE = "#3a6673"
-UI_TEXT = "#e8f1f4"
-UI_MUTED = "#91a9b4"
-UI_ACCENT = "#55d3dd"
-UI_ACCENT_DARK = "#1d5661"
-UI_WARNING = "#f2bd62"
-UI_DISABLED_BACKGROUND = "#0b171f"
-UI_DISABLED_BORDER = "#1c313a"
-UI_DISABLED_TEXT = "#526873"
 
 # The firmware emits e.g. "3: 42000 Hz | 400000 uV| 3: 41000 Hz | 390000 uV = ...".
 MICROVOLTS = re.compile(r"(-?\d+)\s*uV\b", re.IGNORECASE)
@@ -204,58 +197,6 @@ def write_runtime_words(values: dict[str, int]) -> dict[str, int]:
 
 def write_runtime_word(symbol: str, value: int) -> int:
     return write_runtime_words({symbol: value})[symbol]
-
-
-class Tooltip:
-    """Show compact contextual help after the pointer rests for one second."""
-
-    def __init__(self, widget: tk.Misc, text: str):
-        self.widget = widget
-        self.text = text
-        self.job = None
-        self.window = None
-        widget.bind("<Enter>", self._schedule, add="+")
-        widget.bind("<Leave>", self._hide, add="+")
-        widget.bind("<ButtonPress>", self._hide, add="+")
-        widget.bind("<Destroy>", self._hide, add="+")
-
-    def _schedule(self, _event=None):
-        self._cancel()
-        self.job = self.widget.after(1000, self._show)
-
-    def _cancel(self):
-        if self.job is not None:
-            self.widget.after_cancel(self.job)
-            self.job = None
-
-    def _show(self):
-        self.job = None
-        if self.window is not None or not self.widget.winfo_exists():
-            return
-        x = self.widget.winfo_rootx() + 14
-        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 8
-        self.window = tk.Toplevel(self.widget)
-        self.window.wm_overrideredirect(True)
-        self.window.wm_geometry(f"+{x}+{y}")
-        tk.Label(
-            self.window,
-            text=self.text,
-            justify="left",
-            wraplength=360,
-            background=UI_SURFACE_RAISED,
-            foreground=UI_TEXT,
-            padx=12,
-            pady=9,
-            relief="solid",
-            borderwidth=1,
-            font=("Helvetica", 9),
-        ).pack()
-
-    def _hide(self, _event=None):
-        self._cancel()
-        if self.window is not None:
-            self.window.destroy()
-            self.window = None
 
 
 class SignalPlot(tk.Canvas):
@@ -1271,73 +1212,7 @@ class VCOGui:
             self._log(f"Legacy file has no injected current; using the selected {samples[0].current_ua:g} µA for this import.")
 
     def _configure_style(self) -> None:
-        self.root.configure(background=UI_BACKGROUND)
-        for name in ("TkDefaultFont", "TkTextFont", "TkFixedFont", "TkMenuFont", "TkHeadingFont"):
-            tkfont.nametofont(name).configure(family="Helvetica")
-        self.root.option_add("*TCombobox*Listbox.background", UI_PLOT)
-        self.root.option_add("*TCombobox*Listbox.foreground", UI_TEXT)
-        self.root.option_add("*TCombobox*Listbox.selectBackground", UI_ACCENT_DARK)
-        self.root.option_add("*TButton.cursor", "hand2")
-        style = ttk.Style(self.root)
-        style.theme_use("clam")
-        style.configure(".", background=UI_SURFACE, foreground=UI_TEXT, font=("Helvetica", 10))
-        style.configure("TFrame", background=UI_SURFACE)
-        style.configure("App.TFrame", background=UI_BACKGROUND)
-        style.configure("Workspace.TFrame", background=UI_BACKGROUND)
-        style.configure("Card.TFrame", background=UI_SURFACE_RAISED)
-        style.configure("TLabel", background=UI_SURFACE, foreground=UI_TEXT)
-        style.map("TLabel", foreground=[("disabled", UI_DISABLED_TEXT)],
-                  background=[("disabled", UI_SURFACE)])
-        style.configure("Workspace.TLabel", background=UI_BACKGROUND, foreground=UI_TEXT)
-        style.configure("PlotTitle.TLabel", background=UI_BACKGROUND, foreground=UI_TEXT,
-                        font=("Helvetica", 11, "bold"))
-        style.configure("Muted.TLabel", foreground=UI_MUTED, font=("Helvetica", 8))
-        style.configure("WorkspaceMuted.TLabel", background=UI_BACKGROUND, foreground=UI_MUTED,
-                        font=("Helvetica", 8))
-        style.configure("TButton", padding=(12, 7), background=UI_SURFACE_RAISED,
-                        foreground=UI_TEXT, bordercolor=UI_BORDER, focusthickness=1,
-                        focuscolor=UI_BORDER_ACTIVE)
-        style.map("TButton", background=[("active", UI_ACCENT_DARK), ("pressed", "#17444d"),
-                                          ("disabled", UI_DISABLED_BACKGROUND)],
-                  foreground=[("disabled", UI_DISABLED_TEXT)],
-                  bordercolor=[("disabled", UI_DISABLED_BORDER), ("active", UI_BORDER_ACTIVE)])
-        style.configure("Accent.TButton", background=UI_ACCENT_DARK, foreground="#effdff",
-                        bordercolor=UI_ACCENT, font=("Helvetica", 10, "bold"))
-        style.map("Accent.TButton", background=[("active", "#27717d"), ("pressed", "#17444d"),
-                                                 ("disabled", UI_DISABLED_BACKGROUND)],
-                  foreground=[("disabled", UI_DISABLED_TEXT)],
-                  bordercolor=[("disabled", UI_DISABLED_BORDER)])
-        style.configure("TEntry", padding=(7, 5), fieldbackground=UI_PLOT, foreground=UI_TEXT,
-                        insertcolor=UI_TEXT, bordercolor=UI_BORDER)
-        style.map("TEntry", fieldbackground=[("disabled", UI_DISABLED_BACKGROUND)],
-                  foreground=[("disabled", UI_DISABLED_TEXT)],
-                  bordercolor=[("disabled", UI_DISABLED_BORDER)])
-        style.configure("TSpinbox", padding=(7, 5), fieldbackground=UI_PLOT, foreground=UI_TEXT,
-                        arrowcolor=UI_ACCENT, bordercolor=UI_BORDER)
-        style.map("TSpinbox", fieldbackground=[("disabled", UI_DISABLED_BACKGROUND)],
-                  foreground=[("disabled", UI_DISABLED_TEXT)],
-                  arrowcolor=[("disabled", UI_DISABLED_TEXT)],
-                  bordercolor=[("disabled", UI_DISABLED_BORDER)])
-        style.configure("TCombobox", padding=(7, 5), fieldbackground=UI_PLOT, foreground=UI_TEXT,
-                        arrowcolor=UI_ACCENT, bordercolor=UI_BORDER)
-        style.map("TCombobox", fieldbackground=[("disabled", UI_DISABLED_BACKGROUND), ("readonly", UI_PLOT)],
-                  foreground=[("disabled", UI_DISABLED_TEXT), ("readonly", UI_TEXT)],
-                  arrowcolor=[("disabled", UI_DISABLED_TEXT)],
-                  bordercolor=[("disabled", UI_DISABLED_BORDER)])
-        style.configure("TCheckbutton", background=UI_SURFACE, foreground=UI_TEXT,
-                        indicatorbackground=UI_PLOT, indicatorforeground=UI_ACCENT)
-        style.map("TCheckbutton", background=[("active", UI_SURFACE)],
-                  foreground=[("disabled", UI_DISABLED_TEXT)],
-                  indicatorbackground=[("disabled", UI_DISABLED_BACKGROUND), ("selected", UI_ACCENT_DARK)],
-                  indicatorforeground=[("disabled", UI_DISABLED_TEXT)])
-        style.configure("TLabelframe", background=UI_SURFACE, bordercolor=UI_BORDER,
-                        relief="solid", borderwidth=1)
-        style.configure("TLabelframe.Label", background=UI_SURFACE, foreground=UI_ACCENT,
-                        font=("Helvetica", 9, "bold"))
-        style.configure("Warning.TLabel", background=UI_SURFACE, foreground=UI_WARNING,
-                        font=("Helvetica", 9, "bold"))
-        style.configure("TScrollbar", background=UI_SURFACE_RAISED, troughcolor=UI_PLOT,
-                        bordercolor=UI_BACKGROUND, arrowcolor=UI_MUTED)
+        configure_style(self.root)
 
     def _build_layout(self) -> None:
         container = ttk.Frame(self.root, padding=14, style="App.TFrame")
