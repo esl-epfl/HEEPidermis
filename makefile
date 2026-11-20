@@ -500,15 +500,11 @@ gui:
 	cd sw && python3 -m gui.app
 
 ## Open the Stroop test and publish events to the workspace GUI
-## @param STROOP_ARGS Extra tests/run_test.py options (e.g. --response-mode keys --fullscreen false)
-STROOP_ARGS ?=
-.PHONY: stroop stroop-stress
+## @param TEST_ARGS Extra sw/gui/tests/run_test.py options (e.g. --response-mode voice --fullscreen false)
+TEST_ARGS ?=
+.PHONY: stroop
 stroop:
-	python3 tests/run_test.py stroop $(STROOP_ARGS)
-
-## Open the stressful Stroop variant with the same GUI event connection
-stroop-stress:
-	python3 tests/run_test.py stroop-stress $(STROOP_ARGS)
+	python3 sw/gui/tests/run_test.py stroop $(TEST_ARGS)
 
 ## Launch the BIOPAC panel standalone (override BIOPAC_ARGS for another device or --demo)
 BIOPAC_ARGS ?= --profile bionomadix-ppged-r --interface enxa0cec8057fcf --ip 169.254.154.56

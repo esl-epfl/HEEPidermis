@@ -27,7 +27,7 @@ own SDK package; the workspace only renders the panels and plots the signals:
 | --- | --- | --- |
 | HEEPidermis (X-HEEP VCO GSR board) | `sw/gui/sdk/heepidermis` | Full acquisition + dLC + analysis |
 | BIOPAC MP160 (EDA100C / BioNomadix) | `sw/gui/sdk/biopac` | Full native Linux UDP acquisition |
-| Stroop task events | `sw/gui/sdk/stroop` | Passive local listener + task launcher |
+| Test events (Stroop, MIST, SSST) | `sw/gui/sdk/tests` | Passive local listener + test launcher |
 | Shimmer | `sw/gui/sdk/shimmer` | Placeholder (not implemented yet) |
 | Empatica (E4) | `sw/gui/sdk/empatica` | Placeholder (not implemented yet) |
 
@@ -37,53 +37,63 @@ and processing segments), `plot_snapshot()` (Tk-free data for background
 computation), `recording_snapshot()` (native samples and calibration for a
 workspace export), `invalid_spans()` (shaded gaps) and `close()`.
 
-### Stroop task events
+### Tests device (Stroop, MIST, SSST)
 
-The cognitive tests in `tests/cognitive` publish their phases and outcomes as
+The tests in `sw/gui/tests/` publish their phases and outcomes as colored
 events on the shared measurement timeline:
 
 ```sh
-make stroop         # Stroop test; events feed the workspace GUI (STROOP_ARGS overridable)
-make stroop-stress  # stressful variant, same event connection
+make stroop         # Stroop test; events feed the workspace GUI (TEST_ARGS overridable)
 ```
 
-Enable the **Stroop** device in the workspace and press its **Open** button:
-it launches the selected variant (like `make stroop`) and listens to the feed
-(`sw/gui/outs/stroop/events.jsonl`, an append-only JSONL file; override with
-`HEEPIDERMIS_STROOP_EVENTS` or the panel's event-path field). The device state
+Enable the **Tests** device in the workspace, pick a test from the dropdown
+and press its **Open** button: it launches the selected test (like
+`make stroop`) and listens to the feed
+(`sw/gui/outs/tests/events.jsonl`, an append-only JSONL file; override with
+`HEEPIDERMIS_TESTS_EVENTS` or the panel's event-path field). The device state
 is observed, not assumed: **Open** always listens and opens a test window
 unless one is already running; when the window finishes or is closed the
 device reports **Closed** again; **Close** ends the test and stops listening.
 If the test window was opened outside the GUI (e.g. `make stroop`), Open just
-listens to it. The panel selects the variant (`stroop` or `stroop-stress`)
-and extra launch options if wanted.  Two checkboxes control voice input:
-**Voice input** launches the test with `--response-mode voice` (say the
-colors; the spoken word appears under the legend and its swatch is
-highlighted), and **Voice calibration** (`--voice-calibration`) runs the
-say-each-color-once calibration phase first.  All other parameters come from
-`tests/cognitive/config.hjson` (or `Launch options`, whose explicit flags
-override the file).
+listens to it.
+
+The configuration menu below the dropdown is generated from the selected
+test's own `spec.py` (sliders, dropdowns, checkboxes and free entries; see
+`sw/gui/tests/AGENTS.md`) and covers **every** parameter of the test. The
+**Configuration** row uses file explorers, like the workspace's own "Load
+configuration…": **Load…** opens a file explorer (starting in
+`sw/gui/tests/<Test>/configs/`) and applies any `.hjson` on disk to the
+form, **Save as…** writes the current form values to a `.hjson` file you
+pick. When the
+workspace is saved (a CSV or a configuration), the selected test, the loaded
+configuration file and all form values are stored and restored on load.
+Only values that differ from the test's own defaults are passed as
+command-line flags, and **Launch options** accepts extra raw flags.
+Placeholder folders (MIST, SSST — not implemented yet) still appear in the
+dropdown, but selecting one shows "No such test was found." and Open does
+nothing.
 
 Every event is drawn as a **vertical line across every plot**, with its label
 beside the line (`instructions`, `calibration`, `rest`, `test start`,
-`correct`, `wrong`, `timeout`, `test end`, …). Verdict lines are colored —
-**correct** is green, **wrong** and **timeout** are red — and every other
-phase stays white. Correct/wrong answers also feed
-the signal catalogue (`1` for correct, `0` for wrong) and can be added to the
-SIGNALS table like any signal. Per-stimulus lines are optional
+`correct`, `wrong`, `timeout`, `test end`, …). Each event carries its own
+color from the test: verdict lines are **green** for `correct`, **red** for
+`wrong` and `timeout`, and every informational phase stays white (see
+`sw/gui/tests/AGENTS.md` for the event standard). Correct/wrong answers also
+feed the signal catalogue (`1` for correct, `0` for wrong) and can be added
+to the SIGNALS table like any signal. Per-stimulus lines are optional
 (**Also show each stimulus onset**). Dense zoom-outs aggregate nearby markers
 and note the hidden label count; zoom in to read them.
 
 The event lines interleave with the signals by the **Z** (z-order) column of
-the Stroop rows: lowering the Stroop row's z-order draws the lines *behind*
-the signal traces, raising it draws them in front. Hiding every Stroop row
+the Tests rows: lowering the Tests row's z-order draws the lines *behind*
+the signal traces, raising it draws them in front. Hiding every Tests row
 (**Hide** button) removes the event lines too, while keeping the events
 configured and saved.
 
 Event timestamps come from the task's own clock at the moment each phase
 happened (spoken answers use the recognition time, not the later feedback).
 The workspace converts them to the common host-monotonic timeline, so
-Stroop events line up with HEEPidermis/BIOPAC samples even though the
+Tests events line up with HEEPidermis/BIOPAC samples even though the
 devices and the task started at different moments. The per-device offsets are
 stored in the workspace JSON sidecar and restored on load.
 
@@ -91,7 +101,7 @@ stored in the workspace JSON sidecar and restored on load.
 
 All enabled devices map their samples onto one host-monotonic workspace
 timeline. HEEPidermis anchors at its first recorded sample; BIOPAC reports its
-acquisition origin (`timebase`); the Stroop feed carries host-monotonic and
+acquisition origin (`timebase`); the Tests feed carries host-monotonic and
 Unix timestamps for every event. The resulting per-device offsets are saved
 with each workspace recording and applied again after **Load CSV…**. This is
 software alignment on one computer's clock — not hardware synchronization —
@@ -111,7 +121,7 @@ the y-axis side (Left/Right), the y-axis **Range** — `Auto` fits the visible
 data, `Fixed` pins it to the Min/Max fields (NRMSE defaults to 0–100,
 correlation to −1–1, device signals to Auto) — the line style
 (line/markers/steps), an amplification (0.01x–100x, `normalize`, or
-`normalize row/axis`), color, α and z-order (see the Stroop section for how
+`normalize row/axis`), color, α and z-order (see the Tests section for how
 z-order also layers event lines against the signals). `normalize row/axis`
 applies one common scale to every signal in the same stack and y-axis,
 overriding their individual amplification settings. When several fixed rows
@@ -143,7 +153,7 @@ devices and does not start hardware acquisition.
   `sw/gui/configs/biopac/last.json`; named HEEPidermis configurations in
   `sw/gui/configs/heepidermis/*.json`.
 * Recordings: `sw/gui/outs/` (HEEPidermis sessions), `sw/gui/outs/biopac/`,
-  and `sw/gui/outs/stroop/events.jsonl` (append-only Stroop event feed).
+  and `sw/gui/outs/tests/events.jsonl` (append-only test event feed).
 
 ### Responsive display and continuous recording
 
@@ -171,8 +181,8 @@ Keep the following two files together:
 
 * `<name>.csv`: native device samples, every device signal, and configured
   signal/comparison/feature rows, with their original timestamps. No common-grid
-  resampling is imposed on independent device signals. Stroop events are native
-  rows of the `stroop` device (`event_label`, `event_monotonic_s`, …);
+  resampling is imposed on independent device signals. Test events are native
+  rows of the `tests` device (`event_label`, `event_color`, `event_monotonic_s`, …);
   signal rows additionally carry `workspace_label` when a row has per-sample
   labels.
 * `<name>.csv.workspace.json`: all workspace/device settings, native column
@@ -211,16 +221,16 @@ make gui           # full multi-device workspace
 ## Dependencies
 
 Tk from Python's standard library, `pyserial` for the HEEPidermis UART, and
-NumPy/pandas/SciPy for the plots and analysis; `hjson` for the Stroop test
-settings file. On Ubuntu, install `python3-tk`, then the GUI dependencies:
+NumPy/pandas/SciPy for the plots and analysis; `hjson` for the test
+settings files. On Ubuntu, install `python3-tk`, then the GUI dependencies:
 
 ```sh
 python3 -m pip install -r sw/gui/requirements.txt
 ```
 
-Launching the Stroop task with voice answers additionally needs
-`tests/cognitive/requirements-voice.txt` (Vosk + sounddevice); the keyboard
-response mode needs nothing beyond Tk.
+Voice answers additionally need Vosk + sounddevice (see
+`sw/gui/tests/Stroop/README.md`); the keyboard response mode needs nothing
+beyond Tk.
 
 Use the same Python environment when launching `make gui`.
 

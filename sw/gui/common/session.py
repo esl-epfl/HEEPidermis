@@ -68,12 +68,15 @@ def write_session(path, configuration, recordings, signals):
     return path
 
 
-def read_session(path, validators):
+def read_session(path, validators, aliases=None):
     """Extract and validate every native recording before any panel is changed.
 
+    ``aliases`` renames legacy device keys while reading (e.g.
+    ``{"stroop": "tests"}``) so old workspace CSVs load into renamed panels.
     The caller owns the returned TemporaryDirectory while panels use its files.
     """
     path = Path(path)
+    aliases = aliases or {}
     metadata = json.loads(metadata_path(path).read_text(encoding="utf-8"))
     if not isinstance(metadata, dict) or metadata.get("format") != FORMAT or metadata.get("version") != 1:
         raise ValueError("Unsupported workspace recording format")
@@ -81,6 +84,7 @@ def read_session(path, validators):
     if (not isinstance(configuration, dict) or configuration.get("version") != 1 or
             not isinstance(configuration.get("workspace"), dict) or not isinstance(recordings, dict)):
         raise ValueError("Missing workspace configuration or device recordings")
+    recordings = {aliases.get(key, key): value for key, value in recordings.items()}
     if not recordings or any(key not in validators for key in recordings):
         raise ValueError("The workspace contains an unsupported device recording")
     directory = tempfile.TemporaryDirectory(prefix="heepidermis-workspace-")
@@ -106,7 +110,7 @@ def read_session(path, validators):
             for row in reader:
                 if row["workspace_kind"] == "signal":
                     continue  # Recomputed from native samples and the restored signal table.
-                device = row["workspace_device"]
+                device = aliases.get(row["workspace_device"], row["workspace_device"])
                 if row["workspace_kind"] != "sample" or device not in writers:
                     raise ValueError("Invalid workspace CSV record")
                 writers[device].writerow({name: row[name] for name in recordings[device]["columns"]})

@@ -3,10 +3,16 @@
 Run with: python3 -m unittest discover -s tests -p 'test_stroop_timing.py'
 """
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
 import unittest
 from unittest.mock import Mock, patch
 
-from cognitive import StroopTest, StroopStressTest
+from gui.tests.Stroop.stress import StroopStressTest
+from gui.tests.Stroop.stroop import StroopTest
 
 
 class StroopDeadlineTests(unittest.TestCase):
@@ -50,7 +56,7 @@ class StroopDeadlineTests(unittest.TestCase):
 
     def test_detection_cancels_deadline_while_judgment_is_pending(self):
         for cls in (StroopTest, StroopStressTest):
-            with self.subTest(test=cls.NAME), patch('cognitive.stroop.time.monotonic') as clock:
+            with self.subTest(test=cls.NAME), patch('gui.tests.Stroop.stroop.time.monotonic') as clock:
                 clock.return_value = 100.0
                 test = self.make_test(cls)
                 clock.return_value = 101.8
@@ -70,7 +76,7 @@ class StroopDeadlineTests(unittest.TestCase):
             for correct in (True, False):
                 for end_signal in ('quiet', 'final', 'cap'):
                     with self.subTest(test=cls.NAME, correct=correct, signal=end_signal), \
-                            patch('cognitive.stroop.time.monotonic') as clock:
+                            patch('gui.tests.Stroop.stroop.time.monotonic') as clock:
                         clock.return_value = 100.0
                         test = self.make_test(cls)
                         response = self.answer(test, correct)
@@ -93,7 +99,7 @@ class StroopDeadlineTests(unittest.TestCase):
 
     def test_unanswered_timeout_fires_once_and_next_word_gets_new_deadline(self):
         for cls in (StroopTest, StroopStressTest):
-            with self.subTest(test=cls.NAME), patch('cognitive.stroop.time.monotonic') as clock:
+            with self.subTest(test=cls.NAME), patch('gui.tests.Stroop.stroop.time.monotonic') as clock:
                 clock.return_value = 100.0
                 test = self.make_test(cls)
                 clock.return_value = 102.1
@@ -112,7 +118,7 @@ class StroopDeadlineTests(unittest.TestCase):
 
     def test_keyboard_answer_cancels_deadline(self):
         for cls in (StroopTest, StroopStressTest):
-            with self.subTest(test=cls.NAME), patch('cognitive.stroop.time.monotonic') as clock:
+            with self.subTest(test=cls.NAME), patch('gui.tests.Stroop.stroop.time.monotonic') as clock:
                 clock.return_value = 100.0
                 test = self.make_test(cls)
                 response = self.answer(test, True)

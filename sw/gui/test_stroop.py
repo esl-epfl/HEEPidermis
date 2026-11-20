@@ -4,6 +4,7 @@ Run with: python3 -m unittest discover -s . -p 'test_stroop.py'  (from sw/gui)
 """
 
 import csv
+import dataclasses
 import json
 import math
 from pathlib import Path
@@ -12,18 +13,18 @@ import tempfile
 import time
 from types import SimpleNamespace
 import tkinter as tk
+from tkinter import ttk
 import unittest
 from unittest.mock import Mock, patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tests"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from gui import app
 from gui.common.plots import TimePlot, TimeViewport, Trace
 from gui.common.session import metadata_path, read_session, write_session
 from gui.common.timing import AlignedSnapshot
-from gui.sdk.stroop.panel import DEFAULT_PATH, StroopPanel, validate_configuration
-from gui.sdk.stroop.recording import COLUMNS, Event, EventTail, read_recording
+from gui.sdk.tests.panel import DEFAULT_PATH, TestsPanel, validate_configuration
+from gui.sdk.tests.recording import COLUMNS, Event, EventTail, read_recording
 
 try:
     tk.Tk().destroy()
@@ -31,10 +32,11 @@ except tk.TclError as error:  # headless CI or a missing python3-tk
     raise unittest.SkipTest(f"Tk display unavailable: {error}") from error
 
 
-def message(label, sequence, *, run_id="run-1", test="stroop", at=None, unix=None, **details):
+def message(label, sequence, *, run_id="run-1", test="stroop", at=None, unix=None,
+            color="green", **details):
     stamp = time.monotonic() + 0.01 if at is None else at
-    return {"schema_version": 1, "run_id": run_id, "test": test, "sequence": sequence,
-            "label": label, "monotonic_s": stamp,
+    return {"schema_version": 2, "run_id": run_id, "test": test, "sequence": sequence,
+            "label": label, "color": color, "monotonic_s": stamp,
             "unix_s": time.time() + 1 if unix is None else unix, "details": details}
 
 
@@ -43,19 +45,31 @@ class EventTests(unittest.TestCase):
         base = message("test start", 0)
         return Event.from_message({**base, **changes}, time.monotonic() - 1)
 
-    def test_valid_event_keeps_label_and_relative_time(self):
+    def test_valid_event_keeps_label_relative_time_and_color(self):
         origin = 997.5
         event = Event.from_message(message("correct", 3, at=1000.0, trial=4), origin)
         self.assertEqual(event.label, "correct")
+        self.assertEqual(event.color, "green")
         self.assertAlmostEqual(event.time_s, 2.5, delta=0.001)
         self.assertEqual(event.details, {"trial": 4})
-        self.assertEqual(list(event.row())[:4],
-                         [event.time_s, "correct", event.monotonic_s, event.unix_s])
+        self.assertEqual(list(event.row())[:5],
+                         [event.time_s, "correct", "green", event.monotonic_s, event.unix_s])
+        self.assertEqual(event.hex_color(), "#3fbf5f")  # Palette name resolved.
+
+    def test_labels_and_tests_are_free_form_and_colors_fall_back(self):
+        event = self.event(label="n-back stimulus", test="n-back", color="#123456")
+        self.assertEqual(event.label, "n-back stimulus")
+        self.assertEqual(event.test, "n-back")
+        self.assertEqual(event.hex_color(), "#123456")  # Hex passthrough.
+        legacy = Event.from_message({**{k: v for k, v in message("rest", 1).items()
+                                        if k != "color"}, "schema_version": 1}, 0.0)
+        self.assertEqual(legacy.color, "white")  # Schema 1 feeds predate colors.
+        self.assertEqual(legacy.hex_color(), "#ffffff")
 
     def test_invalid_events_are_rejected(self):
-        for changes in ({"schema_version": 2}, {"label": "bogus"}, {"test": "n-back"},
-                        {"monotonic_s": float("nan")}, {"sequence": -1}, {"run_id": ""},
-                        {"details": []}):
+        for changes in ({"schema_version": 99}, {"label": ""}, {"label": 7},
+                        {"test": ""}, {"monotonic_s": float("nan")}, {"sequence": -1},
+                        {"run_id": ""}, {"details": []}, {"color": ""}, {"color": 9}):
             with self.assertRaises((ValueError, KeyError, TypeError)):
                 self.event(**changes)
 
@@ -63,7 +77,7 @@ class EventTests(unittest.TestCase):
         events = [self.event(), Event.from_message(message("wrong", 1), time.monotonic() - 1)]
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
-        path = Path(directory.name) / "stroop.csv"
+        path = Path(directory.name) / "tests.csv"
         with path.open("w", newline="", encoding="utf-8") as stream:
             writer = csv.writer(stream)
             writer.writerow(COLUMNS)
@@ -78,7 +92,7 @@ class EventTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             read_recording(path)
 
-    def test_recording_requires_stroop_columns(self):
+    def test_recording_requires_test_columns(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         path = Path(directory.name) / "bad.csv"
@@ -88,12 +102,12 @@ class EventTests(unittest.TestCase):
 
     def test_configuration_validation(self):
         validate_configuration({})
-        validate_configuration({"variant": "stroop-stress", "launch_options": "--seed 7",
+        validate_configuration({"test": "Stroop", "launch_options": "--seed 7",
                                  "event_path": "/tmp/x.jsonl", "show_stimuli": True,
-                                 "voice_mode": True, "voice_calibration": False})
-        for values in ({"variant": "n-back"}, {"launch_options": "--bad 'quote"},
+                                 "values": {"test_time": "60", "response_mode": "voice"}})
+        for values in ({"test": "n-back"}, {"launch_options": "--bad 'quote"},
                        {"event_path": 3}, {"show_stimuli": "yes"},
-                       {"voice_mode": "yes"}, {"voice_calibration": "no"}, []):
+                       {"values": {"bogus": 1}}, {"values": {"test_time": {}}}, []):
             with self.assertRaises(ValueError):
                 validate_configuration(values)
 
@@ -146,7 +160,7 @@ class PanelTests(unittest.TestCase):
         self.root = tk.Tk()
         self.root.withdraw()
         self.addCleanup(self.root.destroy)
-        self.panel = StroopPanel(self.root, host=tk.Frame(self.root),
+        self.panel = TestsPanel(self.root, host=tk.Frame(self.root),
                                  reports=tk.Frame(self.root))
         self.addCleanup(self.panel.close)
         self.feed = Path(self.directory.name) / "events.jsonl"
@@ -167,7 +181,7 @@ class PanelTests(unittest.TestCase):
         with self.feed.open("w", encoding="utf-8") as stream:
             stream.write(json.dumps(good) + "\n")
             stream.write("not json\n")
-            stream.write(json.dumps({**message("bogus", 2), "label": "bogus"}) + "\n")
+            stream.write(json.dumps({**message("bogus", 2), "label": 7}) + "\n")
             stream.write(json.dumps(stale) + "\n")
             stream.write(json.dumps(good) + "\n")  # Duplicate delivery.
         self.pump()
@@ -178,19 +192,21 @@ class PanelTests(unittest.TestCase):
 
     def test_stimuli_are_hidden_until_enabled(self):
         self.panel.connect()
-        labels = ("test start", "stimulus", "correct", "wrong")
+        colors = {"test start": "white", "stimulus": "white",
+                  "correct": "green", "wrong": "red"}
+        labels = tuple(colors)
         with self.feed.open("w", encoding="utf-8") as stream:
             for sequence, label in enumerate(labels):
-                stream.write(json.dumps(message(label, sequence)) + "\n")
+                stream.write(json.dumps(message(label, sequence, color=colors[label])) + "\n")
         self.pump()
         snapshot = self.panel.plot_snapshot({"events"})
-        self.assertEqual([label for _, label in snapshot.get_markers(0, 1e9)],
+        self.assertEqual([label for _, label, _c in snapshot.get_markers(0, 1e9)],
                          ["test start", "correct", "wrong"])
         self.assertEqual(snapshot.revision, (4, False))
         self.panel.show_stimuli.set(True)
         # Snapshots are frozen; the toggle takes effect on the next snapshot.
         refreshed = self.panel.plot_snapshot({"events"})
-        self.assertEqual([label for _, label in refreshed.get_markers(0, 1e9)], list(labels))
+        self.assertEqual([label for _, label, _c in refreshed.get_markers(0, 1e9)], list(labels))
         self.assertEqual(refreshed.revision, (4, True))
         series = snapshot.get_series()["events"]
         values = series["values"]
@@ -216,7 +232,7 @@ class PanelTests(unittest.TestCase):
 
     def test_open_button_launches_the_test_and_close_stops_everything(self):
         self.assertEqual(self.panel.connect_labels, ("Open", "Close"))
-        with patch("gui.sdk.stroop.panel.subprocess.Popen") as popen:
+        with patch("gui.sdk.tests.panel.subprocess.Popen") as popen:
             popen.return_value.poll.return_value = None
             self.panel.connect_toggle()  # The device's "Open" button.
         popen.assert_called_once()
@@ -253,7 +269,7 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(self.panel.connection(), ("ok", "Test open · not listening"))
 
     def test_failed_launch_does_not_leave_a_half_open_device(self):
-        with patch("gui.sdk.stroop.panel.subprocess.Popen",
+        with patch("gui.sdk.tests.panel.subprocess.Popen",
                    side_effect=OSError("no such file")):
             self.panel.connect_toggle()
         self.assertFalse(self.panel.connected)
@@ -267,50 +283,193 @@ class PanelTests(unittest.TestCase):
         self.assertFalse(self.panel.connected)
         self.assertEqual(self.panel.transport_state(), "stopped")
 
-    def test_launch_runs_the_selected_variant_with_the_feed_path(self):
-        with patch("gui.sdk.stroop.panel.subprocess.Popen") as popen:
+    def test_launch_runs_the_selected_test_with_the_feed_path(self):
+        with patch("gui.sdk.tests.panel.subprocess.Popen") as popen:
             popen.return_value.poll.return_value = None
-            self.panel.variant.set("stroop-stress")
+            self.panel.test_selection.set("Stroop")
             self.panel.launch_options.set("--seed 7")
             self.panel.launch()
         (args,), kwargs = popen.call_args
         self.assertTrue(args[1].endswith("run_test.py"))
-        self.assertEqual(args[2], "stroop-stress")
+        self.assertEqual(args[2], "stroop")
         self.assertIn("--seed", args)
         self.assertNotIn("--response-mode", args)  # Keys mode by default.
         self.assertEqual(args[args.index("--events") + 1], str(self.feed))
         self.assertTrue(self.panel.connected)
         # A still-running test is never launched twice.
-        with patch("gui.sdk.stroop.panel.subprocess.Popen") as popen:
+        with patch("gui.sdk.tests.panel.subprocess.Popen") as popen:
             self.panel.launch()
         popen.assert_not_called()
         self.assertIn("already open", self.panel.status.get())
 
-    def test_voice_options_become_launch_flags(self):
-        with patch("gui.sdk.stroop.panel.subprocess.Popen") as popen:
+    def test_form_options_become_launch_flags(self):
+        with patch("gui.sdk.tests.panel.subprocess.Popen") as popen:
             popen.return_value.poll.return_value = None
-            self.panel.voice_mode.set(True)
-            self.panel.voice_calibration.set(False)
+            self.panel.apply_configuration({"test": "Stroop",
+                                            "values": {"test_time": "90",
+                                                       "response_mode": "voice",
+                                                       "voice_calibration": False}})
             self.panel.launch()
         (args,), _ = popen.call_args
+        self.assertEqual(args[args.index("--test-time") + 1], "90")
         self.assertEqual(args[args.index("--response-mode") + 1], "voice")
         self.assertEqual(args[args.index("--voice-calibration") + 1], "false")
-        # Calibration is meaningless without voice input: no flags then.
+        # Defaults are not passed: the test's own configuration stays the truth.
+        self.assertNotIn("--rest-time", args)
+        self.assertNotIn("--n-colors", args)
         self.panel.close_task()     # The first window is gone; start fresh.
-        with patch("gui.sdk.stroop.panel.subprocess.Popen") as popen:
+        self.panel._build_form()    # A fresh form holds only the defaults.
+        with patch("gui.sdk.tests.panel.subprocess.Popen") as popen:
             popen.return_value.poll.return_value = None
-            self.panel.voice_mode.set(False)
-            self.panel.launch()
+            self.panel.launch()     # Back to the defaults: no flags at all.
         (args,), _ = popen.call_args
         self.assertNotIn("--response-mode", args)
         self.assertNotIn("--voice-calibration", args)
 
+    def test_form_covers_the_whole_config_and_starts_at_defaults(self):
+        entry = self.panel._entry()
+        fields = {f.name for f in dataclasses.fields(entry["spec"].Config)} - {"color_hexes"}
+        self.assertEqual(set(self.panel.form_values), fields)  # Everything is modifiable.
+        base = self.panel.form_base
+        self.assertEqual(base["test_time"], 120.0)     # From configs/defaults.hjson.
+        self.assertEqual(base["n_colors"], 9)
+        self.assertEqual(self.panel.form_values["test_time"].get(), "120")
+        # A pristine form sends no flags at all.
+        self.assertEqual(self.panel._form_flags(entry["spec"]), [])
+        # Checkboxes carry their own label: box and text share one line.
+        from gui.tests.Stroop import spec as stroop_spec
+        for field in stroop_spec.FORM:
+            if field.get("widget") == "checkbox":
+                widget = next(w for w in self.panel.form_frame.winfo_children()
+                              if isinstance(w, ttk.Checkbutton)
+                              and field["label"] in str(w.cget("text")))
+                self.assertIn(field["label"], widget.cget("text"))
+
+    def test_configuration_files_load_and_save(self):
+        entry = self.panel._entry()
+        configs = self.panel._configs_dir(entry)
+        self.assertTrue((configs / "defaults.hjson").exists())
+        self.assertEqual(self.panel.config_selection.get(), "defaults.hjson")
+        # Load… opens a file explorer (like the workspace's "Load
+        # configuration…") and can load any .hjson on disk.  The form is
+        # first reset to the test's defaults, then the file is applied.
+        self.panel.form_values["test_time"].set("90")
+        defaults = str(configs / "defaults.hjson")
+        with patch("gui.sdk.tests.panel.filedialog.askopenfilename",
+                   return_value=defaults) as dialog:
+            self.panel.load_config_file()
+        dialog.assert_called_once()
+        self.assertIn("*.hjson", str(dialog.call_args))
+        self.assertEqual(self.panel.form_values["test_time"].get(), "120")
+        self.assertEqual(self.panel.config_selection.get(),
+                         "sw/gui/tests/Stroop/configs/defaults.hjson")
+        # Cancelling the explorer changes nothing.
+        with patch("gui.sdk.tests.panel.filedialog.askopenfilename", return_value=""):
+            self.panel.load_config_file()
+        self.assertEqual(self.panel.config_selection.get(),
+                         "sw/gui/tests/Stroop/configs/defaults.hjson")
+        # Save as… writes the current form values through its own explorer.
+        self.panel.form_values["test_time"].set("90")
+        self.panel.form_values["color_pool"].set("red green blue")
+        saved = configs / "quick run.hjson"
+        saved.unlink(missing_ok=True)
+        self.addCleanup(saved.unlink, missing_ok=True)
+        with patch("gui.sdk.tests.panel.filedialog.asksaveasfilename",
+                   return_value=str(saved)) as dialog:
+            self.panel.save_config_file()
+        dialog.assert_called_once()
+        self.assertIn("*.hjson", str(dialog.call_args))
+        self.assertTrue(saved.exists())
+        self.assertEqual(self.panel.config_selection.get(),
+                         "sw/gui/tests/Stroop/configs/quick run.hjson")
+        # The saved file restores the edited values through load + launch.
+        self.panel.form_values["test_time"].set("120")
+        with patch("gui.sdk.tests.panel.filedialog.askopenfilename",
+                   return_value=str(saved)):
+            self.panel.load_config_file()
+        self.assertEqual(self.panel.form_values["test_time"].get(), "90")
+        with patch("gui.sdk.tests.panel.subprocess.Popen") as popen:
+            popen.return_value.poll.return_value = None
+            self.panel.launch()
+        (args,), _ = popen.call_args
+        self.assertEqual(args[args.index("--test-time") + 1], "90")
+        self.assertEqual(args[args.index("--color-pool") + 1], "red green blue")
+        self.panel.close_task()
+        # Hand-written files load even without the test's section (bare keys
+        # or a single old-named section), from anywhere on disk.
+        bare = configs / "bare.hjson"
+        bare.write_text("{ test_time: 30, n_colors: 5 }\n")
+        self.addCleanup(bare.unlink)
+        with patch("gui.sdk.tests.panel.filedialog.askopenfilename",
+                   return_value=str(bare)):
+            self.panel.load_config_file()
+        self.assertEqual(self.panel.form_values["test_time"].get(), "30")
+        self.assertEqual(self.panel.form_values["n_colors"].get(), "5")
+        self.assertIn("Loaded bare.hjson", self.panel.config_status.get())
+        self.assertIn("3 values changed", self.panel.config_status.get())
+        elsewhere = Path(self.directory.name) / "elsewhere.hjson"
+        elsewhere.write_text("{ stroop-stress: { test_time: 25 } }\n")
+        with patch("gui.sdk.tests.panel.filedialog.askopenfilename",
+                   return_value=str(elsewhere)):
+            self.panel.load_config_file()
+        self.assertEqual(self.panel.form_values["test_time"].get(), "25")
+        # A bad file reports the error instead of failing silently.
+        broken = Path(self.directory.name) / "broken.hjson"
+        broken.write_text("{ a: }\n")
+        with patch("gui.sdk.tests.panel.filedialog.askopenfilename",
+                   return_value=str(broken)):
+            self.panel.load_config_file()
+        self.assertIn("Could not load", self.panel.config_status.get())
+        # Loading the same file again (values already current) still reports.
+        with patch("gui.sdk.tests.panel.filedialog.askopenfilename",
+                   return_value=str(bare)):
+            self.panel.load_config_file()
+            self.panel.load_config_file()
+        self.assertIn("Loaded bare.hjson", self.panel.config_status.get())
+        self.assertIn("values already current", self.panel.config_status.get())
+
+    def test_voice_section_needs_voice_mode(self):
+        # The calibration and microphone only exist in voice mode, so the
+        # whole Voice section is greyed out until Response mode = voice.
+        self.panel.form_values["response_mode"].set("keys")
+        self.panel._update_section_states()
+        rules = self.panel._section_rules
+        self.assertEqual(len(rules), 1)
+        (rule, widgets), = rules
+        self.assertEqual(rule["key"], "response_mode")
+        self.assertTrue(widgets)  # calibration checkbox among them
+        self.assertTrue(any(w.instate(["disabled"]) for w in widgets))
+        # Selecting voice mode enables the section (the dropdown event
+        # triggers this in the real GUI).
+        self.panel.form_values["response_mode"].set("voice")
+        self.panel._update_section_states()
+        self.assertTrue(all(not w.instate(["disabled"]) for w in widgets))
+
+    def test_placeholder_tests_refuse_to_launch(self):
+        self.panel.test_selection.set("MIST")  # Folder exists, test does not.
+        self.panel._build_form()
+        with patch("gui.sdk.tests.panel.subprocess.Popen") as popen:
+            self.panel.launch()
+        popen.assert_not_called()
+        self.assertIn("No such test was found", self.panel.status.get())
+        self.assertIn("No such test was found.",
+                      [w.cget("text") for w in self.panel.form_frame.winfo_children()])
+
     def test_configuration_round_trip(self):
-        values = {"event_path": "/tmp/feed.jsonl", "variant": "stroop-stress",
+        values = {"event_path": "/tmp/feed.jsonl", "test": "Stroop",
+                  "config_file": "defaults.hjson",
                   "launch_options": "--fullscreen false", "show_stimuli": True,
-                  "voice_mode": True, "voice_calibration": True}
+                  "values": {"test_time": "45", "seed": "3"}}
         self.panel.apply_configuration(values)
-        self.assertEqual(self.panel.configuration_snapshot(), values)
+        snapshot = self.panel.configuration_snapshot()
+        for key, value in values.items():
+            if key == "values":
+                for form_key, form_value in value.items():
+                    self.assertEqual(snapshot["values"][form_key], form_value)
+            else:
+                self.assertEqual(snapshot[key], value)
+        # Every rendered form control is part of the snapshot.
+        self.assertEqual(set(snapshot["values"]), set(self.panel.form_values))
 
     def test_workspace_clock_is_set_only_before_events(self):
         origin = self.panel.clock_origin - 5
@@ -321,12 +480,12 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(self.panel.clock_origin, origin)
 
     def event_for_panel(self):
-        return Event.from_message(message("rest", 0), self.panel.clock_origin)
+        return Event.from_message(message("rest", 0, color="white"), self.panel.clock_origin)
 
     def test_load_recording_replaces_the_live_listener(self):
         self.panel.connect()
         event = self.event_for_panel()
-        path = Path(self.directory.name) / "stroop.csv"
+        path = Path(self.directory.name) / "tests.csv"
         with path.open("w", newline="", encoding="utf-8") as stream:
             writer = csv.writer(stream)
             writer.writerow(COLUMNS)
@@ -336,10 +495,10 @@ class PanelTests(unittest.TestCase):
         self.assertIsNone(self.panel.clock_origin)
         self.assertEqual([e.label for e in self.panel.events], ["rest"])
         self.assertEqual(self.panel.plot_snapshot({"events"}).get_markers(0, 1e9),
-                         [(event.time_s, "rest")])
+                         [(event.time_s, "rest", "#ffffff")])
 
     def test_default_feed_matches_the_publisher(self):
-        from cognitive.events import DEFAULT_PATH as PUBLISHER_PATH
+        from gui.tests.common.events import DEFAULT_PATH as PUBLISHER_PATH
         self.assertEqual(DEFAULT_PATH, PUBLISHER_PATH)
 
 
@@ -474,7 +633,7 @@ class WorkspaceMarkerFrameTests(unittest.TestCase):
     """Marker colors/zorder and row hiding inside the workspace render frame."""
 
     def renderer(self, rows, markers, biopac=False):
-        panels = {"stroop": SimpleNamespace(
+        panels = {"tests": SimpleNamespace(
             get_series=lambda *a: {},
             get_markers=lambda low, high: [m for m in markers if low <= m[0] <= high],
             invalid_spans=lambda *a: [])}
@@ -494,23 +653,30 @@ class WorkspaceMarkerFrameTests(unittest.TestCase):
     def markers_of(built):
         return [marker for trace in built for marker in trace.get("event_markers", [])]
 
-    def test_markers_take_verdict_colors_and_the_lowest_stroop_zorder(self):
-        rows = [app.SignalRow(device="stroop", signal="events", zorder=-2),
-                app.SignalRow(device="stroop", signal="events", zorder=3)]
-        built, _ = self.renderer(rows, [(1.0, "correct"), (2.0, "wrong"),
-                                        (3.0, "timeout"), (4.0, "rest")])._compute_frame()
+    def test_markers_keep_event_colors_and_the_lowest_zorder(self):
+        rows = [app.SignalRow(device="tests", signal="events", zorder=-2),
+                app.SignalRow(device="tests", signal="events", zorder=3)]
+        built, _ = self.renderer(rows, [(1.0, "correct", "#3fbf5f"), (2.0, "wrong", "#e04848"),
+                                        (3.0, "timeout", "#e04848"), (4.0, "rest", "#ffffff")])._compute_frame()
         self.assertEqual(self.markers_of(built),
                          [(1.0, "correct", "#3fbf5f", -2), (2.0, "wrong", "#e04848", -2),
                           (3.0, "timeout", "#e04848", -2), (4.0, "rest", "#ffffff", -2)])
 
-    def test_hiding_every_stroop_row_suppresses_the_markers(self):
-        rows = [app.SignalRow(device="stroop", signal="events", hidden=True)]
+    def test_palette_names_and_legacy_2tuples_fall_back_to_white(self):
+        rows = [app.SignalRow(device="tests", signal="events", zorder=0)]
+        built, _ = self.renderer(rows, [(1.0, "rest", "green"),
+                                        (2.0, "legacy")])._compute_frame()
+        self.assertEqual(self.markers_of(built),
+                         [(1.0, "rest", "#3fbf5f", 0), (2.0, "legacy", "#ffffff", 0)])
+
+    def test_hiding_every_test_row_suppresses_the_markers(self):
+        rows = [app.SignalRow(device="tests", signal="events", hidden=True)]
         built, _ = self.renderer(rows, [(1.0, "correct")])._compute_frame()
         self.assertEqual(self.markers_of(built), [])
 
     def test_hidden_signal_rows_drop_traces_but_keep_the_markers(self):
         rows = [app.SignalRow(device="biopac", signal="conductance_uS", hidden=True),
-                app.SignalRow(device="stroop", signal="events")]
+                app.SignalRow(device="tests", signal="events")]
         built, _ = self.renderer(rows, [(1.0, "correct")], biopac=True)._compute_frame()
         self.assertEqual([trace for trace in built if "event_markers" not in trace], [])
         self.assertEqual(len(self.markers_of(built)), 1)
@@ -539,24 +705,26 @@ class StroopSessionPanel:
         self.configuration = values
 
     def signals(self):
-        return {"events": {"label": "Stroop events", "unit": "", "primary": True, "kind": "events"}}
+        return {"events": {"label": "Test events", "unit": "", "primary": True, "kind": "events"}}
 
     def plot_snapshot(self, requested=()):
-        events = [(1.0, "test start"), (2.0, "correct"), (3.0, "wrong")]
+        events = [(1.0, "test start", "#ffffff"), (2.0, "correct", "#3fbf5f"),
+                  (3.0, "wrong", "#e04848")]
         return SimpleNamespace(
             signals=self.signals,
-            get_series=lambda *a: {"events": {"times": [t for t, _ in events],
+            get_series=lambda *a: {"events": {"times": [t for t, *_ in events],
                                               "values": [float("nan"), 1.0, 0.0],
-                                              "labels": [label for _, label in events],
+                                              "labels": [label for _, label, _ in events],
                                               "kind": "events"}},
-            get_markers=lambda low, high: [(t, label) for t, label in events if low <= t <= high],
+            get_markers=lambda low, high: [(t, label, hex_color) for t, label, hex_color in events
+                                           if low <= t <= high],
             invalid_spans=lambda *_: [],
             revision=(len(events),), clock_origin=7.0, latest=3.0)
 
     def recording_snapshot(self):
-        rows = [(1.0, "test start", 8.0, 100.0, "run-1", 0, "stroop", "{}"),
-                (2.0, "correct", 9.0, 101.0, "run-1", 1, "stroop", '{"trial": 1}'),
-                (3.0, "wrong", 10.0, 102.0, "run-1", 2, "stroop", "{}")]
+        rows = [(1.0, "test start", "white", 8.0, 100.0, "run-1", 0, "stroop", "{}"),
+                (2.0, "correct", "green", 9.0, 101.0, "run-1", 1, "stroop", '{"trial": 1}'),
+                (3.0, "wrong", "red", 10.0, 102.0, "run-1", 2, "stroop", "{}")]
         return {"columns": list(COLUMNS), "rows": lambda: iter(rows), "count": 3, "sidecars": {}}
 
     def clear_recording(self):
@@ -584,20 +752,20 @@ class WorkspaceRoundTripTests(unittest.TestCase):
             self.workspace = app.Workspace(self.root)
 
     def enable_all(self):
-        panels = {"stroop": StroopSessionPanel("stroop")}
+        panels = {"tests": StroopSessionPanel("tests")}
         devices = tuple({**device, "panel": (lambda *a, k=device["key"], **kw: panels[k])}
                         if device["key"] in panels else device for device in app.DEVICES)
         patcher = patch.object(app, "DEVICES", devices)
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.workspace.device_frames["stroop"]["variable"].set(True)
+        self.workspace.device_frames["tests"]["variable"].set(True)
         return panels
 
     def test_stroop_recording_and_offsets_survive_save_and_load(self):
         panels = self.enable_all()
         ws = self.workspace
-        ws.add_signal_row("stroop", "events", color="#abcdef")
-        path = self.directory / "with-stroop.csv"
+        ws.add_signal_row("tests", "events", color="#abcdef")
+        path = self.directory / "with-tests.csv"
         with patch.object(app.filedialog, "asksaveasfilename", return_value=str(path)):
             ws.save_all()
         ws.file_future.result(timeout=20)
@@ -606,7 +774,7 @@ class WorkspaceRoundTripTests(unittest.TestCase):
             rows = list(csv.DictReader(stream))
         self.assertIn("workspace_label", rows[0])
         samples = [row for row in rows if row["workspace_kind"] == "sample"
-                   and row["workspace_device"] == "stroop"]
+                   and row["workspace_device"] == "tests"]
         self.assertEqual([row["event_label"] for row in samples],
                          ["test start", "correct", "wrong"])
         self.assertEqual([row["workspace_label"] for row in samples], ["", "", ""])
@@ -617,12 +785,12 @@ class WorkspaceRoundTripTests(unittest.TestCase):
             ws.load_csv()
         ws.file_future.result(timeout=20)
         ws._finish_file_operation()
-        self.assertTrue(str(panels["stroop"].loaded).endswith("stroop.csv"))
-        self.assertEqual(ws.signal_rows[-1].device, "stroop")
+        self.assertTrue(str(panels["tests"].loaded).endswith("tests.csv"))
+        self.assertEqual(ws.signal_rows[-1].device, "tests")
 
     def test_hidden_rows_and_their_button_state_survive_the_round_trip(self):
         ws = self.workspace
-        ws.add_signal_row("stroop", "events", color="#abcdef")
+        ws.add_signal_row("tests", "events", color="#abcdef")
         widgets = ws.table_rows[-1]
         self.assertEqual(widgets["hide"].cget("text"), "Hide")
         ws._toggle_row_hidden(widgets)
@@ -650,7 +818,7 @@ class EndToEndTests(unittest.TestCase):
     """A real Stroop run publishes phase/outcome events the panel collects."""
 
     def setUp(self):
-        from cognitive import StroopConfig, StroopTest
+        from gui.tests.Stroop.test import Config as StroopConfig, Test as StroopTest
         self.StroopTest, self.StroopConfig = StroopTest, StroopConfig
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
@@ -658,7 +826,7 @@ class EndToEndTests(unittest.TestCase):
         self.root = tk.Tk()
         self.root.withdraw()
         self.addCleanup(self.root.destroy)
-        self.panel = StroopPanel(self.root, host=tk.Frame(self.root),
+        self.panel = TestsPanel(self.root, host=tk.Frame(self.root),
                                  reports=tk.Frame(self.root))
         self.addCleanup(self.panel.close)
         self.panel.event_path.set(str(self.feed))
@@ -673,7 +841,7 @@ class EndToEndTests(unittest.TestCase):
                 return True
         return False
 
-    def test_full_run_reaches_the_panel_as_ordered_white_markers(self):
+    def test_full_run_reaches_the_panel_as_ordered_colored_markers(self):
         test = self.StroopTest(self.StroopConfig(rest_time=1.0, test_time=2.5,
                                                  stimulus_time=0.8, isi=0.1,
                                                  fullscreen=False, n_colors=2, seed=3))
@@ -719,7 +887,8 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(times, sorted(times))
         self.assertTrue(all(e.unix_s >= self.panel.since_unix for e in self.panel.events))
 
-        # The panel's snapshot renders them as white labeled lines.
+        # The panel's snapshot renders them as colored labeled lines: verdicts
+        # green/red, every phase white.
         snapshot = self.panel.plot_snapshot({"events"})
         self.plot = TimePlot(self.root, TimeViewport(span=60.0, latest=snapshot.latest),
                              "Row 1", "", lambda: None, width=800, height=300)
@@ -729,27 +898,28 @@ class EndToEndTests(unittest.TestCase):
         rendered = [self.plot.itemcget(item, "text")
                     for item in self.plot.find_withtag("event-label")]
         self.assertIn("test start", rendered)
-        for item in self.plot.find_withtag("event-line"):
-            self.assertEqual(self.plot.itemcget(item, "fill"), "#ffffff")
+        fills = {self.plot.itemcget(item, "fill")
+                 for item in self.plot.find_withtag("event-line")}
+        self.assertEqual(fills, {"#ffffff", "#3fbf5f", "#e04848"})
 
         # A saved native CSV reloads into a fresh panel with the same timeline.
-        path = Path(self.directory.name) / "stroop.csv"
+        path = Path(self.directory.name) / "tests.csv"
         with path.open("w", newline="", encoding="utf-8") as stream:
             writer = csv.writer(stream)
             writer.writerow(COLUMNS)
             for event in self.panel.events:
                 writer.writerow(event.row())
-        fresh = StroopPanel(self.root, host=tk.Frame(self.root), reports=tk.Frame(self.root))
+        fresh = TestsPanel(self.root, host=tk.Frame(self.root), reports=tk.Frame(self.root))
         self.addCleanup(fresh.close)
         fresh.load_recording(path)
         self.assertEqual([e.label for e in fresh.events], labels)
         self.assertEqual([e.time_s for e in fresh.events], times)
         # Offline alignment shifts the loaded timeline by the workspace offset.
         offset = 12.5
-        base = [t for t, _ in fresh.plot_snapshot({"events"}).get_markers(0, 1e9)]
+        base = [t for t, *_ in fresh.plot_snapshot({"events"}).get_markers(0, 1e9)]
         aligned = AlignedSnapshot(fresh.plot_snapshot({"events"}), offset)
         self.assertEqual([t + offset for t in base],
-                         [t for t, _ in aligned.get_markers(0, 1e9)])
+                         [t for t, *_ in aligned.get_markers(0, 1e9)])
         self.assertEqual(aligned.latest, fresh.plot_snapshot({"events"}).latest + offset)
 
 

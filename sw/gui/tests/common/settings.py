@@ -1,12 +1,15 @@
-"""Editable test configuration stored in an HJSON file.
+"""Editable test configuration stored in HJSON files.
 
-``tests/cognitive/config.hjson`` lists every configurable parameter of every
-registered test, each with a short description.  The same file is meant to be
-reused by the future GUI forms: :func:`load_settings` gives the raw sections,
+Each test ships ``configs/defaults.hjson`` (e.g.
+``sw/gui/tests/Stroop/configs/defaults.hjson``) listing every configurable
+parameter with a short description; the same folder may hold any number of
+user-saved configurations, which the GUI can load and save.  The same files
+are reused by the GUI forms: :func:`load_settings` gives the raw sections,
 :func:`config_kwargs` turns them into keyword arguments for a test's config
-dataclass (``common`` < test section < explicit keyword/CLI overrides).
+dataclass (``common`` < test section < explicit keyword/CLI overrides), and
+:func:`save_settings` writes a configuration back to a file.
 
-HJSON was chosen over JSON so the file stays hand-editable: comments,
+HJSON was chosen over JSON so the files stay hand-editable: comments,
 unquoted strings and optional commas are all allowed.
 """
 
@@ -15,11 +18,8 @@ from __future__ import annotations
 from dataclasses import fields as dc_fields
 from pathlib import Path
 
-# Shipped default; any path can be passed instead.
-DEFAULT_FILE = Path(__file__).with_name("config.hjson")
 
-
-def load_settings(path=None) -> dict:
+def load_settings(path) -> dict:
     """Parse an HJSON settings file into ``{"common": {...}, "<test>": {...}}``.
 
     Sections (and the whole file) are optional; an empty ``{}`` means "use
@@ -31,11 +31,47 @@ def load_settings(path=None) -> dict:
         raise ImportError(
             "Reading the test configuration requires the 'hjson' package "
             "(pip install hjson)") from exc
-    file = Path(path) if path else DEFAULT_FILE
+    file = Path(path)
     if not file.exists():
         return {}
     data = hjson.loads(file.read_text(encoding="utf-8"))
     return data if isinstance(data, dict) else {}
+
+
+def test_section(test_name: str, data: dict) -> dict:
+    """Normalize a configuration payload to the ``common``/``<test>`` layout.
+
+    Accepts the standard layout, plus hand-written files: a single
+    differently-named (or old-named) section, or bare top-level keys with no
+    section at all.  Standard files pass through unchanged.
+    """
+    if not isinstance(data, dict) or not data:
+        return {}
+    if test_name in data or "common" in data:
+        return data
+    if len(data) == 1 and isinstance(next(iter(data.values())), dict):
+        return {test_name: next(iter(data.values()))}
+    return {test_name: data}
+
+
+def save_settings(path, section: str, values: dict) -> Path:
+    """Write ``{section: values}`` as HJSON to ``path`` and return the path.
+
+    Tuples are written as lists (HJSON has no tuple type); ``None`` becomes
+    ``null``.  Existing files are never overwritten — the caller decides.
+    """
+    try:
+        import hjson
+    except ImportError as exc:  # pragma: no cover - dependency hint only
+        raise ImportError(
+            "Saving the test configuration requires the 'hjson' package "
+            "(pip install hjson)") from exc
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    writable = {key: list(value) if isinstance(value, tuple) else value
+                for key, value in values.items()}
+    path.write_text(hjson.dumps({section: writable}), encoding="utf-8")
+    return path
 
 
 def config_kwargs(test_name: str, settings: dict, config_class) -> dict:

@@ -27,4 +27,6 @@ class AlignedSnapshot:
         method = getattr(self.snapshot, "get_markers", None)
         if method is None:
             return []
-        return [(stamp + self.offset, label) for stamp, label in method(low - self.offset, high - self.offset)]
+        # Markers are (time, label, [color]) tuples; the color rides along.
+        return [tuple((marker[0] + self.offset,) + tuple(marker[1:]))
+                for marker in method(low - self.offset, high - self.offset)]

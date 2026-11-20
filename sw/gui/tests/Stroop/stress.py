@@ -1,4 +1,4 @@
-"""Stressful variant of the Stroop test.
+"""Stroop test with adaptive time pressure (the GUI's Stroop entry).
 
 Same task as the plain Stroop (press the number key of the INK color) but
 with pressure added on top:
@@ -14,99 +14,27 @@ with pressure added on top:
 
 Run standalone from the repository root:
 
-    python tests/run_test.py stroop-stress --test-time 120
+    python3 sw/gui/tests/run_test.py stroop --test-time 120
 
 Escape aborts (and silences everything) while keeping the trials collected.
 """
 
 from __future__ import annotations
 
-import time
 import math
-from dataclasses import dataclass
-from .audio import SoundPlayer
-from .stroop import StroopConfig, StroopTest
+import time
+
+from ..common.audio import SoundPlayer
+from .spec import StroopStressConfig
+from .stroop import StroopTest
 
 SMILEY = "#f0c020"
-
-
-@dataclass
-class StroopStressConfig(StroopConfig):
-    """Plain Stroop parameters plus the pressure knobs."""
-
-    # Score starts here; a correct answer adds `bonus - RT_ms`, floored at
-    # `correct_min_gain`.  The bonus defaults to the timeout penalty, so the
-    # scale always matches the timeout: a just-in-time answer pays ~0, a
-    # fast one pays well, and the X points at stake are always the X a
-    # timeout would deduct.  Set `correct_bonus_ms` to override the base.
-    score_start: int = 25000
-    score_target: int = 50000
-    correct_bonus_ms: int | None = None
-    correct_min_gain: int = 100
-    # Deducted when the answer takes longer than `stimulus_time` (4000 ms).
-    timeout_penalty_ms: int = 4000
-    # Gap follows adaptive pressure; isi_decay is only used in fixed mode.
-    isi_start: float = 0.65
-    isi_min: float = 0.0
-    isi_decay: float = 0.85
-    # Initial duration of the check/cross; adaptation affects future trials.
-    feedback_time: float = 0.5
-    # Adaptive timing targets the 50% +/- score_band region, not a hard cap.
-    adaptive_timing: bool = True
-    score_band: float = 0.2
-    adaptation_smoothing: float = 0.25
-    # Anticipate recent point gains/losses to avoid delayed overcorrection.
-    adaptation_lookahead: float = 15.0
-    stimulus_min: float = 0.75
-    stimulus_max: float = 4.0
-    # Maximum fractional change of the response window per completed trial.
-    stimulus_step: float = 0.03
-    feedback_min: float = 0.35
-    feedback_max: float = 0.65
-    # Maximum absolute change of feedback duration per trial, in seconds.
-    feedback_step: float = 0.01
-    # Play the buzzer/cling feedback sounds, and the background clock tick.
-    sounds: bool = True
-    tick: bool = True
-
-    def __post_init__(self):
-        super().__post_init__()
-        self.isi_start = max(0.0, float(self.isi_start))
-        self.isi_min = max(0.0, min(self.isi_start, float(self.isi_min)))
-        self.isi_decay = min(1.0, max(0.1, float(self.isi_decay)))
-        self.feedback_time = max(0.0, float(self.feedback_time))
-        if self.score_target <= 0:
-            raise ValueError("score_target must be positive")
-        for name in ("score_band", "adaptation_smoothing", "adaptation_lookahead", "stimulus_min",
-                     "stimulus_max", "stimulus_step", "feedback_min",
-                     "feedback_max", "feedback_step"):
-            value = float(getattr(self, name))
-            if not math.isfinite(value):
-                raise ValueError(f"{name} must be finite")
-            setattr(self, name, value)
-        if not 0 < self.score_band < 0.4:
-            raise ValueError("score_band must be between 0 and 0.4")
-        if not 0 < self.adaptation_smoothing <= 1:
-            raise ValueError("adaptation_smoothing must be in (0, 1]")
-        if self.adaptation_lookahead < 0:
-            raise ValueError("adaptation_lookahead must be nonnegative")
-        if not 0 < self.stimulus_min <= self.stimulus_max:
-            raise ValueError("stimulus bounds must satisfy 0 < min <= max")
-        if not 0 < self.feedback_min <= self.feedback_max:
-            raise ValueError("feedback bounds must satisfy 0 < min <= max")
-        if not 0 <= self.stimulus_step <= 0.1 or not 0 <= self.feedback_step <= 0.05:
-            raise ValueError("timing steps must be gradual (stimulus <= 0.1, feedback <= 0.05)")
-        if self.adaptive_timing and self.stimulus_time <= 0:
-            raise ValueError("adaptive timing requires a positive stimulus_time")
-        if (self.adaptive_timing and self.response_mode == "voice"
-                and self.stimulus_min <= self.min_voice_lag):
-            raise ValueError("stimulus_min must exceed min_voice_lag in voice mode")
 
 
 class StroopStressTest(StroopTest):
     """Stroop state machine with score, adaptive pacing and sound feedback."""
 
-    NAME = "stroop-stress"
+    NAME = "stroop"
     ConfigClass = StroopStressConfig
 
     def __init__(self, config=None, **overrides):

@@ -1,0 +1,56 @@
+{
+  stroop:
+  {
+    test_time: 120.0
+    rest_time: 10.0
+    fullscreen: false
+    font_size: 0
+    background: "#101014"
+    foreground: "#f2f2f2"
+    n_colors: 9
+    stimulus_time: 2.0
+    isi: 0.5
+    congruent_ratio: 0.25
+    color_pool:
+    [
+      red
+      green
+      yellow
+      purple
+      orange
+      cyan
+      pink
+      brown
+      gray
+    ]
+    seed: 0
+    response_mode: voice
+    show_legend: true
+    score_start: 25000
+    score_target: 50000
+    correct_min_gain: 0
+    timeout_penalty_ms: 4000
+    adaptive_timing: true
+    isi_start: 0.1
+    isi_min: 0.05
+    isi_decay: 0.6
+    feedback_time: 0.5
+    score_band: 0.2
+    adaptation_smoothing: 0.25
+    adaptation_lookahead: 16.0
+    stimulus_min: 0.75
+    stimulus_max: 4.0
+    stimulus_step: 0.03
+    feedback_min: 0.35
+    feedback_max: 0.65
+    feedback_step: 0.01
+    sounds: true
+    tick: true
+    voice_calibration: true
+    mic_device: -1
+    voice_quiet_s: 0.25
+    voice_max_wait: 0.5
+    min_voice_lag: 0.2
+    voice_debug: true
+  }
+}

@@ -7,7 +7,7 @@ response time on incongruent trials is the classic Stroop effect.
 
 Run standalone from the repository root:
 
-    python tests/run_test.py stroop --n-colors 4 --rest-time 10 --test-time 60
+    python3 sw/gui/tests/run_test.py stroop --n-colors 4 --rest-time 10 --test-time 60
 
 Answers come from the keyboard (``1..n``, number row or keypad) or, with
 ``--response-mode voice``, from keyword spotting: say the color out loud and
@@ -15,29 +15,19 @@ the reaction clock stops at the moment the word is heard (recognition
 latency never penalizes the participant).  The last word heard is shown
 below the color legend.  ``Escape`` aborts and still reports the trials
 collected so far.
+
+This module is the plain task core; ``stress.py`` adds the score, sounds and
+adaptive pressure on top of it.  The configuration dataclasses live in
+``spec.py`` (the GUI contract); this file only implements behavior.
 """
 
 from __future__ import annotations
 
 import random
 import time
-from dataclasses import dataclass
 
-from .base import CognitiveTest, TestConfig
-
-# Color pool, in default preference order; ``n_colors`` takes the first N.
-COLOR_POOL = {
-    "red": "#e04040",
-    "green": "#40c060",
-    "blue": "#4070e8",
-    "yellow": "#e8c830",
-    "purple": "#a050d0",
-    "orange": "#f08020",
-    "cyan": "#30b8c8",
-    "pink": "#f070b0",
-    "brown": "#9c6b30",
-    "gray": "#a0a0a0",
-}
+from ..common.base import CognitiveTest
+from .spec import COLOR_POOL, StroopConfig
 
 RESPONSE_KEYS = "1234567890"
 
@@ -48,57 +38,6 @@ CALIBRATION_ATTEMPTS = 2    # Retries before a color is marked as missed.
 # faster than this were carried over from before the stimulus and are
 # dropped instead of judged.
 MIN_VOICE_LAG = 0.05
-
-
-@dataclass
-class StroopConfig(TestConfig):
-    """Parameters of one Stroop run.
-
-    ``n_colors``       how many colors from the pool are used (2..10).
-    ``rest_time``      countdown seconds before the test phase starts.
-    ``test_time``      duration of the test phase in seconds.
-    ``stimulus_time``  max seconds a word stays on screen; 0 = until response.
-    ``isi``            seconds of fixation cross between two stimuli.
-    ``congruent_ratio`` probability that the word matches its ink color.
-    ``seed``           RNG seed for reproducible trial sequences; 0 = random.
-    ``color_pool``     subset of COLOR_POOL names to draw colors from.
-    ``response_mode``  "keys" (number keys) or "voice" (keyword spotting).
-    ``voice_calibration`` say each color once before the test (voice mode).
-    ``mic_device``     sounddevice input device index; -1 = system default.
-    ``vosk_model``     path to a local Vosk model; empty = auto-managed.
-    """
-
-    n_colors: int = 4
-    stimulus_time: float = 4.0
-    isi: float = 0.5
-    congruent_ratio: float = 0.25
-    seed: int = 0
-    color_pool: tuple = tuple(COLOR_POOL)
-    # Optional name -> hex overrides on top of the built-in palette (set
-    # automatically when color_pool is written as {name: hex} in the
-    # configuration file).
-    color_hexes: dict | None = None
-    show_legend: bool = True
-    response_mode: str = "keys"
-    voice_calibration: bool = True
-    mic_device: int = -1
-    vosk_model: str = ""
-    # After a spoken answer is recognized, the judgment waits until the
-    # speaker is done: either the recognizer's silence endpoint, the mic
-    # going quiet for `voice_quiet_s` (fast path), or this cap.
-    voice_quiet_s: float = 0.15
-    voice_max_wait: float = 0.5
-    # A spoken answer can never arrive this soon after the word appears;
-    # faster hits are carried over from before the stimulus and dropped.
-    min_voice_lag: float = 0.05
-    # Print everything recognized (and what reaches the test) to the
-    # terminal.  Silence with --voice-debug false.
-    voice_debug: bool = True
-
-    def __post_init__(self):
-        self.n_colors = max(2, min(len(self.color_pool), int(self.n_colors)))
-        self.congruent_ratio = min(1.0, max(0.0, float(self.congruent_ratio)))
-        self.response_mode = "voice" if self.response_mode == "voice" else "keys"
 
 
 class StroopTest(CognitiveTest):
@@ -132,7 +71,7 @@ class StroopTest(CognitiveTest):
         self._pending = None        # Word heard; judgment held until speech ends.
         self._highlight = None      # Color swatch to highlight (last answer).
         if cfg.response_mode == "voice":
-            from .voice import VoiceSpotter
+            from ..common.voice import VoiceSpotter
             self._spotter = VoiceSpotter(
                 words=[name for name, _ in self.colors],
                 model_override=cfg.vosk_model,
@@ -144,7 +83,7 @@ class StroopTest(CognitiveTest):
     def _begin(self):
         self.state = "instructions"
         self._end_marked = False
-        self.mark("instructions")
+        self.mark("instructions", color="white")
         if self._spotter is not None:
             self._spotter.start()
             self._spotter.paused = True  # Not listening yet.
@@ -225,7 +164,7 @@ class StroopTest(CognitiveTest):
 
     def _start_calibration(self):
         self.state = "calibration"
-        self.mark("calibration")
+        self.mark("calibration", color="white")
         self._cal_index = 0
         self._cal_attempt = 0
         self._cal_until = time.monotonic() + CALIBRATION_TIME
@@ -327,12 +266,12 @@ class StroopTest(CognitiveTest):
 
     def _start_rest(self):
         if self.state == "calibration":
-            self.mark("calibration end")
+            self.mark("calibration end", color="white")
         if self.config.rest_time <= 0:
             self._start_test()
             return
         self.state = "rest"
-        self.mark("rest")
+        self.mark("rest", color="white")
         self._rest_until = time.monotonic() + self.config.rest_time
         if self._spotter is not None:
             self._spotter.paused = True  # Not listening during the break.
@@ -351,10 +290,10 @@ class StroopTest(CognitiveTest):
 
     def _start_test(self):
         if self.state == "rest":
-            self.mark("rest end")
+            self.mark("rest end", color="white")
         self.state = "stimulus"
         self._test_started = time.monotonic()
-        self.mark("test start", at=self._test_started, config=self.config.to_dict())
+        self.mark("test start", color="white", at=self._test_started, config=self.config.to_dict())
         if self._spotter is not None:
             self._spotter.paused = True  # Listening resumes with the first word.
             self._spotter.drain_words()  # Drop calibration leftovers.
@@ -407,7 +346,7 @@ class StroopTest(CognitiveTest):
                           if duration > 0 else None)
         self.state = "stimulus"
         self._draw_stimulus()
-        self.mark("stimulus", at=self._trial_started, trial=len(self.events) + 1, **self._trial)
+        self.mark("stimulus", color="white", at=self._trial_started, trial=len(self.events) + 1, **self._trial)
 
     def _tick(self):
         """Periodic check for stimulus timeouts and the end of the test."""
@@ -559,7 +498,9 @@ class StroopTest(CognitiveTest):
 
     def _mark_response(self, response, correct, rt):
         # Spoken answers use the detection time (RT), not delayed feedback time.
-        self.mark("timeout" if response is None else "correct" if correct else "wrong",
+        verdict = ("timeout", "red") if response is None else \
+            ("correct", "green") if correct else ("wrong", "red")
+        self.mark(verdict[0], color=verdict[1],
                   at=self._trial_started + rt, trial=len(self.events) + 1,
                   response=response or "", rt=rt if response is not None else None,
                   **self._trial)
@@ -763,8 +704,8 @@ class StroopTest(CognitiveTest):
     def _mark_end(self, aborted=False):
         if not getattr(self, "_end_marked", False):
             if aborted:
-                self.mark("test aborted", phase=self.state)
-            self.mark("test end", aborted=aborted)
+                self.mark("test aborted", color="red", phase=self.state)
+            self.mark("test end", color="white", aborted=aborted)
             self._end_marked = True
 
     # ------------------------------------------------------------ results

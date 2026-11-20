@@ -1,19 +1,20 @@
-"""Shared scaffolding for the interactive cognitive tests in ``tests/``.
+"""Shared scaffolding for the interactive tests in ``sw/gui/tests/``.
 
-Design notes (for the future GUI integration in ``sw/gui``)
------------------------------------------------------------
+Design notes (the standard every test follows — see ``sw/gui/tests/AGENTS.md``)
+-------------------------------------------------------------------------------
 * Every test is a class deriving from :class:`CognitiveTest` with a matching
   dataclass config deriving from :class:`TestConfig`.  The config fields are
-  plain ``int/float/bool/str`` so they can drive both the command line
-  interface (``tests/run_test.py``) and, later, an auto-generated GUI form.
+  plain ``int/float/bool/str`` so they can drive the command line interface
+  (``sw/gui/tests/run_test.py``) and the auto-generated GUI form.
 * A test renders into its own ``tk.Toplevel`` (fullscreen by default) and
   never touches acquisition hardware.  ``run()`` blocks and returns a
   :class:`TestResult` when used standalone; when embedded in the GUI, pass a
   ``parent`` widget and an ``on_finish`` callback instead.
 * Results are JSON-serializable (``TestResult.to_dict()``) so they can be
   saved next to a session CSV or plotted in the GUI.
-* New tests register themselves in ``tests/cognitive/__init__.py::TESTS``;
-  the GUI can iterate over that registry to offer any of them.
+* Every test publishes the standard colored event feed
+  (``common/events.py``); the GUI listens to that feed, so tests integrate
+  without any GUI modification.
 """
 
 from __future__ import annotations
@@ -34,9 +35,9 @@ class TestConfig:
     # Seconds of rest/countdown shown before the test begins.
     rest_time: float = 10.0
     # Total duration of the test phase, in seconds.
-    test_time: float = 60.0
+    test_time: float = 120.0
     # Fullscreen the test window (recommended for real experiments).
-    fullscreen: bool = True
+    fullscreen: bool = False
     # Window/canvas background color.
     background: str = "#101014"
     # Foreground (text) color for instructions and labels.
@@ -128,11 +129,17 @@ class CognitiveTest:
         self._run_id = uuid.uuid4().hex
         self._wall_offset = time.time() - time.monotonic()
 
-    def mark(self, label, *, at=None, **details):
-        """Publish a phase/outcome at its source time, never the GUI receive time."""
+    def mark(self, label, *, at=None, color="white", **details):
+        """Publish a phase/outcome at its source time, never the GUI receive time.
+
+        ``color`` is part of the standard event format (see AGENTS.md): a
+        palette name ("green", "red", "white", "yellow", "blue") or a
+        "#rrggbb" hex string.  Verdicts use green/red; every informational
+        phase stays white.
+        """
         stamp = time.monotonic() if at is None else at
-        event = {"schema_version": 1, "run_id": self._run_id, "test": self.NAME,
-                 "sequence": len(self.timeline), "label": label,
+        event = {"schema_version": 2, "run_id": self._run_id, "test": self.NAME,
+                 "sequence": len(self.timeline), "label": label, "color": color,
                  "monotonic_s": stamp, "unix_s": stamp + self._wall_offset,
                  "details": details}
         self.timeline.append(event)
@@ -182,10 +189,11 @@ class CognitiveTest:
         self._started_iso = time.strftime("%Y-%m-%d %H:%M:%S")
         self._started_monotonic = time.monotonic()
         try:
-            if self.NAME in ("stroop", "stroop-stress"):
-                from .events import EventPublisher
-                self._publisher = EventPublisher(event_path)
-                print(f"[events] Publishing to {self._publisher.path}", flush=True)
+            # Every test publishes the standard event feed (AGENTS.md); the
+            # GUI and the terminal both read these packets.
+            from .events import EventPublisher
+            self._publisher = EventPublisher(event_path)
+            print(f"[events] Publishing to {self._publisher.path}", flush=True)
             self._begin()
             if self._owns_root:
                 self._root.mainloop()

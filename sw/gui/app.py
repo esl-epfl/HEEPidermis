@@ -44,7 +44,8 @@ from .common.theme import (UI_BACKGROUND, UI_BORDER, UI_MUTED, UI_PLOT, UI_SURFA
 from .common.widgets import Collapsible, ScrollPane, Tooltip
 from .sdk.heepidermis.panel import VCOGui
 from .sdk.biopac.panel import BiopacGUI
-from .sdk.stroop.panel import StroopPanel
+from .sdk.tests.panel import TestsPanel
+from .sdk.tests.recording import MARKER_COLORS  # Standard event-marker palette.
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE_CONFIG = ROOT / "sw" / "gui" / "configs" / "workspace" / "last.json"
@@ -57,8 +58,6 @@ FEATURE_CHOICES = ("Phasic peak detection", "Peak-to-peak amplitude",
 PLOT_ROWS_MAX = 16
 REFRESH_MS = 200
 STATUS_COLORS = {"ok": "#2ea043", "warning": "#f2bd62", "off": "#dc3545"}
-# Event marker colors: verdicts stand out, other phases stay neutral.
-EVENT_MARKER_COLORS = {"correct": "#3fbf5f", "wrong": "#e04848", "timeout": "#e04848"}
 
 
 @dataclass
@@ -106,8 +105,8 @@ DEVICES = (
      "description": "X-HEEP VCO GSR board over UART/JTAG (dLC, iDAC, sampling)."},
     {"key": "biopac", "name": "BIOPAC", "panel": BiopacGUI,
      "description": "MP160 + EDA100C / BioNomadix over native Linux UDP."},
-    {"key": "stroop", "name": "Stroop", "panel": StroopPanel,
-     "description": "Task events: correct/wrong, rest, start/end · green/red/white markers on all plots."},
+    {"key": "tests", "name": "Tests", "panel": TestsPanel,
+     "description": "Cognitive tests (sw/gui/tests): events as green/red/white markers on all plots."},
     {"key": "shimmer", "name": "Shimmer", "panel": None,
      "description": "Not implemented yet; SDK slot reserved in sw/gui/sdk/shimmer."},
     {"key": "empatica", "name": "Empatica", "panel": None,
@@ -1376,17 +1375,20 @@ class Workspace:
                 values = trace[key]
                 trace[key] = values[::max(1, (len(values) + 199) // 200)]
         markers = []
-        stroop_rows = [row for row in self.signal_rows if row.device == "stroop"]
-        marker_zorder = min((row.zorder for row in stroop_rows), default=0)
-        hide_markers = bool(stroop_rows) and all(row.hidden for row in stroop_rows)
+        test_rows = [row for row in self.signal_rows if row.device == "tests"]
+        marker_zorder = min((row.zorder for row in test_rows), default=0)
+        hide_markers = bool(test_rows) and all(row.hidden for row in test_rows)
         for panel in self.panels.values():
             method = getattr(panel, "get_markers", None)
             if method is None or hide_markers:
                 continue
-            for stamp, label in method(self.viewport.start, self.viewport.start + window):
-                # Verdicts are colored; every other phase is neutral white.
-                color = EVENT_MARKER_COLORS.get(label, "#ffffff")
-                markers.append((stamp, label, color, marker_zorder))
+            for marker in method(self.viewport.start, self.viewport.start + window):
+                # Events carry their own color (palette name or hex); 2-tuples
+                # (legacy snapshots) fall back to neutral white.
+                color = marker[2] if len(marker) > 2 else "white"
+                if not color.startswith("#"):
+                    color = MARKER_COLORS.get(color, "#ffffff")
+                markers.append((marker[0], marker[1], color, marker_zorder))
         # Dense views aggregate nearby markers; the full event history stays in
         # the recording. Bound Tk work regardless of session length/zoom.
         if len(markers) > 400:
@@ -1675,7 +1677,7 @@ class Workspace:
         if "adc_count" in header:
             return "biopac"
         if "event_label" in header:
-            return "stroop"
+            return "tests"
         return None
 
     def load_csv(self):
@@ -1695,9 +1697,11 @@ class Workspace:
                     return
                 from .sdk.heepidermis.recording import read_recording as read_heepidermis
                 from .sdk.biopac.recording import load_recording as read_biopac
-                from .sdk.stroop.recording import read_recording as read_stroop
-                self.file_future = submit(read_session, path, {"heepidermis": read_heepidermis,
-                                                               "biopac": read_biopac, "stroop": read_stroop})
+                from .sdk.tests.recording import read_recording as read_tests
+                self.file_future = submit(read_session, path,
+                                          {"heepidermis": read_heepidermis,
+                                           "biopac": read_biopac, "tests": read_tests},
+                                          {"stroop": "tests"})
                 self.file_action = "load"
                 self.file_status.set("Loading all devices and signals…")
                 return
@@ -1707,8 +1711,8 @@ class Workspace:
         device = self._recording_device(path)
         if device is None:
             messagebox.showerror(parent=self.root, title="Load CSV",
-                                  message="Unrecognized recording: the file has neither HEEPidermis "
-                                          "(vco_p_uV), BIOPAC (adc_count), nor Stroop (event_label) columns.")
+                                 message="Unrecognized recording: the file has neither HEEPidermis "
+                                         "(vco_p_uV), BIOPAC (adc_count), nor Tests (event_label) columns.")
             return
         frame = self.device_frames.get(device)
         if device not in self.panels and frame is not None and not frame["variable"].get():
@@ -1784,6 +1788,7 @@ class Workspace:
     def _apply_workspace_state(self, state):
         if not isinstance(state, dict):
             return
+        state = self._migrate_legacy_state(state)
         for key, value in state.get("decomposition", {}).items():
             if key in self.decomposition_variables:
                 self.decomposition_variables[key].set(str(value))
@@ -1804,6 +1809,19 @@ class Workspace:
                 self._add_table_row(row)
             except (TypeError, ValueError):
                 continue
+
+    @staticmethod
+    def _migrate_legacy_state(state):
+        """Rename the pre-refactor Stroop device to the generic Tests device."""
+        devices = state.get("devices")
+        if isinstance(devices, dict) and "stroop" in devices and "tests" not in devices:
+            devices["tests"] = devices.pop("stroop")
+        rows = state.get("rows")
+        if isinstance(rows, list):
+            for row in rows:
+                if isinstance(row, dict) and row.get("device") == "stroop":
+                    row["device"] = "tests"
+        return state
 
     def _load_state(self):
         self.table_rows = []
@@ -1873,6 +1891,7 @@ class Workspace:
         if (not isinstance(bundle, dict) or bundle.get("version") != 1 or
                 not isinstance(bundle.get("workspace"), dict) or not isinstance(bundle.get("devices"), dict)):
             raise ValueError("Unsupported workspace configuration file")
+        Workspace._migrate_legacy_bundle(bundle)
         state = bundle["workspace"]
         if not isinstance(state.get("devices", {}), dict) or not isinstance(state.get("rows", []), list):
             raise ValueError("Invalid workspace device selection or signal table")
@@ -1888,14 +1907,25 @@ class Workspace:
                 Configuration.parse(values)
             elif key == "heepidermis":
                 validate_configuration(values, VCOGui._configuration_choices(None), len(SAMPLING_RATES_HZ))
-            elif key == "stroop":
-                from .sdk.stroop.panel import validate_configuration as validate_stroop
-                validate_stroop(values)
+            elif key == "tests":
+                from .sdk.tests.panel import validate_configuration as validate_tests
+                validate_tests(values)
         offsets = bundle.get("time_alignment", {}).get("offsets_s", {})
         if not isinstance(offsets, dict) or any(not math.isfinite(float(value)) for value in offsets.values()):
             raise ValueError("Invalid recording time alignment")
 
+    @staticmethod
+    def _migrate_legacy_bundle(bundle):
+        """Rename the pre-refactor Stroop device to the generic Tests device."""
+        devices = bundle.get("devices")
+        if isinstance(devices, dict) and "stroop" in devices and "tests" not in devices:
+            devices["tests"] = devices.pop("stroop")
+        workspace = bundle.get("workspace")
+        if isinstance(workspace, dict):
+            Workspace._migrate_legacy_state(workspace)
+
     def _apply_configuration_bundle(self, bundle):
+        Workspace._migrate_legacy_bundle(bundle)
         self.saved_device_configurations = dict(bundle["devices"])
         self._apply_workspace_state(bundle["workspace"])
         # Disabling an old panel can cache its current settings. The loaded

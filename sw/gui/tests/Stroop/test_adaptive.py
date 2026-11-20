@@ -1,11 +1,17 @@
 """Deterministic checks for adaptive stress timing, scoring and rendering."""
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
+
 import unittest
 import random
 from unittest.mock import Mock, patch
 
-from cognitive import StroopStressConfig, StroopStressTest
-from cognitive.settings import config_kwargs, load_settings
+from gui.tests.Stroop.spec import StroopStressConfig
+from gui.tests.Stroop.stress import StroopStressTest
+from gui.tests.common.settings import config_kwargs, load_settings
 
 
 class AdaptiveStressTests(unittest.TestCase):
@@ -59,7 +65,7 @@ class AdaptiveStressTests(unittest.TestCase):
         self.assertAlmostEqual(pressures[4], 1.0)
 
     def test_trial_timings_are_frozen_and_score_is_not_clamped(self):
-        with patch('cognitive.stroop.time.monotonic') as clock:
+        with patch('gui.tests.Stroop.stroop.time.monotonic') as clock:
             clock.return_value = 100.0
             test = self.make_test(score_start=49000, adaptation_smoothing=1.0)
             test._next_stimulus()
@@ -155,7 +161,7 @@ class AdaptiveStressTests(unittest.TestCase):
         test._canvas.create_line.assert_called_once()
 
     def test_heard_word_is_shown_and_highlighted_then_cleared_on_timeout(self):
-        import cognitive.stroop as stroop_module
+        import gui.tests.Stroop.stroop as stroop_module
         with patch.object(stroop_module, 'time') as fake_time:
             fake_time.monotonic.return_value = 100.0
             test = self.make_test()
@@ -182,7 +188,7 @@ class AdaptiveStressTests(unittest.TestCase):
             self.assertEqual(test._heard, "")   # Next word: label starts empty.
 
     def test_heard_word_is_cleared_when_the_trial_times_out(self):
-        with patch('cognitive.stroop.time.monotonic') as clock:
+        with patch('gui.tests.Stroop.stroop.time.monotonic') as clock:
             clock.return_value = 100.0
             test = self.make_test()
             test._heard = "leftover"
@@ -194,8 +200,8 @@ class AdaptiveStressTests(unittest.TestCase):
             self.assertEqual(test._heard, "")   # Timeout: no heard label.
 
     def test_configuration_loads_and_invalid_bounds_fail(self):
-        settings = load_settings('tests/cognitive/config.hjson')
-        cfg = StroopStressConfig(**config_kwargs('stroop-stress', settings, StroopStressConfig))
+        settings = load_settings(Path(__file__).resolve().parent / 'configs' / 'defaults.hjson')
+        cfg = StroopStressConfig(**config_kwargs('stroop', settings, StroopStressConfig))
         self.assertEqual(cfg.score_target, 50000)
         self.assertEqual(cfg.score_start, 25000)
         self.assertTrue(cfg.adaptive_timing)

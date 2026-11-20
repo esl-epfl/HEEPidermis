@@ -51,6 +51,9 @@ For all HEEPidermis-specific documentation, please refer to the documentation be
 - **Software**
   - [Desktop GUI](./sw/gui/README.md) - multi-device acquisition workspace (HEEPidermis board control, VCO GSR recordings, BIOPAC)
 
+- **Reference**
+  - [Register index](./docs/source/Register_index.md) - full register map of the external peripherals (iDAC, VCO decoder, REFs, aMUX, dLC, CIC, SES) with names, C-definable aliases, addresses, bit fields, reset values and descriptions. Intended to configure the cheep from an external master (e.g. an Arduino) through the SPI slave.
+
 - **Related documents**
   - [HEEPidermis](https://arxiv.org/abs/2509.04528)
   - [ΔΣ Decimation theory](https://ieeexplore.ieee.org/abstract/document/11044062)
