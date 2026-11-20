@@ -1,0 +1,149 @@
+// Editable configuration for the interactive cognitive tests.
+//
+// * Sections are applied in this order: "common", then the test's own
+//   section, then any --flag given on the command line wins.
+// * Comments (#, //) and trailing commas are allowed; quotes are optional.
+// * Any parameter may also be deleted from a section to fall back to the
+//   built-in default shown next to it.
+
+common: {
+  # Seconds of rest/countdown shown before the test begins.
+  rest_time: 10.0
+  # Total duration of the test phase, in seconds.
+  test_time: 120.0
+  # Run the test window fullscreen (recommended for real experiments).
+  fullscreen: false
+  # Window/canvas background color.
+  background: "#101014"
+  # Foreground (text) color for instructions and labels.
+  foreground: "#f2f2f2"
+  # Base font size in points; 0 picks a size from the window height.
+  font_size: 0
+}
+
+stroop: {
+  # How many colors from the pool are used (2..10). The first N are taken.
+  n_colors: 4
+  # Maximum seconds a word stays on screen; 0 = until response.
+  stimulus_time: 4.0
+  # Seconds of fixation cross between two stimuli.
+  isi: 0.5
+  # Probability (0..1) that a word matches its ink color (congruent trial).
+  congruent_ratio: 0.25
+  # RNG seed for reproducible trial sequences; 0 = random each run.
+  seed: 0
+  # Colors to draw from, in order. Either a list of names from the built-in
+  # palette (red green blue yellow purple orange cyan pink brown gray) or an
+  # object of name: hex to use custom shades, e.g.
+  #   color_pool: { red: "#e04040", green: "#40c060" }
+  color_pool: ["red", "green", "blue", "yellow", "purple",
+              "orange", "cyan", "pink", "brown", "gray"]
+  # Show the key -> color legend along the bottom edge.
+  show_legend: true
+  # "keys" (number keys) or "voice" (say the color; Vosk keyword spotting).
+  response_mode: keys
+  # Voice mode only: say each color once before the test starts.
+  voice_calibration: true
+  # sounddevice input device index; -1 = system default.
+  mic_device: -1
+  # Path to a local Vosk model; empty = auto-managed (small model, once).
+  vosk_model: ""
+  # Voice mode: mic must be quiet this many seconds to end a spoken word.
+  voice_quiet_s: 0.05
+  # Voice mode: after a word is heard, judge it at latest after this cap.
+  voice_max_wait: 0.5
+  # Hits faster than this many seconds after the word appears are treated
+  # as carried over from the previous word and dropped (increase if stale
+  # recognitions keep judging trials; decrease for faster answers).
+  min_voice_lag: 0.3
+  # Print everything recognized (and what reaches the test) to the terminal.
+  voice_debug: true
+}
+
+stroop-stress: {
+  # How many colors from the pool are used (2..10). The first N are taken.
+  n_colors: 9
+  # Initial response window in seconds; adaptive timing adjusts future words.
+  stimulus_time: 2
+  # Probability (0..1) that a word matches its ink color (congruent trial).
+  congruent_ratio: 0.25
+  # RNG seed for reproducible trial sequences; 0 = random each run.
+  seed: 0
+  # Colors to draw from; see the "stroop" section for the two forms.
+  color_pool: ["red", "green", "yellow", "purple",
+              "orange", "cyan", "pink", "brown", "gray"]
+  # Show the key -> color legend along the bottom edge.
+  show_legend: true
+  # "keys" (number keys) or "voice" (say the color; Vosk keyword spotting).
+  response_mode: keys
+  # Voice mode only: say each color once before the test starts.
+  voice_calibration: true
+  # sounddevice input device index; -1 = system default.
+  mic_device: -1
+  # Path to a local Vosk model; empty = auto-managed (small model, once).
+  vosk_model: ""
+  # Voice mode: mic must be quiet this many seconds to end a spoken word.
+  voice_quiet_s: 0.25
+  # Voice mode: after a word is heard, judge it at latest after this cap.
+  voice_max_wait: 0.5
+  # Hits faster than this many seconds after the word appears are treated
+  # as carried over from the previous word and dropped (increase if stale
+  # recognitions keep judging trials; decrease for faster answers).
+  min_voice_lag: 0.2
+  # Print everything recognized (and what reaches the test) to the terminal.
+  voice_debug: true
+
+  # Initial points; half the target starts at the bar's midpoint.
+  score_start: 25000
+  # Fixed target for the score bar (red below 50%, green at/above 50%).
+  score_target: 50000
+  # Base points for a correct answer; the actual gain is this minus the
+  # response time in ms. Empty (null) = use the timeout penalty below, so
+  # X points are always at stake per question.
+  correct_bonus_ms: null
+  # Minimum points a correct answer earns, however slow it was.
+  correct_min_gain: 0
+  # Points deducted when a question times out.
+  timeout_penalty_ms: 4000
+  # Initial/maximum dead time; follows the adaptive difficulty gradually.
+  isi_start: 0.1
+  # Lower bound of the dead time; 0 = next word right after the feedback.
+  isi_min: 0.05
+  # Legacy gap decay, used only when adaptive_timing is false (1 = constant).
+  isi_decay: 0.6
+  # Initial seconds the check/cross + points stay on screen.
+  feedback_time: 0.5
+  # Gently adapt the next word's deadline, feedback and gap to the score.
+  adaptive_timing: true
+  # Preferred region around 50%: 0.2 means 30–70%, not a hard score limit.
+  score_band: 0.2
+  # Weight of each new score in the smoothed score (0 < value <= 1).
+  adaptation_smoothing: 0.25
+  # Project the smoothed point trend this many trials ahead to avoid swings.
+  adaptation_lookahead: 15.0
+  # Shortest response window (seconds); must exceed min_voice_lag in voice mode.
+  stimulus_min: 0.75
+  # Longest response window allowed by adaptation (seconds).
+  stimulus_max: 4.0
+  # Maximum fractional deadline change per trial (0.03 = 3%).
+  stimulus_step: 0.03
+  # Shortest feedback-symbol duration (seconds).
+  feedback_min: 0.35
+  # Longest feedback-symbol duration (seconds).
+  feedback_max: 0.65
+  # Maximum feedback change per trial, in seconds (0.01 = 10 ms).
+  feedback_step: 0.01
+  # Play the buzzer/cling feedback sounds.
+  sounds: true
+  # Play the background clock tick (accelerates 1 Hz -> 3 Hz).
+  tick: true
+}
+
+voice-test: {
+  # How many colors from the pool to listen for (2..10).
+  n_colors: 10
+  # sounddevice input device index; -1 = system default.
+  mic_device: -1
+  # Path to a local Vosk model; empty = auto-managed (small model, once).
+  vosk_model: ""
+}

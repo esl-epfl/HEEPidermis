@@ -18,7 +18,7 @@
 #define SYS_FCLK_HZ 10000000
 #define VCO_FS_HZ 10
 #define VCO_SAMPLE_RATE_MILLIHZ 10000
-#define INJECTED_CURRENT_NA 400
+#define INJECTED_CURRENT_NA 600
 
 #define IDAC_LSB_NA 40
 #define IDAC_MAX_CODE 255
@@ -29,7 +29,7 @@
 #define GSR_DLC_ENABLED 0
 #endif
 #ifndef GSR_DLC_LOG_WIDTH
-#define GSR_DLC_LOG_WIDTH 6
+#define GSR_DLC_LOG_WIDTH 7
 #endif
 #ifndef GSR_DLC_TIME_BITS
 #define GSR_DLC_TIME_BITS 6

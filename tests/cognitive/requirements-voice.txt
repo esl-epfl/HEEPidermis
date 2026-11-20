@@ -1,0 +1,4 @@
+# Optional dependencies for voice input (--response-mode voice).
+# The keyboard fallback works without these.
+vosk>=0.3.45
+sounddevice>=0.4.6

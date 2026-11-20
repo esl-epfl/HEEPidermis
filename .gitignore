@@ -33,9 +33,15 @@ environment.yml
 
 # Python outputs
 **/__pycache__
-sw/gui/last_configuration.json
-sw/gui/last_configuration.json.tmp
+sw/gui/configs/workspace/
+sw/gui/configs/heepidermis/last.json
+sw/gui/configs/heepidermis/last.json.tmp
+sw/gui/configs/biopac/
+sw/gui/outs/
 **configuration.json
+
+# Downloaded Vosk speech models (tests/cognitive voice input)
+tests/cognitive/models/
 
 
 # Questasim files

@@ -1,20 +1,230 @@
-# HEEPidermis GUI
+# HEEPidermis workspace GUI
 
-Launch the desktop interface from the repository root with:
+A single desktop workspace for acquiring, plotting and comparing signals from
+multiple physiological devices. Launch it from the repository root with:
 
 ```sh
 make gui
 ```
 
-It uses Tk from Python's standard library and `pyserial` for the UART. The
-power and resolution plots also use NumPy, pandas, and SciPy. On Ubuntu,
-install `python3-tk`, then the GUI dependencies:
+The window is organized for wide screens:
+
+* **Left** — a scrollable configuration column with collapsible menus: device
+  selection, the **SIGNALS** table, shared **DECOMPOSITION · ALL DEVICES**
+  settings, and one hardware/signal-conditioning menu per enabled device.
+* **Right** — stacks of time plots sharing one time axis and cursor. The
+  signal table decides which device signal goes to which stack row and y-axis,
+  and with which style, amplification, color, transparency (α), and z-order.
+* **Bottom** — per-device report tabs on the left (output, messages, status)
+  and shared navigation on the right (time zoom, live, save, load).
+
+## Devices and SDKs
+
+Each device's connection, interrogation and configuration layer lives in its
+own SDK package; the workspace only renders the panels and plots the signals:
+
+| Device | SDK folder | Status |
+| --- | --- | --- |
+| HEEPidermis (X-HEEP VCO GSR board) | `sw/gui/sdk/heepidermis` | Full acquisition + dLC + analysis |
+| BIOPAC MP160 (EDA100C / BioNomadix) | `sw/gui/sdk/biopac` | Full native Linux UDP acquisition |
+| Stroop task events | `sw/gui/sdk/stroop` | Passive local listener + task launcher |
+| Shimmer | `sw/gui/sdk/shimmer` | Placeholder (not implemented yet) |
+| Empatica (E4) | `sw/gui/sdk/empatica` | Placeholder (not implemented yet) |
+
+Every device panel exposes the same interface to the workspace:
+`signals()` (signal catalogue for the table), `get_series()` (times, values
+and processing segments), `plot_snapshot()` (Tk-free data for background
+computation), `recording_snapshot()` (native samples and calibration for a
+workspace export), `invalid_spans()` (shaded gaps) and `close()`.
+
+### Stroop task events
+
+The cognitive tests in `tests/cognitive` publish their phases and outcomes as
+events on the shared measurement timeline:
+
+```sh
+make stroop         # Stroop test; events feed the workspace GUI (STROOP_ARGS overridable)
+make stroop-stress  # stressful variant, same event connection
+```
+
+Enable the **Stroop** device in the workspace and press its **Open** button:
+it launches the selected variant (like `make stroop`) and listens to the feed
+(`sw/gui/outs/stroop/events.jsonl`, an append-only JSONL file; override with
+`HEEPIDERMIS_STROOP_EVENTS` or the panel's event-path field). The device state
+is observed, not assumed: **Open** always listens and opens a test window
+unless one is already running; when the window finishes or is closed the
+device reports **Closed** again; **Close** ends the test and stops listening.
+If the test window was opened outside the GUI (e.g. `make stroop`), Open just
+listens to it. The panel selects the variant (`stroop` or `stroop-stress`)
+and extra launch options if wanted.  Two checkboxes control voice input:
+**Voice input** launches the test with `--response-mode voice` (say the
+colors; the spoken word appears under the legend and its swatch is
+highlighted), and **Voice calibration** (`--voice-calibration`) runs the
+say-each-color-once calibration phase first.  All other parameters come from
+`tests/cognitive/config.hjson` (or `Launch options`, whose explicit flags
+override the file).
+
+Every event is drawn as a **vertical line across every plot**, with its label
+beside the line (`instructions`, `calibration`, `rest`, `test start`,
+`correct`, `wrong`, `timeout`, `test end`, …). Verdict lines are colored —
+**correct** is green, **wrong** and **timeout** are red — and every other
+phase stays white. Correct/wrong answers also feed
+the signal catalogue (`1` for correct, `0` for wrong) and can be added to the
+SIGNALS table like any signal. Per-stimulus lines are optional
+(**Also show each stimulus onset**). Dense zoom-outs aggregate nearby markers
+and note the hidden label count; zoom in to read them.
+
+The event lines interleave with the signals by the **Z** (z-order) column of
+the Stroop rows: lowering the Stroop row's z-order draws the lines *behind*
+the signal traces, raising it draws them in front. Hiding every Stroop row
+(**Hide** button) removes the event lines too, while keeping the events
+configured and saved.
+
+Event timestamps come from the task's own clock at the moment each phase
+happened (spoken answers use the recognition time, not the later feedback).
+The workspace converts them to the common host-monotonic timeline, so
+Stroop events line up with HEEPidermis/BIOPAC samples even though the
+devices and the task started at different moments. The per-device offsets are
+stored in the workspace JSON sidecar and restored on load.
+
+### Time alignment
+
+All enabled devices map their samples onto one host-monotonic workspace
+timeline. HEEPidermis anchors at its first recorded sample; BIOPAC reports its
+acquisition origin (`timebase`); the Stroop feed carries host-monotonic and
+Unix timestamps for every event. The resulting per-device offsets are saved
+with each workspace recording and applied again after **Load CSV…**. This is
+software alignment on one computer's clock — not hardware synchronization —
+so HEEPidermis timing keeps its usual UART reception uncertainty.
+
+### The SIGNALS table
+
+Add a row with **+ Add signal row**. The **Hide**, color and **X** (remove)
+controls sit directly after the device/signal names so they are always visible;
+the remaining columns scroll horizontally inside the table when the window is
+narrow. **Hide** removes a signal from the plots without deleting it — its
+settings stay in the table, its data keeps recording and saving, and the
+button flips to **Show** to bring it back (a hidden row is restored hidden
+after **Load CSV…**). Per row you choose the device, one of its
+signals, the stack row (each stack row is one plot; all share the time axis),
+the y-axis side (Left/Right), the y-axis **Range** — `Auto` fits the visible
+data, `Fixed` pins it to the Min/Max fields (NRMSE defaults to 0–100,
+correlation to −1–1, device signals to Auto) — the line style
+(line/markers/steps), an amplification (0.01x–100x, `normalize`, or
+`normalize row/axis`), color, α and z-order (see the Stroop section for how
+z-order also layers event lines against the signals). `normalize row/axis`
+applies one common scale to every signal in the same stack and y-axis,
+overriding their individual amplification settings. When several fixed rows
+share one axis, the axis spans the union of their ranges.
+
+**+ Add comparison (A vs B)** adds a derived signal computed on the host
+between two recorded signals — NRMSE, correlation, difference or ratio. Because
+the devices are not hardware-synchronized, comparisons run on a common 20 Hz
+host-time grid over a 2 s sliding window.
+
+### Shared decomposition and configuration
+
+**DECOMPOSITION · ALL DEVICES** selects the tonic/phasic algorithm, smoothing,
+and peak prominence for every device's tonic/phasic signals. Feature-extraction
+rows keep their own **conf.** parameters. Device sections contain acquisition,
+calibration, reconstruction, and screening controls; file actions and
+decomposition controls belong to the workspace.
+
+**Save configuration…** and **Load configuration…** use one JSON file for the
+entire workspace: device selection, device settings (including remembered
+settings for disabled devices), all signal/comparison/feature rows, plot ranges
+and styles, time span, and shared decomposition settings. Loading requires idle
+devices and does not start hardware acquisition.
+
+### Data and settings
+
+* Workspace configuration: `sw/gui/configs/workspace/last.json` (auto-saved).
+* Device settings: `sw/gui/configs/heepidermis/last.json`,
+  `sw/gui/configs/biopac/last.json`; named HEEPidermis configurations in
+  `sw/gui/configs/heepidermis/*.json`.
+* Recordings: `sw/gui/outs/` (HEEPidermis sessions), `sw/gui/outs/biopac/`,
+  and `sw/gui/outs/stroop/events.jsonl` (append-only Stroop event feed).
+
+### Responsive display and continuous recording
+
+Window extraction, features, comparisons and display reduction run in a background
+job. Only one job is in flight; obsolete results from zoom/settings changes are
+discarded. The plot status shows **Loading visualization…** while computation is
+pending. Tk draws a bounded, extrema-preserving preview (at most 2,400 points per
+trace); recording uses the original samples. Display errors are reported and retried.
+
+Both acquisition workers write and flush CSV independently of GUI updates:
+
+* HEEPidermis: `sw/gui/outs/last_output.csv`.
+* BIOPAC: `sw/gui/outs/biopac/last_output.csv` (or its configured output folder).
+
+**Pause → Start** appends to the same recording. **Stop → Start**, Reset/New session,
+or the first recording in a new application session replaces `last_output.csv`.
+
+**Save CSV…** asks for one filename and saves **all enabled devices and all
+signal rows together**, over the full history available to the workspace at the
+snapshot. Export runs in the background while acquisition continues writing its
+original autosaves. The named snapshot is complete when the workspace status
+says it was saved; later samples belong to subsequent snapshots.
+
+Keep the following two files together:
+
+* `<name>.csv`: native device samples, every device signal, and configured
+  signal/comparison/feature rows, with their original timestamps. No common-grid
+  resampling is imposed on independent device signals. Stroop events are native
+  rows of the `stroop` device (`event_label`, `event_monotonic_s`, …);
+  signal rows additionally carry `workspace_label` when a row has per-sample
+  labels.
+* `<name>.csv.workspace.json`: all workspace/device settings, native column
+  schemas, sample counts, per-device clock offsets
+  (`time_alignment.offsets_s`), and calibration/verification metadata needed
+  to reload.
+
+The CSV's `workspace_kind` is `sample` for native data and `signal` for calculated
+series. `workspace_device` identifies the source. Signal rows use
+`workspace_signal`, `time_s`, `workspace_value`, `workspace_unit`, and
+`workspace_segment`; `workspace_row` is the 1-based signal-table row, or blank
+for a device's signal catalogue. Values retain physical units; visual
+amplification and normalization are stored as plot settings. Native rows retain
+their SDK column names. Transport-level UART logs and BIOPAC full-rate binary
+captures remain alongside the original device autosaves.
+
+**Load CSV…** restores the complete saved workspace in one operation, including
+the devices, signal table, and shared decomposition settings. All native
+recordings are validated before panels are changed. Stop HEEPidermis and
+disconnect BIOPAC before loading. Missing sidecars or incomplete recordings are
+reported rather than loading only part of the session. Choose a new filename
+when saving; existing workspace recordings are not overwritten.
+
+For compatibility, Load CSV also imports older single-device CSVs, detecting
+HEEPidermis by `vco_p_uV` and BIOPAC by `adc_count`. Their native sidecars are
+restored when available. The next workspace save includes all enabled devices.
+
+### Running a device panel standalone
+
+```sh
+make biopac        # BIOPAC panel with its own plots (BIOPAC_ARGS overridable)
+make stroop        # Stroop test window; publishes events for the workspace
+make gui           # full multi-device workspace
+```
+
+## Dependencies
+
+Tk from Python's standard library, `pyserial` for the HEEPidermis UART, and
+NumPy/pandas/SciPy for the plots and analysis; `hjson` for the Stroop test
+settings file. On Ubuntu, install `python3-tk`, then the GUI dependencies:
 
 ```sh
 python3 -m pip install -r sw/gui/requirements.txt
 ```
 
+Launching the Stroop task with voice answers additionally needs
+`tests/cognitive/requirements-voice.txt` (Vosk + sounddevice); the keyboard
+response mode needs nothing beyond Tk.
+
 Use the same Python environment when launching `make gui`.
+
+## HEEPidermis device panel
 
 The default application is `gsr/demo` (`sw/applications/gsr/demo/main.c`).
 It is also the Makefile's default `PROJECT` for application builds.
@@ -24,8 +234,8 @@ app. GDB loads and starts the target, then disconnects so JTAG can update the
 current and sampling rate during recording. The button becomes red **▮▮ PAUSE RECORDING** while recording; after pausing, it offers **Continue recording** if history remains, or **Start recording** after Reset.
 Pause closes the serial port and invokes `make jtag_close`. Closing the window also
 cleans up connections started by the GUI. **RESET** clears the plotted and
-in-memory history and starts a new session file with the next sample; previous
-session files are kept.
+in-memory history while paused; the next Start replaces `last_output.csv`.
+Use Save CSV first to retain a recording under a chosen name.
 
 Set **MCU frequency** in Hz and press **Config. board** to run
 `make board_freq PLL_FREQ=...`. The GUI sets the UART baud rate to one twentieth
@@ -76,8 +286,8 @@ frames are excluded. Fresh out-of-range frames remain available for diagnostics,
 but do not enter conductance analysis or peak detection. The SDK is given the
 configured board clock and real hardware timing by the demo.
 
-The bottom row contains **Output**, **Messages**, **Save / Load**, and
-**Navigation**. Firmware information starts with `[i]` on UART and appears in cyan with a timestamp;
+The bottom row contains device **Output** and **Messages** reports plus shared
+**Navigation** and CSV actions. Firmware information starts with `[i]` on UART and appears in cyan with a timestamp;
 GUI guidance appears in amber. It includes rebuild/reset reminders, pending
 settings changes, acknowledgments, and acquisition feedback. The bottom output
 area has two columns: system/build/debug output on the left and the exact raw
@@ -150,9 +360,9 @@ through that selected sample. **Live** moves the cursor back to the newest sampl
 and resumes following incoming data.
 
 Every sample, including its injected current and computed conductance, is
-appended immediately to a session CSV under `sw/gui/outs/`.
-**Save CSV…**, below Messages, exports the full session to a chosen path. The suggested filename
-is the time of the Save action in `yyyy_mm_dd_hhmm.csv` format. Exported conductance is
+appended by the serial reader to `sw/gui/outs/last_output.csv` before delivery to
+the GUI. The workspace's **Save CSV…** includes these samples in the combined
+recording described above. Exported conductance is
 `current_µA × 1,000,000 / (P_µV − N_µV − offset_µV)` in µS; it is blank
 when the corrected drop is zero or negative.
 Each sample retains the current active when it was recorded. New firmware also
@@ -160,14 +370,15 @@ reports the hardware iDAC code in every acquisition frame; the GUI checks that
 `code × 40 nA` matches the reported current and rejects mismatches. Both the session
 and exported CSV include that current, so a change between recordings does
 not alter earlier conductance values.
-Each CSV is accompanied by `<recording>.csv.configuration.json` and
+Each native HEEPidermis autosave is accompanied by `<recording>.csv.configuration.json` and
 `<recording>.csv.uart.log`. The first sidecar preserves the GUI configuration;
 the second preserves every raw line received from the chip. Both are updated
-with a live session, written with Save CSV, and automatically restored before a
-recording enters explorer mode. Legacy CSVs without sidecars still load.
+with a live session and automatically restored when importing a native recording.
+Workspace exports use the combined `.workspace.json` sidecar instead.
+Legacy CSVs without sidecars still load.
 
-**Load recording…** opens either a continuously written session CSV or an
-exported CSV without connecting to hardware. The loaded data can be browsed,
+The workspace's **Load CSV…** opens a saved workspace or a native session CSV
+without connecting to hardware. The loaded data can be browsed,
 zoomed, re-screened and re-analyzed with the normal processing controls, then
 exported again. Starting a new hardware recording clears the explorer history;
 the source recording is never modified. Very old recordings without an injected
@@ -179,9 +390,9 @@ Processing, visualization, export and configuration-file actions remain
 available. Press **RESET** to leave explorer mode and re-enable run controls.
 
 Every GUI parameter is atomically mirrored to
-`sw/gui/last_configuration.json` after it changes. Startup restores that file.
-**Save configuration…** writes a named JSON configuration and **Load
-configuration…** validates and applies one; acquisition settings take effect on
+`sw/gui/configs/heepidermis/last.json` after it changes. Startup restores that file.
+The workspace's **Save configuration…** writes one JSON configuration for all
+devices and signals; **Load configuration…** validates and applies it. Acquisition settings take effect on
 the device after the corresponding Build or live update.
 Hover over a configuration control for one second to see a short explanation
 of what it changes and whether it acts at build time, run time, or in analysis.
@@ -284,7 +495,7 @@ are recorded separately from hardware acquisition validity in CSV. Detected
 phasic peaks are drawn as one-second-wide blue background bands through all
 three plots, without a separate point marker. The
 motion threshold, window and minimum correlation are adjustable under
-**PROCESSING**.
+**ARTIFACT REJECTION** in the HEEPidermis section.
 Defaults are a 2 s window, at least 1 mV of reference movement, correlation
 of 0.8, and a signal/reference movement ratio between 0.5 and 2. Common steps
 hold the exclusion for one window. This is a tunable movement heuristic;
@@ -297,17 +508,15 @@ step, and `voltage_offset_mV` records the calibration used. Session CSV
 rows retain the screening/calibration active when appended; Save CSV recomputes
 and exports the full session with the current settings.
 
-CSV export recomputes the chosen analysis over the full session and includes
-`tonic_uS`, `phasic_uS`, `phasic_peak_detected` (0/1), and
-`filtered_conductance_uS` (tonic + phasic), together with algorithm, source,
-sampling rate, stored bytes, raw dLC byte and segment. The continuously appended
-session file keeps raw/reconstructed samples and event bytes; derived columns are
-computed when exporting. Undefined conductance/decomposition values are blank.
+Workspace CSV export computes tonic/phasic signals and the configured feature
+and comparison rows over the full saved history. These are signal records in
+the combined CSV; the native sample records retain their acquisition metadata
+and dLC bytes. Undefined derived values are represented as NaN.
 
 ## Differential acquisition modes
 
-The left pane groups settings into **CONTROL**, **PARAMETERS**, **DLC MODE**,
-**SERIAL COMMUNICATION**, **VISUALIZATION**, and **PROCESSING**. MCU frequency
+The HEEPidermis section groups settings into **CONTROL**, **PARAMETERS**, **DLC MODE**,
+**SERIAL COMMUNICATION**, **VISUALIZATION**, and **ARTIFACT REJECTION**. MCU frequency
 and Config. board are on the left of CONTROL; Application, Build and its memory
 summary are on the right. Memory-bar coloring is in VISUALIZATION.
 
@@ -441,6 +650,9 @@ theoretical maximum event count. A burst beyond the chosen capacity is not
 lossless: it is flagged, not silently reconstructed. This remains a single-shot
 DMA path, not a streaming ring. An FPGA bitstream predating the output cap is
 not protected against memory overwrite, regardless of the selected size.
+
+See [HEEPidermis packet format](PROTOCOL.md) for transmission modes, packet
+field tables, dLC byte encoding, and signal reconstruction.
 
 UART protocol (all numeric fields are integers; event payload is hexadecimal):
 

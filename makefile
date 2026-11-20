@@ -494,16 +494,27 @@ jtag_build: COMPILER_FLAGS += -Os
 endif
 #COMPILER_FLAGS="-DUART_BAUDRATE=$(UART_BAUD) -DREFERENCE_CLOCK_Hz=$(PLL_FREQ)"
 
-## Launch the Python VCO measurement GUI
+## Launch the multi-device acquisition and comparison workspace
 .PHONY: gui
 gui:
-	python3 sw/gui/gui.py
+	cd sw && python3 -m gui.app
 
-## Launch the BioNomadix EDA setup (override BIOPAC_ARGS for another device or --demo)
+## Open the Stroop test and publish events to the workspace GUI
+## @param STROOP_ARGS Extra tests/run_test.py options (e.g. --response-mode keys --fullscreen false)
+STROOP_ARGS ?=
+.PHONY: stroop stroop-stress
+stroop:
+	python3 tests/run_test.py stroop $(STROOP_ARGS)
+
+## Open the stressful Stroop variant with the same GUI event connection
+stroop-stress:
+	python3 tests/run_test.py stroop-stress $(STROOP_ARGS)
+
+## Launch the BIOPAC panel standalone (override BIOPAC_ARGS for another device or --demo)
 BIOPAC_ARGS ?= --profile bionomadix-ppged-r --interface enxa0cec8057fcf --ip 169.254.154.56
 .PHONY: biopac
 biopac:
-	python3 sw/biopac/gui.py $(BIOPAC_ARGS)
+	cd sw && python3 -m gui.sdk.biopac.panel $(BIOPAC_ARGS)
 
 ## @section CHEEP boards control
 

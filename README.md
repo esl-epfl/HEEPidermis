@@ -49,8 +49,7 @@ For all HEEPidermis-specific documentation, please refer to the documentation be
   - [Breakout board](./hw/vendor/breakout-board/) - To solder the cheep and connect it to the CHEEP-boards.
 
 - **Software**
-  - [Desktop GUI](./sw/gui/README.md) - HEEPidermis board control and VCO GSR recordings
-  - [BIOPAC MP160 acquisition on Linux](./sw/biopac/README.md) - native live GUI and CLI recorder for BIOPAC hardware
+  - [Desktop GUI](./sw/gui/README.md) - multi-device acquisition workspace (HEEPidermis board control, VCO GSR recordings, BIOPAC)
 
 - **Related documents**
   - [HEEPidermis](https://arxiv.org/abs/2509.04528)
@@ -74,17 +73,19 @@ See the [GUI documentation](./sw/gui/README.md) for installation requirements an
 
 ## BIOPAC live GUI
 
-An experimental native Linux GUI records and plots EDA from a BIOPAC MP160
-(with EDA100C or BioNomadix PPGED-R) over UDP, with live voltage/conductance/tonic-phasic
-plots, manual amplifier gain and filter declarations, and verified, autosaved
-sessions. No Windows, Wine, or BHAPI DLL is required.
+An experimental native Linux acquisition layer records and plots EDA from a
+BIOPAC MP160 (with EDA100C or BioNomadix PPGED-R) over UDP, with live
+voltage/conductance/tonic-phasic plots, manual amplifier gain and filter
+declarations, and verified, autosaved sessions. No Windows, Wine, or BHAPI DLL
+is required. It runs inside the desktop workspace (`make gui`, enable BIOPAC in
+the device list) or standalone:
 
 ```sh
 make biopac            # current BioNomadix setup: channel 9, 100 Hz, 5 µS/V
 BIOPAC_ARGS=--demo make biopac   # explicitly labelled simulation
 ```
 
-See the [BIOPAC documentation](./sw/biopac/README.md) for setup, calibration, and safety notes.
+See the [BIOPAC documentation](./sw/gui/sdk/biopac/README.md) for setup, calibration, and safety notes.
 
 ## Evaluating trade-offs in GSR recording
 
