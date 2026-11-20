@@ -15,15 +15,16 @@ sw/gui/tests/
 │   ├── events.py      ← EventPublisher (JSONL feed + terminal echo)
 │   ├── settings.py    ← HJSON settings loader (config_kwargs)
 │   ├── audio.py       ← synthesized feedback sounds (no assets)
-│   └── voice.py       ← Vosk keyword spotting (lazy imports)
+│   ├── voice.py       ← Vosk keyword spotting (lazy imports)
+│   └── visuals.py     ← shared verdict symbols and palette
 ├── Stroop/            ← one folder = one test (capitalized name)
 │   ├── __init__.py    ← re-exports the spec contract
 │   ├── spec.py        ← THE GUI CONTRACT (see below)
 │   ├── test.py        ← exposes Test (what the GUI/runner launch)
 │   ├── configs/       ← defaults.hjson + user-saved configurations
 │   └── ...            ← implementation modules, unit tests
-├── MIST/              ← placeholder folder (README only): shows in the GUI,
-└── SSST/                selection reports "No such test was found"
+├── MIST/              ← arithmetic stress task (same spec/configs/test layout)
+└── SSST/              ← placeholder: selection reports "No such test was found"
 ```
 
 Discovery rules (`gui/tests/__init__.py`):
@@ -109,6 +110,17 @@ Implementation notes:
   the trials collected so far.
 * Keep optional dependencies (sounddevice, vosk) imported **lazily**, inside
   the code paths that need them.
+* Reuse shared sounds, voice recognition and verdict artwork from `common/`.
+  Move reusable helpers there rather than importing another test's internals.
+* Keys: **ESC** ends the run (keeping collected data); **SPACE skips the
+  current section** — voice calibration, rest, practice, or a whole timed
+  block — at any moment, without an on-screen prompt. Never print skip
+  hints: the convention is fixed and every test obeys it silently.
+* Voice tests can isolate the participant from background voices with the
+  speaker-vector filter in `common/voice.py` (`start_learning()` around the
+  calibration phase, `finish_learning()` at its end; recognition then drops
+  words whose voice similarity to the enrolled profile is too low). It must
+  degrade to plain recognition whenever the speaker model is unavailable.
 
 ## Event standard (schema version 2)
 
@@ -125,11 +137,15 @@ the terminal, so a run is observable without the GUI.
  "details": {"trial": 3, "rt": 0.812, "ink": "red"}}
 ```
 
-* `label` — free-form, ≤ 64 chars (e.g. `test start`, `correct`, `stimulus`).
+* `label` — free-form, ≤ 64 chars (e.g. `Stroop start`, `correct`, `stimulus`).
+  Start/stop labels name the test and the part that begins/ends:
+  `Stroop start`, `MIST aborted`, `calibration start`, `rest end`,
+  `stress start`, `control end`, …
 * `color` — part of the format: a palette name (`white green red yellow blue
   orange purple cyan`) or a `#rrggbb` hex string. Convention: **verdicts are
-  green (correct) / red (wrong or timeout); every informational phase is
-  white**. Unknown names fall back to white in the GUI.
+  green (correct) / red (wrong or timeout), every run/section start/stop
+  marker is yellow, and every other informational phase is white**. Unknown
+  names fall back to white in the GUI.
 * `sequence` — 0-based within `run_id`; the GUI deduplicates on
   (`run_id`, `sequence`).
 * `monotonic_s` / `unix_s` — both required; the GUI renders relative to its
@@ -138,7 +154,10 @@ the terminal, so a run is observable without the GUI.
 
 The GUI turns these into colored labeled markers on every plot and stores
 them in the workspace CSV (device key `tests`, `event_label`/`event_color`
-columns).
+columns).  The Tests panel can show/hide marker groups — start/stop
+(every yellow run/section boundary), right/wrong (green/red verdicts),
+stimulus onsets, and other phases; grouping is by color and label, and
+hiding is display-only, the CSV always keeps every event.
 
 ## `configs/` — configuration files
 

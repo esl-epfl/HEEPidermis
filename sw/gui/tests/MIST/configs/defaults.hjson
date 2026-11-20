@@ -1,0 +1,41 @@
+{
+  mist:
+  {
+    test_time: 60.0
+    practice_time: 60.0
+    rest_time: 10.0
+    block_order: control stress
+    repetitions: 1
+    fullscreen: true
+    font_size: 0
+    background: "#101014"
+    foreground: "#f2f2f2"
+    difficulty: 3
+    seed: 0
+    response_mode: voice
+    feedback_time: 0.8
+    isi: 0.3
+    response_time: 4.0
+    response_min: 2.0
+    response_max: 10.0
+    adaptive_timing: true
+    time_factor: 0.9
+    recovery_factor: 1.1
+    adaptation_streak: 3
+    benchmark: 0.85
+    show_comparison: true
+    sounds: true
+    tick: true
+    voice_calibration: true
+    calibration_time: 5.0
+    mic_device: -1
+    min_voice_lag: 0.2
+    voice_grace: 0.3
+    voice_debug: false
+    # Learned at the microphone check: average speaker vector of the
+    # recognized digits; during the task, words sounding too unlike it
+    # (cosine similarity below the threshold) are dropped as noise.
+    speaker_filter: true
+    speaker_threshold: 0.3
+  }
+}

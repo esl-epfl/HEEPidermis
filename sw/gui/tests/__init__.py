@@ -35,7 +35,7 @@ def available_tests():
             module = importlib.import_module(f".{folder.name}.spec", __package__)
         except ModuleNotFoundError as error:
             if error.name == f"gui.tests.{folder.name}.spec":
-                tests[entry["key"]] = entry  # Placeholder folder (e.g. MIST).
+                tests[entry["key"]] = entry  # Placeholder folder (e.g. SSST).
                 continue
             raise  # A real dependency problem inside the spec must be loud.
         entry.update(key=getattr(module, "NAME", entry["key"]),

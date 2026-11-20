@@ -69,7 +69,10 @@ workspace is saved (a CSV or a configuration), the selected test, the loaded
 configuration file and all form values are stored and restored on load.
 Only values that differ from the test's own defaults are passed as
 command-line flags, and **Launch options** accepts extra raw flags.
-Placeholder folders (MIST, SSST — not implemented yet) still appear in the
+Stroop and [MIST](tests/MIST/README.md) are implemented; MIST adds arithmetic
+practice, rest, control and adaptive stress blocks, with keyboard/voice
+answers and the same colored markers and stress sounds.
+Placeholder folders (SSST — not implemented yet) still appear in the
 dropdown, but selecting one shows "No such test was found." and Open does
 nothing.
 

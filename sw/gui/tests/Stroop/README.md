@@ -19,8 +19,9 @@ Or with the workspace shortcut (see `sw/gui/README.md`):
 
     make stroop          # TEST_ARGS passes extra run_test.py options
 
-`SPACE` begins each phase; number keys `1..n` answer; `Escape` aborts and
-still reports the trials collected so far.
+`SPACE` begins each phase and silently skips the current one (calibration,
+rest, or the remaining test time); number keys `1..n` answer; `Escape` aborts
+and still reports the trials collected so far.
 
 ## Pressure and scoring
 
@@ -60,10 +61,11 @@ through the panel's "Launch options" field as raw flags.
 Every run publishes the standard colored event feed (see `../AGENTS.md`) to
 `sw/gui/outs/tests/events.jsonl` (`--events PATH` or
 `HEEPIDERMIS_TESTS_EVENTS` to override) and echoes each event to the
-terminal. Labels: `instructions`, `calibration`, `calibration end`, `rest`,
-`rest end`, `test start`, `stimulus`, `correct` (green), `wrong` (red),
-`timeout` (red), `test aborted` (red) and `test end` — the GUI draws them as
-colored markers aligned with the HEEPidermis/BIOPAC measurements.
+terminal. Labels: `instructions`, `calibration start`/`calibration end`,
+`rest start`/`rest end`, `Stroop start`, `stimulus`, `correct` (green),
+`wrong` (red), `timeout` (red), and `Stroop aborted`/`Stroop end` —
+start/stop markers are yellow; the GUI draws them as colored markers
+aligned with the HEEPidermis/BIOPAC measurements.
 
 ## Voice input (keyword spotting)
 
@@ -74,7 +76,8 @@ mic going quiet for `--voice-quiet-s` ends the word; `--voice-max-wait` caps
 the wait). The mic is only processed while a word is on screen and
 unanswered, so nothing said between words can leak into a trial; hits faster
 than `min_voice_lag` after a word appears are dropped as carried over.
-Voice mode starts with a calibration screen (say each color once; `S` skips).
+Voice mode starts with a calibration screen (say each color once; `SPACE`
+skips).
 If voice is unavailable the test falls back to the keyboard with a note.
 
 Optional dependencies (`pip install vosk sounddevice`, formerly

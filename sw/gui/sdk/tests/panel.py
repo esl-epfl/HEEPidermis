@@ -33,6 +33,27 @@ ROOT = Path(__file__).resolve().parents[4]
 RUNNER = ROOT / "sw/gui/tests/run_test.py"
 DEFAULT_PATH = ROOT / "sw/gui/outs/tests/events.jsonl"
 
+# Marker categories for the plot display (see AGENTS.md): by convention,
+# yellow marks every run/section start/stop (the run itself, calibration,
+# rest, practice/control/stress blocks), green/red are right/wrong verdicts,
+# "stimulus"-labeled events are the stimulus onsets, and everything else is
+# a phase.  Hiding a group is display-only: the workspace CSV and the event
+# feed keep every event.
+VERDICT_COLORS = frozenset({"green", "red"})
+STIMULUS_LABELS = frozenset({"stimulus", "calibration stimulus"})
+PHASE_GROUP = "phases"
+
+
+def marker_group(label, color=""):
+    """Category of a test event: start_stop, verdicts, stimuli or phases."""
+    if color == "yellow":
+        return "start_stop"
+    if color in VERDICT_COLORS:
+        return "verdicts"
+    if label in STIMULUS_LABELS:
+        return "stimuli"
+    return PHASE_GROUP
+
 
 def validate_configuration(values):
     """Validate a saved Tests-panel configuration (raises ValueError)."""
@@ -43,12 +64,16 @@ def validate_configuration(values):
     title = values.get("test", implemented[0] if implemented else next(iter(tests), ""))
     if not isinstance(title, str) or title not in {entry["title"] for entry in tests.values()}:
         raise ValueError("Unknown test")
+    # Legacy (pre-Tests-panel) snapshots have no "test" key; fill it in so
+    # apply_configuration can always rely on it.
+    values = {**values, "test": title}
     for key in ("event_path", "launch_options", "config_file"):
         if key in values and not isinstance(values[key], str):
             raise ValueError(f"Invalid Tests {key}")
     shlex.split(values.get("launch_options", ""))
-    if "show_stimuli" in values and not isinstance(values["show_stimuli"], bool):
-        raise ValueError("show_stimuli must be true or false")
+    for key in ("show_stimuli", "show_start_stop", "show_verdicts", "show_phases"):
+        if key in values and not isinstance(values[key], bool):
+            raise ValueError(f"{key} must be true or false")
     form_values = values.get("values", {})
     if not isinstance(form_values, dict):
         raise ValueError("Invalid Tests form values")
@@ -76,6 +101,16 @@ class TestsPanel:
                                        or str(DEFAULT_PATH))
         self.launch_options = tk.StringVar(value="")
         self.show_stimuli = tk.BooleanVar(value=False)
+        self.show_start_stop = tk.BooleanVar(value=True)
+        self.show_verdicts = tk.BooleanVar(value=True)
+        self.show_phases = tk.BooleanVar(value=True)
+        # (group key, variable, checkbox text) in display order; drives the
+        # marker filter, the configuration snapshot and the plot revision.
+        self.marker_toggles = (
+            ("start_stop", self.show_start_stop, "Start/stop"),
+            ("verdicts", self.show_verdicts, "Right/wrong"),
+            ("stimuli", self.show_stimuli, "Stimulus onsets"),
+            ("phases", self.show_phases, "Other phases"))
         self.status = tk.StringVar(value="Closed")
         self.count_text = tk.StringVar(value="No events yet")
         self.connect_labels = ("Open", "Close")
@@ -109,8 +144,11 @@ class TestsPanel:
         ttk.Entry(frame, textvariable=self.launch_options).pack(fill="x", pady=(3, 8))
         self.form_frame = ttk.Frame(frame)
         self.form_frame.pack(fill="x")
-        ttk.Checkbutton(frame, text="Also show each stimulus onset",
-                        variable=self.show_stimuli).pack(anchor="w")
+        marker_row = ttk.Frame(frame)
+        marker_row.pack(anchor="w", pady=(6, 0))
+        ttk.Label(marker_row, text="Markers shown:").pack(side="left")
+        for _group, variable, text in self.marker_toggles:
+            ttk.Checkbutton(marker_row, text=text, variable=variable).pack(side="left", padx=(8, 0))
         ttk.Label(frame, text="Open launches the selected test (with the options above) and "
                   "listens for its events; Close stops listening. Colored labeled events\n"
                   "appear on every plot. The task window uses SPACE to begin and ESC to finish.",
@@ -189,6 +227,7 @@ class TestsPanel:
         self.form_values = {}
         self.form_base = {}
         self.config_status.set("")
+        self._section_rules = []
         self.config_selection.set("defaults.hjson")
         entry = self._entry()
         if entry is None or not entry["implemented"]:
@@ -227,8 +266,6 @@ class TestsPanel:
                     widget = ttk.Combobox(self.form_frame, values=[str(o) for o in field["options"]],
                                           textvariable=variable, state="readonly")
                     widget.pack(fill="x")
-                    widget.bind("<<ComboboxSelected>>",
-                                lambda _e: self._update_section_states())
                 elif kind == "slider":
                     variable = tk.StringVar(value=self._widget_text(base))
                     widget = ttk.Spinbox(self.form_frame, from_=field["min"], to=field["max"],
@@ -242,6 +279,9 @@ class TestsPanel:
             if current_rule is not None and widget is not None:
                 current_rule.append(widget)
             self.form_values[key] = variable
+        for key in {rule["key"] for rule, _ in self._section_rules}:
+            if key in self.form_values:
+                self.form_values[key].trace_add("write", lambda *_: self._update_section_states())
         self._update_section_states()
 
     def _update_section_states(self):
@@ -585,7 +625,7 @@ class TestsPanel:
                 "config_file": self.config_selection.get(),
                 "values": {key: variable.get() for key, variable in self.form_values.items()},
                 "launch_options": self.launch_options.get(),
-                "show_stimuli": self.show_stimuli.get()}
+                **{f"show_{group}": variable.get() for group, variable, _text in self.marker_toggles}}
 
     def apply_configuration(self, values):
         values = validate_configuration(values)
@@ -597,8 +637,10 @@ class TestsPanel:
                 self.event_path.set(value)
             elif name == "launch_options":
                 self.launch_options.set(value)
-            elif name == "show_stimuli":
-                self.show_stimuli.set(value)
+            elif name.startswith("show_"):
+                variable = getattr(self, name, None)
+                if isinstance(variable, tk.BooleanVar):
+                    variable.set(value)
             elif name == "config_file":
                 self.config_selection.set(value)
             elif name == "values":
@@ -615,7 +657,7 @@ class TestsPanel:
         # Events are small immutable records; insertion of a delayed voice event
         # must not mutate a snapshot already being rendered/exported.
         events, times = tuple(self.events), tuple(self.times)
-        show_stimuli = self.show_stimuli.get()
+        shown = {group: variable.get() for group, variable, _text in self.marker_toggles}
 
         def get_series(low=None, high=None):
             first = 0 if low is None else bisect.bisect_left(times, low)
@@ -629,10 +671,11 @@ class TestsPanel:
         def markers(low, high):
             return [(e.time_s, e.label, e.hex_color())
                     for e in events[bisect.bisect_left(times, low):bisect.bisect_right(times, high)]
-                    if show_stimuli or e.label != "stimulus"]
+                    if shown[marker_group(e.label, e.color)]]
 
         return SimpleNamespace(get_series=get_series, get_markers=markers, signals=self.signals,
-                               invalid_spans=lambda *_args: [], revision=(len(events), show_stimuli),
+                               invalid_spans=lambda *_args: [],
+                               revision=(len(events), tuple(shown[group] for group, _v, _t in self.marker_toggles)),
                                clock_origin=self.clock_origin, latest=times[-1] if times else 0.0)
 
     def recording_snapshot(self):

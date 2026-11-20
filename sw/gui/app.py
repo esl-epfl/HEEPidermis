@@ -356,13 +356,13 @@ class Workspace:
         self.table_view.bind("<Configure>", self._track_table, add="+")
         # Weighted, but with a guaranteed minimum so no column crops its
         # contents; overflow scrolls horizontally inside the table viewport.
-        # Hide/color/remove sit right next to the signal so they are reachable
-        # without horizontal scrolling.
+        # X/hide/color lead the row so they are always visible and next to
+        # each other, before the signal pickers.
         for column, (weight, minimum) in enumerate(zip(
-                (2, 2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1),
-                (80, 120, 42, 32, 36, 40, 48, 58, 60, 60, 52, 68, 40, 36, 195, 195, 48))):
+                (1, 1, 1, 2, 2, 1, 1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1),
+                (36, 42, 32, 80, 120, 40, 48, 58, 60, 60, 52, 68, 40, 36, 195, 195, 48))):
             self.signal_table.columnconfigure(column, weight=weight, minsize=minimum)
-        headers = ("Device", "Signal", "Hide", "", "X", "St", "Y", "Range", "Min", "Max",
+        headers = ("X", "Hide", "", "Device", "Signal", "St", "Y", "Range", "Min", "Max",
                    "Style", "Amplify", "α", "Z", "A", "B", "Conf.")
         for column, title in enumerate(headers):
             label = ttk.Label(self.signal_table, text=title, style="Muted.TLabel")
@@ -865,24 +865,24 @@ class Workspace:
                                   values=[device["key"] for device in DEVICES]
                                           + ["comparison", "features"])
         device_box.set(row.device)
-        device_box.grid(row=table_row, column=0, sticky="ew", padx=2, pady=2)
+        device_box.grid(row=table_row, column=3, sticky="ew", padx=2, pady=2)
         device_box.bind("<<ComboboxSelected>>",
                         lambda _e, w=widgets: self._device_changed(w))
         signal_box = ttk.Combobox(self.signal_table, width=14, state="readonly")
-        signal_box.grid(row=table_row, column=1, sticky="ew", padx=2, pady=2)
+        signal_box.grid(row=table_row, column=4, sticky="ew", padx=2, pady=2)
         signal_box.bind("<<ComboboxSelected>>",
                         lambda _e, w=widgets, box=signal_box: self._value_changed(w, "signal", box.get()))
+        remove = ttk.Button(self.signal_table, text="X", width=3,
+                            command=lambda w=widgets: self._remove_row(w))
+        remove.grid(row=table_row, column=0, sticky="ew", padx=2, pady=2)
         hide = ttk.Button(self.signal_table, text="Show" if row.hidden else "Hide", width=5,
                           command=lambda w=widgets: self._toggle_row_hidden(w))
-        hide.grid(row=table_row, column=2, sticky="ew", padx=2, pady=2)
+        hide.grid(row=table_row, column=1, sticky="ew", padx=2, pady=2)
         color = tk.Button(self.signal_table, background=row.color, width=3, relief="flat",
                           activebackground=row.color, cursor="hand2",
                           state="disabled" if row.hidden else "normal",
                           command=lambda w=widgets: self._choose_color(w))
-        color.grid(row=table_row, column=3, sticky="ew", padx=2, pady=2)
-        remove = ttk.Button(self.signal_table, text="X", width=3,
-                            command=lambda w=widgets: self._remove_row(w))
-        remove.grid(row=table_row, column=4, sticky="ew", padx=2, pady=2)
+        color.grid(row=table_row, column=2, sticky="ew", padx=2, pady=2)
         stack = ttk.Spinbox(self.signal_table, from_=1, to=PLOT_ROWS_MAX, width=3,
                             command=lambda w=widgets, b=None: None)
         stack.set(row.stack)
@@ -1642,13 +1642,26 @@ class Workspace:
                         clear = getattr(panel, "clear_recording", None)
                         if clear is not None:
                             clear()
+                # One unreadable/incompatible recording must not sink the
+                # whole load: skip it, warn, and keep every other device.
+                skipped = []
                 for device, path in files.items():
                     if device not in self.panels:
-                        self.device_frames[device]["variable"].set(True)
-                    panel = self.panels[device]
-                    loaded = panel.load_csv(path) if device == "biopac" else panel.load_recording(path)
-                    if loaded is None:
-                        raise ValueError(f"Could not load {device} recording")
+                        frame = self.device_frames.get(device)
+                        if frame is None:
+                            skipped.append((device, "no such device panel"))
+                            continue
+                        frame["variable"].set(True)
+                    panel = self.panels.get(device)
+                    if panel is None:
+                        skipped.append((device, "panel could not be started"))
+                        continue
+                    try:
+                        loaded = panel.load_csv(path) if device == "biopac" else panel.load_recording(path)
+                        if loaded is None:
+                            raise ValueError("the device refused the recording")
+                    except Exception as error:
+                        skipped.append((device, str(error) or type(error).__name__))
                 self._sync_decomposition()
                 self.timeline_offsets = {key: float(value) for key, value in
                                          configuration.get("time_alignment", {}).get("offsets_s", {}).items()}
@@ -1659,7 +1672,16 @@ class Workspace:
             self.viewport.latest = 0
             self.viewport.live()
             self._navigate()
-            self.file_status.set("Loaded all devices and signals")
+            if skipped:
+                self.file_status.set(
+                    "Loaded workspace (skipped: "
+                    + "; ".join(f"{device}" for device, _ in skipped) + ")")
+                messagebox.showwarning(parent=self.root, title="Workspace load",
+                                       message="Some recordings were skipped:\n\n"
+                                               + "\n".join(f"• {device}: {reason}"
+                                                           for device, reason in skipped))
+            else:
+                self.file_status.set("Loaded all devices and signals")
         except Exception as error:
             self.file_status.set(f"Workspace {action} failed")
             messagebox.showerror(parent=self.root, title=f"Workspace {action}", message=str(error))
@@ -1930,11 +1952,16 @@ class Workspace:
         self._apply_workspace_state(bundle["workspace"])
         # Disabling an old panel can cache its current settings. The loaded
         # bundle is authoritative, including settings for disabled devices.
-        self.saved_device_configurations = dict(bundle["devices"])
+        # One device with incompatible settings must not sink the whole
+        # restore: skip it and keep the rest (see _finish_file_operation).
         for key, values in self.saved_device_configurations.items():
             apply = getattr(self.panels.get(key), "apply_configuration", None)
-            if apply is not None:
+            if apply is None:
+                continue
+            try:
                 apply(values)
+            except Exception as error:
+                self._log_error(f"{key} configuration not restored: {error}")
         self._sync_decomposition()
         self._state_changed()
 

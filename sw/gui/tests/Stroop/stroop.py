@@ -27,7 +27,7 @@ import random
 import time
 
 from ..common.base import CognitiveTest
-from .spec import COLOR_POOL, StroopConfig
+from .spec import COLOR_POOL, StroopConfig, TITLE
 
 RESPONSE_KEYS = "1234567890"
 
@@ -113,15 +113,15 @@ class StroopTest(CognitiveTest):
                                 if self.config.rest_time > 0 else ""),
         ]
         if self._spotter is not None and self.config.voice_calibration:
-            lines.append("Voice calibration runs first (S skips it,"
-                         " +/- changes the number of colors).")
+            lines.append("Voice calibration runs first"
+                         " (+/- changes the number of colors).")
         lines.append("ESC to quit")
         self.show_text(lines)
 
     def _handle_key(self, keysym: str):
         if keysym == "space" and self.state == "instructions":
             self._after_instructions()
-        elif keysym == "s" and self.state == "calibration":
+        elif keysym in ("s", "space") and self.state == "calibration":
             self._start_rest()          # Deliberately skip the calibration.
         elif keysym in ("plus", "equal", "KP_Add") and self.state == "calibration":
             self._resize_colors(+1)     # Listen for one more color.
@@ -129,6 +129,9 @@ class StroopTest(CognitiveTest):
             self._resize_colors(-1)     # Listen for one color fewer.
         elif keysym == "space" and self.state == "rest":
             self._start_test()          # Skip the remaining rest time.
+        elif (keysym == "space" and self._test_started is not None
+                and self.state in ("stimulus", "feedback", "isi")):
+            self._show_summary()        # Skip the remaining test time.
         elif keysym == "space" and self.state == "summary":
             self._restart()             # Run the whole test again.
         elif self.state == "stimulus" and keysym in self.keys:
@@ -164,7 +167,7 @@ class StroopTest(CognitiveTest):
 
     def _start_calibration(self):
         self.state = "calibration"
-        self.mark("calibration", color="white")
+        self.mark("calibration start", color="yellow")
         self._cal_index = 0
         self._cal_attempt = 0
         self._cal_until = time.monotonic() + CALIBRATION_TIME
@@ -261,17 +264,17 @@ class StroopTest(CognitiveTest):
             height * 0.68 + 14, fill="#40c060", outline="")
         self._canvas.create_text(
             width / 2, height * 0.78,
-            text="S to skip calibration  ·  ESC to quit",
+            text="ESC to quit",
             fill="#8a8a92", font=self.font(14, bold=False))
 
     def _start_rest(self):
         if self.state == "calibration":
-            self.mark("calibration end", color="white")
+            self.mark("calibration end", color="yellow")
         if self.config.rest_time <= 0:
             self._start_test()
             return
         self.state = "rest"
-        self.mark("rest", color="white")
+        self.mark("rest start", color="yellow")
         self._rest_until = time.monotonic() + self.config.rest_time
         if self._spotter is not None:
             self._spotter.paused = True  # Not listening during the break.
@@ -290,10 +293,10 @@ class StroopTest(CognitiveTest):
 
     def _start_test(self):
         if self.state == "rest":
-            self.mark("rest end", color="white")
+            self.mark("rest end", color="yellow")
         self.state = "stimulus"
         self._test_started = time.monotonic()
-        self.mark("test start", color="white", at=self._test_started, config=self.config.to_dict())
+        self.mark(f"{TITLE} start", color="yellow", at=self._test_started, config=self.config.to_dict())
         if self._spotter is not None:
             self._spotter.paused = True  # Listening resumes with the first word.
             self._spotter.drain_words()  # Drop calibration leftovers.
@@ -600,7 +603,7 @@ class StroopTest(CognitiveTest):
         self._clear_all()
         width = self._canvas.winfo_width() or 1000
         height = self._canvas.winfo_height() or 700
-        self.show_text(["Get ready…", "", "Press SPACE to skip the rest"],
+        self.show_text(["Get ready…"],
                        y=0.35, color=self.config.foreground)
         self._rest_id = self._canvas.create_text(
             width / 2, height * 0.62, text="", fill=self.config.foreground,
@@ -634,7 +637,10 @@ class StroopTest(CognitiveTest):
     # ----------------------------------------------------- summary/restart
 
     def _show_summary(self):
-        """Test time is over: freeze on the stats until SPACE or ESC."""
+        """Test time is over (or SPACE skipped it): freeze on the stats."""
+        player = getattr(self, "_player", None)   # Stress variant: stop the clock.
+        if player is not None:
+            player.stop()
         self._mark_end()
         self.state = "summary"
         if self._spotter is not None:
@@ -704,8 +710,8 @@ class StroopTest(CognitiveTest):
     def _mark_end(self, aborted=False):
         if not getattr(self, "_end_marked", False):
             if aborted:
-                self.mark("test aborted", color="red", phase=self.state)
-            self.mark("test end", color="white", aborted=aborted)
+                self.mark(f"{TITLE} aborted", color="yellow", phase=self.state)
+            self.mark(f"{TITLE} end", color="yellow", aborted=aborted)
             self._end_marked = True
 
     # ------------------------------------------------------------ results

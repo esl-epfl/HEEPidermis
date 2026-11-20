@@ -134,8 +134,9 @@ class CognitiveTest:
 
         ``color`` is part of the standard event format (see AGENTS.md): a
         palette name ("green", "red", "white", "yellow", "blue") or a
-        "#rrggbb" hex string.  Verdicts use green/red; every informational
-        phase stays white.
+        "#rrggbb" hex string.  Verdicts use green/red; run and section
+        start/stop markers are yellow; every other informational phase stays
+        white.
         """
         stamp = time.monotonic() if at is None else at
         event = {"schema_version": 2, "run_id": self._run_id, "test": self.NAME,
@@ -147,7 +148,7 @@ class CognitiveTest:
             try:
                 self._publisher.emit(event)
             except OSError as error:
-                print(f"[events] Could not publish Stroop marker: {error}", flush=True)
+                print(f"[events] Could not publish {self.NAME} marker: {error}", flush=True)
         if self.on_marker is not None:
             try:
                 self.on_marker(event)

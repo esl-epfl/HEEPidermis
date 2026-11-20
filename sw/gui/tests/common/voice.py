@@ -1,7 +1,7 @@
-"""Offline keyword spotting for the test color words, based on Vosk.
+"""Offline keyword spotting for test responses, based on Vosk.
 
 Captures the microphone with ``sounddevice`` and feeds a Vosk
-``KaldiRecognizer`` restricted to a fixed grammar (the color names), so the
+``KaldiRecognizer`` restricted to a fixed grammar (e.g. colors or digits), so the
 only things it can hear are the words we care about.  Detection happens on
 the *partial* results, i.e. as soon as a word is decoded — not when the
 utterance ends — which keeps the reaction-time timestamp honest.
@@ -17,6 +17,11 @@ Design notes:
   recognition latency never penalizes the participant.
 * Everything degrades gracefully: without vosk/sounddevice installed, or
   without a microphone, the tests fall back to the keyboard.
+* Optional voice isolation (``speaker_filter``): with the Vosk speaker model
+  installed, the calibration phase can enroll the participant's voice
+  (average of the utterances' speaker vectors); afterwards, recognized words
+  that sound too unlike that profile (cosine similarity below
+  ``speaker_threshold``) are dropped as background voices or noise.
 """
 
 from __future__ import annotations
@@ -47,9 +52,16 @@ except Exception:
     _VoskModel = _KaldiRecognizer = None
     _vosk_set_log_level = None
 
+try:
+    from vosk import SpkModel as _VoskSpkModel
+except Exception:
+    _VoskSpkModel = None  # Older vosk builds: no speaker verification.
+
 MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
 MODEL_DIR = Path(__file__).resolve().parent / "models"
 MODEL_NAME = "vosk-model-small-en-us-0.15"
+SPK_MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-spk-0.4.zip"
+SPK_MODEL_NAME = "vosk-model-spk-0.4"
 SAMPLE_RATE = 16000
 BLOCKSIZE = 800  # 50 ms chunks; the timestamp resolution for reactions.
 
@@ -93,6 +105,33 @@ def ensure_model(override: str = "", progress=None) -> Path:
     return path
 
 
+def ensure_spk_model(progress=None) -> Path:
+    """Return the local Vosk *speaker* model directory, downloading it once
+    (about 40 MB) if needed.  Used to learn/enforce who is talking."""
+    path = MODEL_DIR / SPK_MODEL_NAME
+    if (path / "conf" / "spk_model.conf").exists():
+        return path
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    archive = Path(tempfile.gettempdir()) / f"{SPK_MODEL_NAME}.zip"
+    if not archive.exists():
+        _download(SPK_MODEL_URL, archive, progress)
+    with zipfile.ZipFile(archive) as handle:
+        handle.extractall(MODEL_DIR)
+    if not (path / "conf" / "spk_model.conf").exists():
+        raise RuntimeError(f"Model archive did not contain {SPK_MODEL_NAME}")
+    return path
+
+
+def cosine_similarity(a, b) -> float:
+    """Cosine of the angle between two speaker vectors (1 = same voice)."""
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if not norm_a or not norm_b:
+        return 0.0
+    return max(-1.0, min(1.0, dot / (norm_a * norm_b)))
+
+
 def _download(url: str, destination: Path, progress=None) -> None:
     request = urllib.request.Request(url, headers={"User-Agent": "heepidermis-tests"})
     with urllib.request.urlopen(request, timeout=60) as response:
@@ -120,7 +159,8 @@ class VoiceSpotter:
     VOICE_LEVEL = 0.015
 
     def __init__(self, words, model_override: str = "", device=None,
-                 sample_rate: int = SAMPLE_RATE, debug: bool = False):
+                 sample_rate: int = SAMPLE_RATE, debug: bool = False,
+                 speaker_filter: bool = False, speaker_threshold: float = 0.3):
         self.words = set(words)
         self.model_override = model_override
         self.device = device
@@ -135,6 +175,18 @@ class VoiceSpotter:
         self.paused = False     # Test gate: True = emit nothing (no word on
                                 # screen, or the answer was already given).
         self._was_paused = False  # For the one-line pause/resume debug log.
+        # Voice isolation: when a speaker profile is enrolled (from the
+        # calibration phase), recognized words whose utterance sounds too
+        # unlike the participant are dropped as background voices/noise.
+        self.speaker_filter = bool(speaker_filter)
+        self.speaker_threshold = float(speaker_threshold)
+        self.speaker_enrolled = False
+        self.dropped_voices = 0   # Words rejected by the profile so far.
+        self._speaker_learning = False
+        self._speaker_vectors = []
+        self._speaker_profile = None
+        self._spk_model = None
+        self._last_spk = None     # Latest utterance vector, any result.
 
         self._hits: deque = deque()          # (word, timestamp)
         self._finals: deque = deque()        # timestamps of utterance ends
@@ -202,7 +254,7 @@ class VoiceSpotter:
     def ack(self) -> None:
         """The current utterance has been consumed by the test.
 
-        Clears the once-per-utterance dedup set so a color can be
+        Clears the once-per-utterance dedup set so a response word can be
         recognized again in the very next trial, and marks the utterance's
         eventual silence-endpoint final as consumed too — otherwise the
         final would re-emit the already-answered word with a late
@@ -219,6 +271,48 @@ class VoiceSpotter:
         """
         self._pending_words = list(words)
 
+    # --------------------------------------------------- speaker isolation
+
+    def start_learning(self) -> None:
+        """Collect speaker vectors of everything recognized from now on."""
+        if not self.speaker_filter:
+            return
+        self._speaker_vectors = []
+        self._speaker_learning = True
+
+    def finish_learning(self) -> bool:
+        """Enroll the collected vectors as the participant's voice profile.
+
+        Returns True when a profile was learned.  With no profile (filter
+        off, nothing recognized, or no speaker model) recognition simply
+        behaves as before.
+        """
+        self._speaker_learning = False
+        if not self._speaker_vectors:
+            return False
+        size = len(self._speaker_vectors[0])
+        profile = [0.0] * size
+        for vector in self._speaker_vectors:
+            for index, value in enumerate(vector[:size]):
+                profile[index] += value
+        count = len(self._speaker_vectors)
+        self._speaker_profile = [value / count for value in profile]
+        self.speaker_enrolled = True
+        self._status("listening · voice filter on")
+        return True
+
+    def _attach_spk_model(self) -> None:
+        """Give the current recognizer the speaker model, if one loaded."""
+        if self._spk_model is None or self._recognizer is None:
+            return
+        setter = getattr(self._recognizer, "SetSpkModel", None)
+        if setter is not None:
+            try:
+                setter(self._spk_model)
+            except Exception as error:
+                self._log(f"speaker filter unavailable: {error}")
+                self._spk_model = None
+
     def _rebuild_recognizer(self) -> None:
         """Fresh recognizer: same model and grammar, empty decode state.
 
@@ -232,6 +326,7 @@ class VoiceSpotter:
             self._recognizer = _KaldiRecognizer(
                 self._model, self.sample_rate,
                 json.dumps(sorted(self.words)))
+            self._attach_spk_model()
         except Exception:
             # Fall back to a reset if reconstruction ever fails.
             reset = getattr(self._recognizer, "Reset", None)
@@ -254,8 +349,16 @@ class VoiceSpotter:
                 _vosk_set_log_level(-1)
             model = _VoskModel(str(path))
             self._model = model
+            if self.speaker_filter and _VoskSpkModel is not None:
+                try:
+                    self._status("loading voice filter…")
+                    self._spk_model = _VoskSpkModel(str(ensure_spk_model(
+                        progress=self._progress)))
+                except Exception as error:
+                    self._log(f"speaker filter unavailable: {error}")
             grammar = json.dumps(sorted(self.words))
             self._recognizer = _KaldiRecognizer(model, self.sample_rate, grammar)
+            self._attach_spk_model()
             self._stream = _sd.InputStream(
                 samplerate=self.sample_rate, channels=1, dtype="int16",
                 blocksize=BLOCKSIZE, callback=self._on_audio,
@@ -327,17 +430,32 @@ class VoiceSpotter:
                 self._rebuild_recognizer()
                 self._last_voice_ts = time.monotonic()
             if self._recognizer.AcceptWaveform(data):
-                text = json.loads(self._recognizer.Result()).get("text", "")
-                self._accept_result(text, timestamp, final=True)
+                result = json.loads(self._recognizer.Result())
+                self._accept_result(result.get("text", ""), timestamp,
+                                    final=True, spk=result.get("spk"))
             else:
-                text = json.loads(self._recognizer.PartialResult()).get("partial", "")
-                self._accept_result(text, timestamp, final=False)
+                result = json.loads(self._recognizer.PartialResult())
+                self._accept_result(result.get("partial", ""), timestamp,
+                                    final=False, spk=result.get("spk"))
 
-    def _emit(self, text: str, timestamp: float) -> None:
+    def _emit(self, text: str, timestamp: float, spk=None) -> None:
         """Queue every grammar word of ``text`` not yet emitted this utterance."""
         for word in text.split():
             if word in self.words and word not in self._spoken:
                 self._spoken.add(word)
+                if self._speaker_learning and spk is not None:
+                    self._speaker_vectors.append(spk)
+                if (self._speaker_profile is not None and spk is not None
+                        and cosine_similarity(spk, self._speaker_profile)
+                        < self.speaker_threshold):
+                    # Someone/something else said the word: not the
+                    # participant's voice, so not an answer.
+                    self.dropped_voices += 1
+                    if self.debug:
+                        self._log(f"dropped (not the enrolled voice, "
+                                  f"similarity {cosine_similarity(spk, self._speaker_profile):.2f}): "
+                                  f"{word!r}")
+                    continue
                 if self.paused:
                     if self.debug:
                         self._log(f"dropped (input paused): {word!r}")
@@ -349,7 +467,8 @@ class VoiceSpotter:
     def _log(self, message: str) -> None:
         print(f"[voice] {message}", flush=True)
 
-    def _accept_result(self, text: str, timestamp: float, final: bool) -> None:
+    def _accept_result(self, text: str, timestamp: float, final: bool,
+                       spk=None) -> None:
         """Process one recognizer result (partials and finals alike).
 
         A word is emitted at most once per utterance: partials already
@@ -359,18 +478,21 @@ class VoiceSpotter:
         fires long after the word itself ended).  After :meth:`ack` the
         whole utterance counts as consumed, so its final emits nothing.
         """
+        if spk is not None:
+            self._last_spk = spk  # Newest estimate of the current voice.
         if final:
             if self.debug and text:
                 self._log(f"final: {text!r}")
             self._finals.append(timestamp)  # Utterance ended (silence).
             if not self._suppress_final:
-                self._emit(text, timestamp)
+                self._emit(text, timestamp, spk if spk is not None else self._last_spk)
             self._spoken.clear()   # A new utterance may repeat a color.
             self._suppress_final = False
             self.partial = ""
+            self._last_spk = None  # The next utterance carries its own voice.
         else:
             if text and text != self.partial and self.debug:
                 self._log(f"partial: {text!r}")
             if text:
                 self.partial = text
-            self._emit(text, timestamp)
+            self._emit(text, timestamp, spk if spk is not None else self._last_spk)

@@ -118,7 +118,12 @@ TEST_FLAGS=
 # Dummy target to force software rebuild
 PARAMS = $(PROJECT)
 
-PLL_FREQ ?= 1000000
+# Must match SYS_FCLK_HZ in the flashed application
+# (sw/applications/gsr/demo/main.c) and the GUI's MCU frequency setting:
+# the UART baud is derived as PLL_FREQ / 20 on both sides. The previous
+# default of 1 MHz opened serial terminals at 50000 baud against a 500000
+# baud device, printing garbage.
+PLL_FREQ ?= 10000000
 
 # ----- UART CONFIGURATION ----- #
 # For this computation check hw/vendor/x-heep/sw/target/sim/x-heep.h
@@ -457,6 +462,9 @@ jtag_close:
 	@if [ -f .openocd.pid ]; then kill "$$(cat .openocd.pid)" 2>/dev/null || true; fi
 	@if [ -f .uart.pid ]; then kill "$$(cat .uart.pid)" 2>/dev/null || true; fi
 	@rm -f .openocd.pid .uart.pid
+	@# Fallback: a stale OpenOCD from a lost pid file would keep ports 3333/6666
+	@# occupied and the next jtag_open would fail with "Address already in use".
+	@pkill -f "openocd -f hw/vendor/x-heep/tb/core-v-mini-mcu-pynq-z2-esl-programmer.cfg" 2>/dev/null || true
 
 # Open GDB
 .PHONY: jtag_run

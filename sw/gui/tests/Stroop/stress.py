@@ -25,10 +25,9 @@ import math
 import time
 
 from ..common.audio import SoundPlayer
+from ..common.visuals import draw_verdict
 from .spec import StroopStressConfig
 from .stroop import StroopTest
-
-SMILEY = "#f0c020"
 
 
 class StroopStressTest(StroopTest):
@@ -288,19 +287,7 @@ class StroopStressTest(StroopTest):
         height = self._canvas.winfo_height() or 700
         cx, cy = width / 2, height * 0.42
         arm = min(width, height) * 0.09
-        if outcome == "correct":
-            self._canvas.create_line(cx - arm, cy, cx - arm * 0.25, cy + arm * 0.75,
-                                     cx + arm * 1.1, cy - arm * 0.9,
-                                     fill="#40c060", width=max(6, int(arm / 5)),
-                                     capstyle="round", joinstyle="round")
-            self._draw_smiley(cx, cy + arm * 2.6, arm * 0.85)
-        else:
-            self._canvas.create_line(cx - arm, cy - arm, cx + arm, cy + arm,
-                                     fill="#e04040", width=max(8, int(arm / 4)),
-                                     capstyle="round")
-            self._canvas.create_line(cx + arm, cy - arm, cx - arm, cy + arm,
-                                     fill="#e04040", width=max(8, int(arm / 4)),
-                                     capstyle="round")
+        draw_verdict(self._canvas, cx, cy, arm, outcome == "correct")
         # Points earned/deducted, in big letters next to the symbol.
         color = "#40c060" if self._last_delta > 0 else "#e04040"
         size = max(36, height // 10)
@@ -320,21 +307,6 @@ class StroopStressTest(StroopTest):
                 fill="#e04040", font=self.font(max(28, height // 16)))
         self._draw_legend()
         self._draw_chrome()
-
-    def _draw_smiley(self, cx, cy, radius):
-        self._canvas.create_oval(cx - radius, cy - radius, cx + radius, cy + radius,
-                                 fill=SMILEY, outline="#7a5c00", width=2)
-        eye = radius * 0.13
-        offset = radius * 0.42
-        for side in (-1, 1):
-            self._canvas.create_oval(cx + side * offset - eye, cy - radius * 0.25 - eye,
-                                     cx + side * offset + eye, cy - radius * 0.25 + eye,
-                                     fill="#101014", outline="")
-        mouth = radius * 0.62
-        self._canvas.create_arc(cx - mouth, cy - mouth * 0.45,
-                                cx + mouth, cy + mouth * 0.95,
-                                start=200, extent=140, style="arc",
-                                outline="#101014", width=max(3, int(radius / 10)))
 
     def _redraw_static(self):
         """Window mapped/resized: redraw whatever phase is on screen."""

@@ -104,9 +104,12 @@ class EventTests(unittest.TestCase):
         validate_configuration({})
         validate_configuration({"test": "Stroop", "launch_options": "--seed 7",
                                  "event_path": "/tmp/x.jsonl", "show_stimuli": True,
+                                 "show_start_stop": False, "show_verdicts": False,
+                                 "show_phases": True,
                                  "values": {"test_time": "60", "response_mode": "voice"}})
         for values in ({"test": "n-back"}, {"launch_options": "--bad 'quote"},
                        {"event_path": 3}, {"show_stimuli": "yes"},
+                       {"show_verdicts": "no"}, {"show_start_stop": 1},
                        {"values": {"bogus": 1}}, {"values": {"test_time": {}}}, []):
             with self.assertRaises(ValueError):
                 validate_configuration(values)
@@ -162,6 +165,8 @@ class PanelTests(unittest.TestCase):
         self.addCleanup(self.root.destroy)
         self.panel = TestsPanel(self.root, host=tk.Frame(self.root),
                                  reports=tk.Frame(self.root))
+        self.panel.test_selection.set("Stroop")
+        self.panel._build_form()
         self.addCleanup(self.panel.close)
         self.feed = Path(self.directory.name) / "events.jsonl"
         self.panel.event_path.set(str(self.feed))
@@ -190,28 +195,41 @@ class PanelTests(unittest.TestCase):
         self.assertIn("1 events", self.panel.count_text.get())
         self.assertTrue(self.panel.connected)
 
-    def test_stimuli_are_hidden_until_enabled(self):
+    def test_marker_groups_can_be_hidden_independently(self):
         self.panel.connect()
-        colors = {"test start": "white", "stimulus": "white",
-                  "correct": "green", "wrong": "red"}
+        colors = {"test start": "yellow", "stimulus": "white",
+                  "correct": "green", "wrong": "red", "rest": "white"}
         labels = tuple(colors)
         with self.feed.open("w", encoding="utf-8") as stream:
             for sequence, label in enumerate(labels):
                 stream.write(json.dumps(message(label, sequence, color=colors[label])) + "\n")
         self.pump()
         snapshot = self.panel.plot_snapshot({"events"})
+        # Defaults: everything except stimulus onsets.
         self.assertEqual([label for _, label, _c in snapshot.get_markers(0, 1e9)],
-                         ["test start", "correct", "wrong"])
-        self.assertEqual(snapshot.revision, (4, False))
+                         ["test start", "correct", "wrong", "rest"])
+        self.assertEqual(snapshot.revision, (5, (True, True, False, True)))
         self.panel.show_stimuli.set(True)
         # Snapshots are frozen; the toggle takes effect on the next snapshot.
         refreshed = self.panel.plot_snapshot({"events"})
         self.assertEqual([label for _, label, _c in refreshed.get_markers(0, 1e9)], list(labels))
-        self.assertEqual(refreshed.revision, (4, True))
+        self.assertEqual(refreshed.revision, (5, (True, True, True, True)))
+        # Each remaining group hides on its own, in any combination.
+        self.panel.show_stimuli.set(False)
+        self.panel.show_verdicts.set(False)
+        verdicts_hidden = self.panel.plot_snapshot({"events"})
+        self.assertEqual([label for _, label, _c in verdicts_hidden.get_markers(0, 1e9)],
+                         ["test start", "rest"])
+        self.panel.show_phases.set(False)
+        only_start = self.panel.plot_snapshot({"events"})
+        shown = only_start.get_markers(0, 1e9)
+        self.assertEqual([label for _t, label, _c in shown], ["test start"])
+        self.assertEqual(shown[0][2], "#f2bd62")  # Start/stop markers are yellow.
+        self.panel.show_start_stop.set(False)
+        none_left = self.panel.plot_snapshot({"events"})
+        self.assertEqual(none_left.get_markers(0, 1e9), [])
+        # The events series (CSV export shape) is never filtered.
         series = snapshot.get_series()["events"]
-        values = series["values"]
-        self.assertTrue(math.isnan(values[0]) and math.isnan(values[1]))
-        self.assertEqual(values[2:], [1, 0])
         self.assertEqual(series["labels"], list(labels))
         self.assertEqual(series["kind"], "events")
         windowed = snapshot.get_series(series["times"][2], series["times"][2])
@@ -303,16 +321,17 @@ class PanelTests(unittest.TestCase):
         self.assertIn("already open", self.panel.status.get())
 
     def test_form_options_become_launch_flags(self):
+        mode = "keys" if self.panel.form_base["response_mode"] == "voice" else "voice"
         with patch("gui.sdk.tests.panel.subprocess.Popen") as popen:
             popen.return_value.poll.return_value = None
             self.panel.apply_configuration({"test": "Stroop",
                                             "values": {"test_time": "90",
-                                                       "response_mode": "voice",
+                                                       "response_mode": mode,
                                                        "voice_calibration": False}})
             self.panel.launch()
         (args,), _ = popen.call_args
         self.assertEqual(args[args.index("--test-time") + 1], "90")
-        self.assertEqual(args[args.index("--response-mode") + 1], "voice")
+        self.assertEqual(args[args.index("--response-mode") + 1], mode)
         self.assertEqual(args[args.index("--voice-calibration") + 1], "false")
         # Defaults are not passed: the test's own configuration stays the truth.
         self.assertNotIn("--rest-time", args)
@@ -446,7 +465,7 @@ class PanelTests(unittest.TestCase):
         self.assertTrue(all(not w.instate(["disabled"]) for w in widgets))
 
     def test_placeholder_tests_refuse_to_launch(self):
-        self.panel.test_selection.set("MIST")  # Folder exists, test does not.
+        self.panel.test_selection.set("SSST")  # Folder exists, test does not.
         self.panel._build_form()
         with patch("gui.sdk.tests.panel.subprocess.Popen") as popen:
             self.panel.launch()
@@ -459,6 +478,8 @@ class PanelTests(unittest.TestCase):
         values = {"event_path": "/tmp/feed.jsonl", "test": "Stroop",
                   "config_file": "defaults.hjson",
                   "launch_options": "--fullscreen false", "show_stimuli": True,
+                  "show_start_stop": False, "show_verdicts": True,
+                  "show_phases": False,
                   "values": {"test_time": "45", "seed": "3"}}
         self.panel.apply_configuration(values)
         snapshot = self.panel.configuration_snapshot()
@@ -872,10 +893,10 @@ class EndToEndTests(unittest.TestCase):
         result = test.result
         self.assertFalse(result.aborted)
         labels = [marker["label"] for marker in result.timeline]
-        for phase in ("instructions", "rest", "rest end", "test start", "test end"):
+        for phase in ("instructions", "rest start", "rest end", "Stroop start", "Stroop end"):
             self.assertIn(phase, labels)
         self.assertEqual(labels[0], "instructions")
-        self.assertEqual(labels[-1], "test end")
+        self.assertEqual(labels[-1], "Stroop end")
         self.assertTrue(result.summary["accuracy"] is not None or result.events)
 
         # Every published marker arrives at the listening panel in order.
@@ -897,10 +918,10 @@ class EndToEndTests(unittest.TestCase):
         self.plot.set_data([], markers=snapshot.get_markers(0, 1e9))
         rendered = [self.plot.itemcget(item, "text")
                     for item in self.plot.find_withtag("event-label")]
-        self.assertIn("test start", rendered)
+        self.assertIn("Stroop start", rendered)
         fills = {self.plot.itemcget(item, "fill")
                  for item in self.plot.find_withtag("event-line")}
-        self.assertEqual(fills, {"#ffffff", "#3fbf5f", "#e04848"})
+        self.assertEqual(fills, {"#ffffff", "#3fbf5f", "#e04848", "#f2bd62"})
 
         # A saved native CSV reloads into a fresh panel with the same timeline.
         path = Path(self.directory.name) / "tests.csv"
