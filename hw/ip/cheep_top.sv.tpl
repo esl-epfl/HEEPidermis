@@ -156,6 +156,7 @@ ${pad.x_heep_system_interface}
   // dLC done signal
   reg_req_t dlc_req;
   reg_rsp_t dlc_resp;
+  reg_req_t esa_req;
 
 /* verilator lint_off UNUSED */
 /* verilator lint_off UNDRIVEN */
@@ -164,7 +165,23 @@ ${pad.x_heep_system_interface}
   fifo_pkg::fifo_req_t  [core_v_mini_mcu_pkg::DMA_CH_NUM-1:0] hw_fifo_req;
   fifo_pkg::fifo_resp_t [core_v_mini_mcu_pkg::DMA_CH_NUM-1:0] hw_fifo_resp;
 
-  assign hw_fifo_resp [core_v_mini_mcu_pkg::DMA_CH_NUM-1:1] = '0;
+  // ESA registers are exposed on the module interface for this standalone
+  // example; the top-level bus is not mapped to it yet.
+  assign esa_req = '0;
+
+  esa #(
+      .EnableVisualizationLatches(1'b0),
+      .EnableOnReset(1'b1),
+      .InputSamplesPerTransaction(16)
+  ) esa_i (
+      .clk_i(system_clk),
+      .rst_ni(rst_nin_sync),
+      .reg_req_i(esa_req),
+      .reg_rsp_o(),
+      .hw_fifo_req_i(hw_fifo_req[1]),
+      .hw_fifo_resp_o(hw_fifo_resp[1]),
+      .esa_done_o(hw_fifo_done[1])
+  );
 
 /* verilator lint_on UNUSED */
 /* verilator lint_on UNDRIVEN */

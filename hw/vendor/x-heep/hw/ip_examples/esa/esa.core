@@ -1,0 +1,24 @@
+CAPI=2:
+
+name: "example:ip:esa"
+description: "Example neural feature accelerator connected to the DMA HW FIFO"
+
+filesets:
+  files_rtl:
+    depend:
+    - x-heep::packages
+    - pulp-platform.org::common_cells
+    files:
+    - rtl/esa_hpf_op.sv
+    - rtl/esa_abs_op.sv
+    - rtl/esa_ses_average_op.sv
+    - rtl/esa_decimation_op.sv
+    - rtl/esa_registers.sv
+    - rtl/esa_fifo_buffer.sv
+    - rtl/esa.sv
+    file_type: systemVerilogSource
+
+targets:
+  default:
+    filesets:
+    - files_rtl
