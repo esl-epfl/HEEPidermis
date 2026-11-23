@@ -23,6 +23,12 @@
 #include "tb_macros.hh"
 #include "Vtb_system.h"
 
+// Standard libraries
+#include <fstream>
+#include <map>
+#include <string>
+#include <vector>
+
 // Defines
 // -------
 #define FST_FILENAME "logs/waves.fst"
@@ -42,7 +48,8 @@
 enum boot_mode_e {
     BOOT_MODE_JTAG = 0,
     BOOT_MODE_FLASH = 1,
-    BOOT_MODE_FORCE = 2
+    BOOT_MODE_FORCE = 2,
+    BOOT_MODE_SPI = 3   // Boot mode to test SPI slave programming
 };
 
 // Function prototypes
@@ -57,8 +64,26 @@ void initDut(Vtb_system *dut, uint8_t boot_mode, uint8_t exec_from_flash);
 void clkGen(Vtb_system *dut);
 void rstDut(Vtb_system *dut, uint8_t gen_waves, VerilatedFstC *trace);
 
-// Run simulation for the specififed number of cycles
+// Run simulation for the specified number of cycles
 void runCycles(unsigned int ncycles, Vtb_system *dut, uint8_t gen_waves, VerilatedFstC *trace);
+
+// SPI helpers
+void spiSendByte(Vtb_system *dut, uint8_t data, uint8_t gen_waves, VerilatedFstC *trace);
+void spiSetWrapLength(Vtb_system *dut, uint16_t length_words, uint8_t gen_waves, VerilatedFstC *trace);
+void spiSetWrite(Vtb_system *dut, uint8_t gen_waves, VerilatedFstC *trace);
+void spiSendAddress(Vtb_system *dut, uint32_t address, uint8_t gen_waves, VerilatedFstC *trace);
+void spiSendWord(Vtb_system *dut, uint32_t data, uint8_t gen_waves, VerilatedFstC *trace);
+void spiWriteWord(Vtb_system *dut, uint32_t address, uint32_t data, uint8_t gen_waves, VerilatedFstC *trace);
+void spiWriteBurst(Vtb_system *dut, uint32_t start_address, const std::vector<uint32_t> &data, uint8_t gen_waves, VerilatedFstC *trace);
+void spiLoadHex(Vtb_system *dut, const std::string &filename, uint8_t gen_waves, VerilatedFstC *trace);
+
+// SPI Tests
+void spiSanityTest(Vtb_system *dut, uint8_t gen_waves, VerilatedFstC *trace);
+void spiSingleWordManualTest(Vtb_system *dut, uint8_t gen_waves, VerilatedFstC *trace);
+void spiSingleWordWriteTest(Vtb_system *dut, uint8_t gen_waves, VerilatedFstC *trace);
+
+
+std::map<uint32_t, uint8_t> parseHexFile(const std::string &filename);
 
 // Global variables
 // ----------------
@@ -134,6 +159,8 @@ int main(int argc, char *argv[])
         boot_mode = BOOT_MODE_FLASH;
     } else if (boot_mode_str == "force" || boot_mode_str == "2") {
         boot_mode = BOOT_MODE_FORCE;
+    } else if (boot_mode_str == "spi" || boot_mode_str == "3") {
+        boot_mode = BOOT_MODE_SPI;
     } else {
         TB_WARN("Invalid boot mode '%s'. Defaulting to JTAG", boot_mode_str.c_str());
         boot_mode_str = "jtag";
@@ -233,6 +260,21 @@ int main(int argc, char *argv[])
         TB_LOG(LOG_LOW, "Waiting for boot code to load firmware from flash...");
         break;
 
+    case BOOT_MODE_SPI:
+        TB_LOG(LOG_LOW, "Loading firmware through SPI...");
+        spiLoadHex(dut, firmware_file, gen_waves, trace);
+
+        runCycles(1, dut, gen_waves, trace);
+
+        TB_LOG(LOG_MEDIUM, "- triggering boot loop exit...");
+        // Instead of using tb_set_exit_loop() we directly write boot-control register
+        spiWriteWord(dut, 0x2000000C, 0x00000001, gen_waves, trace);
+
+        runCycles(1, dut, gen_waves, trace);
+
+        TB_LOG(LOG_LOW, "Firmware loaded through SPI. Running app...");
+    break;
+
     default:
         TB_ERR("Invalid boot mode: %d", boot_mode);
         exit(EXIT_FAILURE);
@@ -281,6 +323,13 @@ void initDut(Vtb_system *dut, uint8_t boot_mode, uint8_t exec_from_flash) {
     // Static configuration
     dut->boot_select_i = boot_mode == BOOT_MODE_FLASH;
     dut->execute_from_flash_i = exec_from_flash;
+
+    // External SPI master
+    dut->spi_tb_enable_i = 0;
+    dut->spi_tb_sck_i    = 0;
+    dut->spi_tb_cs_i     = 1;
+    dut->spi_tb_mosi_i   = 0;
+
     dut->eval();
 }
 
@@ -313,18 +362,218 @@ void runCycles(unsigned int ncycles, Vtb_system *dut, uint8_t gen_waves, Verilat
     }
 }
 
+// SPI Tests
+void spiSanityTest(Vtb_system *dut, uint8_t gen_waves, VerilatedFstC *trace) {
+    dut->spi_tb_enable_i = 1;
+    dut->spi_tb_cs_i     = 0;
+
+    spiSendByte(dut, 0xA5, gen_waves, trace);
+
+    dut->spi_tb_cs_i = 1;
+    dut->eval();
+}
+
+void spiSingleWordManualTest(Vtb_system *dut, uint8_t gen_waves, VerilatedFstC *trace) {
+    dut->spi_tb_enable_i = 1;
+    dut->spi_tb_cs_i     = 0;
+
+    spiSetWrapLength(dut, 1, gen_waves, trace);
+    spiSetWrite(dut, gen_waves, trace);
+    spiSendAddress(dut, 0x00001000, gen_waves, trace);
+    spiSendWord(dut, 0xDEADBEEF, gen_waves, trace);
+
+    dut->spi_tb_cs_i = 1;
+    dut->eval();
+}
+
+void spiSingleWordWriteTest(Vtb_system *dut, uint8_t gen_waves, VerilatedFstC *trace) {
+    spiWriteWord(dut, 0x00001000, 0xDEADBEEF, gen_waves, trace);
+}
+
+// SPI helpers
+
+void spiSendByte(Vtb_system *dut, uint8_t data, uint8_t gen_waves, VerilatedFstC *trace) {
+    VerilatedContext *cntx = dut->contextp();
+
+    for (int bit = 7; bit >= 0; bit--) {
+
+        // Set MOSI while SCK is low
+        dut->spi_tb_mosi_i = (data >> bit) & 0x1;
+        dut->spi_tb_sck_i  = 0;
+
+        clkGen(dut);
+        dut->eval();
+        if (gen_waves) trace->dump(cntx->time());
+        cntx->timeInc(REF_CLK_HALF_PERIOD_NS);
+
+        // Rising edge: SPI slave samples MOSI
+        dut->spi_tb_sck_i = 1;
+
+        clkGen(dut);
+        dut->eval();
+        if (gen_waves) trace->dump(cntx->time());
+        cntx->timeInc(REF_CLK_HALF_PERIOD_NS);
+    }
+
+    // Return SCK low after the last bit
+    dut->spi_tb_sck_i = 0;
+
+    clkGen(dut);
+    dut->eval();
+    if (gen_waves) trace->dump(cntx->time());
+    cntx->timeInc(REF_CLK_HALF_PERIOD_NS);
+}
+
+void spiSetWrite(Vtb_system *dut, uint8_t gen_waves, VerilatedFstC *trace) {
+    spiSendByte(dut, 0x02, gen_waves, trace);
+}
+
+void spiSetWrapLength(Vtb_system *dut, uint16_t length_words, uint8_t gen_waves, VerilatedFstC *trace) {
+    spiSendByte(dut, 0x20, gen_waves, trace);
+    spiSendByte(dut, length_words & 0xFF, gen_waves, trace);
+    spiSendByte(dut, 0x30, gen_waves, trace);
+    spiSendByte(dut, (length_words >> 8) & 0xFF, gen_waves, trace);
+}
+
+void spiSendAddress(Vtb_system *dut, uint32_t address, uint8_t gen_waves, VerilatedFstC *trace) {
+    spiSendByte(dut, (address >> 24) & 0xFF, gen_waves, trace);
+    spiSendByte(dut, (address >> 16) & 0xFF, gen_waves, trace);
+    spiSendByte(dut, (address >> 8)  & 0xFF, gen_waves, trace);
+    spiSendByte(dut,  address        & 0xFF, gen_waves, trace);
+}
+void spiSendWord(Vtb_system *dut, uint32_t data, uint8_t gen_waves, VerilatedFstC *trace) {
+    spiSendByte(dut, (data >> 24) & 0xFF, gen_waves, trace);
+    spiSendByte(dut, (data >> 16) & 0xFF, gen_waves, trace);
+    spiSendByte(dut, (data >> 8)  & 0xFF, gen_waves, trace);
+    spiSendByte(dut,  data        & 0xFF, gen_waves, trace);
+}
+
+void spiWriteWord(
+    Vtb_system *dut,
+    uint32_t address,
+    uint32_t data,
+    uint8_t gen_waves,
+    VerilatedFstC *trace
+) {
+    dut->spi_tb_enable_i = 1;
+    dut->spi_tb_cs_i     = 0;
+
+    spiSetWrapLength(dut, 1, gen_waves, trace);
+    spiSetWrite(dut, gen_waves, trace);
+    spiSendAddress(dut, address, gen_waves, trace);
+    spiSendWord(dut, data, gen_waves, trace);
+
+    dut->spi_tb_cs_i = 1;
+    dut->eval();
+}
+
+void spiWriteBurst(
+    Vtb_system *dut,
+    uint32_t start_address,
+    const std::vector<uint32_t> &data,
+    uint8_t gen_waves,
+    VerilatedFstC *trace
+) {
+    if (data.empty()) {
+        return;
+    }
+
+    dut->spi_tb_enable_i = 1;
+    dut->spi_tb_cs_i     = 0;
+
+    spiSetWrapLength(dut, static_cast<uint16_t>(data.size()), gen_waves, trace);
+    spiSetWrite(dut, gen_waves, trace);
+    spiSendAddress(dut, start_address, gen_waves, trace);
+
+    for (uint32_t word : data) {
+        spiSendWord(dut, word, gen_waves, trace);
+    }
+
+    dut->spi_tb_cs_i = 1;
+    dut->eval();
+}
+
+void spiLoadHex(
+    Vtb_system *dut,
+    const std::string &filename,
+    uint8_t gen_waves,
+    VerilatedFstC *trace
+) {
+    auto memory = parseHexFile(filename);
+    uint32_t words_written = 0;
+
+    TB_LOG(LOG_LOW, "Loading firmware through SPI...");
+    auto it = memory.begin();
+
+    while (it != memory.end()) {
+        uint32_t burst_start_address = it->first;
+        std::vector<uint32_t> burst_data;
+        uint32_t current_address = burst_start_address;
+
+        while (it != memory.end() && it->first <= current_address + 3) {
+            uint32_t word = 0;
+
+            for (int i = 0; i < 4; i++) {
+                auto byte_it = memory.find(current_address + i);
+
+                if (byte_it != memory.end()) {
+                    word |= static_cast<uint32_t>(byte_it->second) << (8 * i);
+                }
+            }
+
+            burst_data.push_back(word);
+
+            words_written++;
+            current_address += 4;
+
+            it = memory.upper_bound(current_address - 1);
+
+            if (it == memory.end() || it->first != current_address) {
+                break;
+            }
+        }
+
+        spiWriteBurst(dut, burst_start_address, burst_data, gen_waves, trace);
+    }
+
+    TB_LOG(LOG_LOW, "SPI firmware load complete: %u words written", words_written);
+}
+
+std::map<uint32_t, uint8_t> parseHexFile(const std::string &filename)
+{
+    std::ifstream file(filename);
+    std::map<uint32_t, uint8_t> memory;
+
+    std::string token;
+    uint32_t address = 0;
+
+    while (file >> token) {
+
+        if (token[0] == '@') {
+            address = std::stoul(token.substr(1), nullptr, 16);
+        } else {
+            uint8_t byte = static_cast<uint8_t>(
+                std::stoul(token, nullptr, 16)
+            );
+
+            memory[address] = byte;
+            address++;
+        }
+    }
+
+    return memory;
+}
+
 std::string getCmdOption(int argc, char* argv[], const std::string& option)
 {
-
     std::string cmd;
-    for( int i = 0; i < argc; ++i)
-    {
+    for (int i = 0; i < argc; ++i) {
         std::string arg = argv[i];
         size_t arg_size = arg.length();
         size_t option_size = option.length();
 
-        if(arg.find(option)==0){
-        cmd = arg.substr(option_size,arg_size-option_size);
+        if (arg.find(option) == 0) {
+            cmd = arg.substr(option_size, arg_size - option_size);
         }
     }
     return cmd;
