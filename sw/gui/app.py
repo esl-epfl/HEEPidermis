@@ -29,7 +29,7 @@ import math
 from pathlib import Path
 import sys
 import tkinter as tk
-from tkinter import colorchooser, filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
 import traceback
 import time
 
@@ -50,6 +50,8 @@ from .sdk.tests.recording import MARKER_COLORS  # Standard event-marker palette.
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE_CONFIG = ROOT / "sw" / "gui" / "configs" / "workspace" / "last.json"
+# Default folder for saved recordings (shared with the device panels' OUT_DIR).
+OUTPUTS_DIR = ROOT / "sw" / "gui" / "outs"
 
 AMPLIFY_CHOICES = ("0.01x", "0.1x", "1x", "10x", "100x", "normalize", "normalize row/axis")
 TRANSFORM_CHOICES = ("line", "markers", "steps")
@@ -89,6 +91,21 @@ class SignalRow:
     algorithm: str = ""
     smoothing: float = 1.0
     prominence: float = 0.01
+
+
+@dataclass
+class Annotation:
+    """A user marker on the shared time axis (exported/imported with CSVs).
+
+    ``signal`` ties the marker to one "device:signal" series; empty means it
+    belongs to the timestamp only and is drawn on every plot row.
+    """
+
+    time: float
+    label: str = ""
+    description: str = ""
+    color: str = "#ffffff"
+    signal: str = ""
 
 
 def range_default(row: SignalRow):
@@ -178,6 +195,74 @@ def _next_color(used_colors) -> str:
     return "#{:02x}{:02x}{:02x}".format(*(round(channel * 255) for channel in rgb))
 
 
+# Discrete annotation color matrix: a luminosity ramp plus per-hue families,
+# all readable on the dark plot surface (replaces the RGB color chooser).
+ANNOTATION_PALETTE = (
+    "#ffffff", "#c8c8c8", "#8f8f8f", "#5a5a5a", "#2e2e2e", "#000000",
+    "#ffd0d0", "#ff9b9b", "#ff6b6b", "#e63946", "#a4161a", "#5c0a0a",
+    "#ffe8c2", "#ffc46b", "#ff9f43", "#ff7f00", "#b45f06", "#f7dc6f",
+    "#d5f5d5", "#a9dfbf", "#82ca9c", "#4caf50", "#2e7d32", "#145a32",
+    "#d0e7ff", "#8ec9ff", "#4da3ff", "#2467d6", "#b28dff", "#00b3b3",
+)
+
+
+def attach_placeholder(widget, placeholder):
+    """Show a muted in-field hint until the user types; empty fields restore it."""
+    widget._placeholder = placeholder
+    widget._placeholder_shown = False
+    _show_placeholder(widget)
+    widget.bind("<FocusIn>", lambda _e: _clear_placeholder(widget), add="+")
+    widget.bind("<FocusOut>", lambda _e: _restore_placeholder_if_empty(widget), add="+")
+
+
+def _show_placeholder(widget):
+    widget._placeholder_shown = True
+    if isinstance(widget, tk.Text):
+        widget.delete("1.0", "end")
+        widget.insert("1.0", widget._placeholder)
+    else:
+        widget.delete(0, "end")
+        widget.insert("end", widget._placeholder)
+    widget.configure(foreground=UI_MUTED)
+
+
+def _clear_placeholder(widget):
+    if not widget._placeholder_shown:
+        return
+    widget._placeholder_shown = False
+    if isinstance(widget, tk.Text):
+        widget.delete("1.0", "end")
+    else:
+        widget.delete(0, "end")
+    widget.configure(foreground=UI_TEXT)
+
+
+def _restore_placeholder_if_empty(widget):
+    if not widget_value(widget):
+        _show_placeholder(widget)
+
+
+def widget_value(widget):
+    """Entry/Text content, treating the placeholder hint as empty."""
+    if getattr(widget, "_placeholder_shown", False):
+        return ""
+    return widget.get("1.0", "end-1c") if isinstance(widget, tk.Text) else widget.get()
+
+
+def set_widget_value(widget, value):
+    """Replace Entry/Text content; an empty value restores the placeholder."""
+    _clear_placeholder(widget)
+    if isinstance(widget, tk.Text):
+        widget.delete("1.0", "end")
+    else:
+        widget.delete(0, "end")
+    if value:
+        widget.configure(foreground=UI_TEXT)
+        widget.insert("1.0" if isinstance(widget, tk.Text) else "end", value)
+    else:
+        _show_placeholder(widget)
+
+
 def derived_series(op, a, b, window_s=2.0, step_s=0.1):
     """Compare two series on a common grid; returns (times, values).
 
@@ -265,6 +350,11 @@ class Workspace:
         self.file_future = None
         self.file_action = None
         self.recording_directories = []
+        self.annotations: list[Annotation] = []
+        self.selected_annotation: Annotation | None = None
+        self.annotation_edit_active = False
+        self.annotation_edit_backup: dict | None = None
+        self._edit_bind_ids: list[str] = []
 
         self._build()
         self._load_state()
@@ -274,8 +364,13 @@ class Workspace:
     # ------------------------------------------------------------------ layout
 
     def _build(self):
-        self.panes = ttk.Panedwindow(self.root, orient="horizontal")
-        self.panes.pack(fill="both", expand=True)
+        # Vertical panes: configuration/plots above, the bottom bar (device
+        # reports, ANNOTATIONS menu, navigation) below. The sash between them
+        # is draggable, so the reports/list can grow vertically when needed.
+        self.vertical_panes = ttk.Panedwindow(self.root, orient="vertical")
+        self.vertical_panes.pack(fill="both", expand=True)
+        self.panes = ttk.Panedwindow(self.vertical_panes, orient="horizontal")
+        self.vertical_panes.add(self.panes, weight=1)
 
         # Left: scrollable configuration column with collapsible menus.
         left = ttk.Frame(self.panes, style="App.TFrame")
@@ -436,9 +531,10 @@ class Workspace:
         self.time_scroll = ttk.Scrollbar(right, orient="horizontal", command=self._scroll)
         self.time_scroll.grid(row=1, column=0, sticky="ew")
 
-        # Bottom: device reports left, shared navigation right.
-        bottom = ttk.Frame(self.root, style="Workspace.TFrame", height=190)
-        bottom.pack(fill="x", side="bottom")
+        # Bottom: device reports left, annotation menu and shared navigation
+        # right. Its height follows the draggable sash of the vertical panes.
+        bottom = ttk.Frame(self.vertical_panes, style="Workspace.TFrame")
+        self.vertical_panes.add(bottom, weight=0)
         bottom.columnconfigure(0, weight=1)
         bottom.rowconfigure(0, weight=1)
         self.reports = ttk.Notebook(bottom)
@@ -449,8 +545,10 @@ class Workspace:
         self.reports.add(placeholder, text="Reports")
         self._reports_placeholder = placeholder
         self.report_tabs: dict[str, ttk.Frame] = {}
+        self._build_messages_tab()
+        self._build_annotation_menu(bottom)
         nav = ttk.Frame(bottom, style="Workspace.TFrame", padding=(4, 6))
-        nav.grid(row=0, column=1, sticky="ns")
+        nav.grid(row=0, column=2, sticky="ns")
         self.zoom_text = tk.StringVar(value="TIME ZOOM · 30 s")
         ttk.Label(nav, textvariable=self.zoom_text, font=("Helvetica", 9, "bold")).grid(
             row=0, column=0, columnspan=3, sticky="w")
@@ -465,16 +563,136 @@ class Workspace:
         self.transport_text = tk.StringVar(value="No device enabled")
         ttk.Label(nav, textvariable=self.transport_text, style="Muted.TLabel").grid(
             row=2, column=0, columnspan=3, sticky="w", pady=(2, 0))
-        ttk.Button(nav, text="−", width=4, command=lambda: self._zoom(2.0)).grid(row=3, column=0, padx=(0, 3), pady=(6, 0))
-        ttk.Button(nav, text="+", width=4, command=lambda: self._zoom(0.5)).grid(row=3, column=1, padx=3, pady=(6, 0))
+        ttk.Button(nav, text="−", width=4, command=lambda: self._zoom(2.0)).grid(row=3, column=0, padx=(0, 3), pady=(4, 0))
+        ttk.Button(nav, text="+", width=4, command=lambda: self._zoom(0.5)).grid(row=3, column=1, padx=3, pady=(4, 0))
         self.live_button = ttk.Button(nav, text="Live", command=self._go_live, style="Accent.TButton")
-        self.live_button.grid(row=3, column=2, padx=(3, 0), pady=(6, 0))
-        ttk.Button(nav, text="Save CSV…", command=self.save_all).grid(row=4, column=0, columnspan=3, sticky="ew", pady=(8, 0))
-        ttk.Button(nav, text="Load CSV…", command=self.load_csv).grid(row=5, column=0, columnspan=3, sticky="ew")
-        ttk.Label(nav, text="Click/drag a plot to inspect;\nwheel moves through time.",
-                  style="Muted.TLabel", justify="left").grid(row=6, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        self.live_button.grid(row=3, column=2, padx=(3, 0), pady=(4, 0))
+        ttk.Button(nav, text="Save CSV…", command=self.save_all).grid(row=4, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        ttk.Button(nav, text="Load CSV…", command=self.load_csv).grid(row=4, column=2, sticky="ew", pady=(4, 0))
 
     # ----------------------------------------------------------------- devices
+
+    def _build_messages_tab(self):
+        """Workspace-level Messages tab: reports anything that was not possible."""
+        tab = ttk.Frame(self.reports)
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(0, weight=1)
+        text = tk.Text(tab, height=1, wrap="word", background=UI_PLOT,
+                       foreground=UI_TEXT, font=("Helvetica", 10), relief="flat",
+                       padx=8, pady=6, state="disabled",
+                       highlightthickness=1, highlightbackground=UI_BORDER)
+        text.grid(row=0, column=0, sticky="nsew")
+        scroll = ttk.Scrollbar(tab, command=text.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        text.configure(yscrollcommand=scroll.set)
+        self.messages_text, self.messages_tab = text, tab
+        self.reports.add(tab, text="Messages")
+
+    def _log_message(self, message, show=False):
+        """Append a timestamped line to the workspace Messages tab."""
+        widget = getattr(self, "messages_text", None)
+        if widget is not None and widget.winfo_exists():
+            widget.configure(state="normal")
+            widget.insert("end", f"{time.strftime('%H:%M:%S')}  {message}\n")
+            lines = int(widget.index("end-1c").split(".")[0])
+            if lines > 400:
+                widget.delete("1.0", f"{lines - 400 + 1}.0")
+            widget.see("end")
+            widget.configure(state="disabled")
+        if show:
+            tab = getattr(self, "messages_tab", None)
+            if tab is not None and tab.winfo_exists():
+                self.reports.select(tab)
+
+    def _build_annotation_menu(self, parent):
+        """ANNOTATIONS menu: markers spanning every plot, exported with CSVs.
+
+        Top row: the Add/Edit/Delete actions; below it time, color and signal;
+        below those the label and an expanding description field. The
+        annotation list sits on the right across the full menu height. Keeping
+        the buttons on their own row keeps the menu narrow.
+        """
+        menu = ttk.LabelFrame(parent, text="ANNOTATIONS", padding=(8, 4))
+        menu.grid(row=0, column=1, sticky="nsew", padx=(0, 6))
+        menu.columnconfigure(0, weight=1)
+        menu.rowconfigure(3, weight=1)  # The description field takes the rest.
+        self.annotation_time_var = tk.StringVar()
+        self.annotation_signal_var = tk.StringVar(value="(timestamp only)")
+        self.annotation_color = "#ffffff"
+
+        actions = ttk.Frame(menu)
+        actions.grid(row=0, column=0, sticky="ew")
+        self.annotation_add_button = ttk.Button(actions, text="+ Add", width=6,
+                                                command=self._annotation_add)
+        self.annotation_add_button.pack(side="left")
+        self.annotation_edit_button = ttk.Button(actions, text="Edit", width=5,
+                                                 command=self._annotation_edit, state="disabled")
+        self.annotation_edit_button.pack(side="left", padx=(4, 0))
+        self.annotation_delete_button = ttk.Button(actions, text="Delete", width=6,
+                                                   command=self._annotation_delete, state="disabled")
+        self.annotation_delete_button.pack(side="left", padx=(4, 0))
+        self.annotation_hint = ttk.Label(actions, text="", style="Muted.TLabel")
+        self.annotation_hint.pack(side="left", padx=(6, 0))
+        Tooltip(self.annotation_add_button, "Add an annotation at the shown timestamp "
+                "with the label, color, signal and description below.")
+        Tooltip(self.annotation_edit_button, "Edit the selected annotation; "
+                "Enter accepts, Esc cancels, a plot click re-times it.")
+        Tooltip(self.annotation_delete_button, "Delete the selected annotation; "
+                "its fields stay so + Add can re-create it.")
+
+        controls = ttk.Frame(menu)
+        controls.grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        ttk.Label(controls, text="Time s").pack(side="left")
+        # Only editable while an annotation is being edited; otherwise it shows
+        # the timestamp where + Add would place a new marker.
+        self.annotation_time_entry = ttk.Entry(controls, textvariable=self.annotation_time_var,
+                                               width=8, state="disabled")
+        self.annotation_time_entry.pack(side="left", padx=(2, 6))
+        Tooltip(self.annotation_time_entry, "Selected annotation's timestamp "
+                "(editable while editing); otherwise where + Add would place a marker.")
+        self.annotation_color_button = tk.Button(controls, background=self.annotation_color,
+                                                 width=3, relief="flat", cursor="hand2",
+                                                 activebackground=self.annotation_color,
+                                                 command=self._choose_annotation_color)
+        self.annotation_color_button.pack(side="left")
+        Tooltip(self.annotation_color_button, "Annotation color (default white).")
+        ttk.Label(controls, text="Signal").pack(side="left", padx=(6, 0))
+        self.annotation_signal_box = ttk.Combobox(controls, textvariable=self.annotation_signal_var,
+                                                  width=14, state="readonly")
+        self.annotation_signal_box.pack(side="left", padx=(2, 0))
+        self.annotation_signal_box.bind("<<ComboboxSelected>>", self._annotation_signal_chosen)
+        Tooltip(self.annotation_signal_box, "Tie the annotation to the timestamp only, "
+                "or to one specific device signal.")
+
+        self.annotation_label_entry = ttk.Entry(menu)
+        self.annotation_label_entry.grid(row=2, column=0, sticky="ew", pady=(4, 0))
+        attach_placeholder(self.annotation_label_entry, "label")
+        self.annotation_label_entry.bind("<KeyRelease>", self._apply_field_edits, add="+")
+        self.annotation_label_entry.bind("<<Paste>>", self._apply_field_edits, add="+")
+        Tooltip(self.annotation_label_entry, "Shown at the bottom of the marker's line.")
+
+        self.annotation_description_text = tk.Text(menu, height=1, wrap="word",
+                                                   background=UI_PLOT, foreground=UI_TEXT,
+                                                   font=("Helvetica", 10), relief="flat",
+                                                   padx=6, pady=4, highlightthickness=1,
+                                                   highlightbackground=UI_BORDER)
+        self.annotation_description_text.grid(row=3, column=0, sticky="nsew", pady=(4, 0))
+        attach_placeholder(self.annotation_description_text, "description")
+        self.annotation_description_text.bind("<<Modified>>", self._annotation_description_changed)
+        Tooltip(self.annotation_description_text, "Visible here when the annotation "
+                "is selected; stored with the CSV export.")
+
+        # The list of annotations stays thin on the right, across the menu.
+        self.annotation_list = tk.Listbox(menu, width=20, exportselection=False,
+                                          background=UI_PLOT, foreground=UI_TEXT,
+                                          relief="flat", highlightthickness=1,
+                                          highlightbackground=UI_BORDER, activestyle="none")
+        self.annotation_list.grid(row=0, column=1, rowspan=4, sticky="nsew", padx=(8, 0))
+        self.annotation_list.bind("<<ListboxSelect>>", self._annotation_list_selected)
+        Tooltip(self.annotation_list, "Existing annotations (time + label); selecting "
+                "one moves the cursor to it and shows its fields here.")
+
+        self._refresh_annotation_signal_choices()
 
     def _device_toggled(self, key: str):
         device = next(item for item in DEVICES if item["key"] == key)
@@ -731,10 +949,23 @@ class Workspace:
 
     # ----------------------------------------------------------- signal table
 
+    def _ensure_annotations_row(self):
+        """Keep exactly one built-in annotations row in the signals table.
+
+        It is the on/off (hide) switch for every annotation marker; it has no
+        trace color and cannot be deleted. Rows restored from saved state are
+        left untouched.
+        """
+        if any(row.device == "annotations" for row in self.signal_rows):
+            return
+        self.add_signal_row(device="annotations", signal="markers", color="")
+
     def add_signal_row(self, device: str = "heepidermis", signal: str = "", **overrides):
         row = SignalRow(device=device, signal=signal, **overrides)
         row.signal = signal or self._default_signal(row)
-        if not row.color:
+        # The annotations row has no trace color; its markers use the menu's
+        # per-annotation colors instead.
+        if not row.color and device != "annotations":
             row.color = _next_color(existing.color for existing in self.signal_rows)
         self._apply_range_default(row)
         self.signal_rows.append(row)
@@ -775,6 +1006,8 @@ class Workspace:
             return list(COMPARISON_CHOICES)
         if device == "features":
             return list(FEATURE_CHOICES)
+        if device == "annotations":
+            return ["markers"]
         panel = self.panels.get(device)
         if panel is None:
             return []
@@ -836,16 +1069,40 @@ class Workspace:
             # Every known device stays selectable; rows for a device whose
             # panel is not enabled yet keep their saved selection until that
             # panel provides its signals (they must never be reassigned).
-            devices = [device["key"] for device in DEVICES] + ["comparison", "features"]
+            devices = [device["key"] for device in DEVICES] + ["comparison", "features", "annotations"]
             device_box.configure(values=devices)
             if current_device not in devices:
                 widgets["row"].device = devices[0] if devices else ""
                 device_box.set(widgets["row"].device)
                 widgets["row"].signal = self._default_signal(widgets["row"])
             self._update_signal_values(widgets)
+        self._refresh_annotation_signal_choices()
 
     def _update_signal_values(self, widgets):
         row = widgets["row"]
+        if row.device == "annotations":
+            # The annotations row only chooses its plot stack; time, color,
+            # scaling and sources belong to the ANNOTATIONS menu.
+            widgets["signal"].configure(values=self._signal_choices(row.device))
+            widgets["signal"].set(row.signal or "markers")
+            widgets["stack"].configure(state="disabled")
+            widgets["stack"].set(row.stack)
+            for key in ("axis", "y_scale", "y_min", "y_max", "transform", "amplify",
+                        "alpha", "zorder"):
+                widgets[key].configure(state="disabled")
+            for key in ("source_a", "source_b"):
+                widgets[key].set("—")
+                widgets[key].configure(state="disabled")
+            widgets["source_a"].grid_remove()
+            widgets["source_b"].grid_remove()
+            widgets["params"].grid_remove()
+            return
+        # Restore editable states (comboboxes are readonly by construction).
+        for key in ("axis", "y_scale", "transform", "amplify"):
+            widgets[key].configure(state="readonly")
+        for key in ("y_min", "y_max", "alpha", "zorder"):
+            widgets[key].configure(state="normal")
+        widgets["stack"].configure(state="normal")
         if row.device == "features":
             choices = FEATURE_CHOICES
             widgets["signal"].configure(values=choices)
@@ -898,9 +1155,10 @@ class Workspace:
     def _add_table_row(self, row: SignalRow):
         table_row = len(self.signal_rows)
         widgets = {"row": row}
-        device_box = ttk.Combobox(self.signal_table, width=9, state="readonly",
+        is_annotations = row.device == "annotations"
+        device_box = ttk.Combobox(self.signal_table, width=11, state="readonly",
                                   values=[device["key"] for device in DEVICES]
-                                          + ["comparison", "features"])
+                                          + ["comparison", "features", "annotations"])
         device_box.set(row.device)
         device_box.grid(row=table_row, column=3, sticky="ew", padx=2, pady=2)
         device_box.bind("<<ComboboxSelected>>",
@@ -909,15 +1167,23 @@ class Workspace:
         signal_box.grid(row=table_row, column=4, sticky="ew", padx=2, pady=2)
         signal_box.bind("<<ComboboxSelected>>",
                         lambda _e, w=widgets, box=signal_box: self._value_changed(w, "signal", box.get()))
+        # The annotations row is a built-in toggle, not data: it cannot be
+        # removed, only hidden.
         remove = ttk.Button(self.signal_table, text="X", width=3,
-                            command=lambda w=widgets: self._remove_row(w))
+                            command=lambda w=widgets: self._remove_row(w),
+                            state="disabled" if is_annotations else "normal")
         remove.grid(row=table_row, column=0, sticky="ew", padx=2, pady=2)
         hide = ttk.Button(self.signal_table, text="Show" if row.hidden else "Hide", width=5,
                           command=lambda w=widgets: self._toggle_row_hidden(w))
         hide.grid(row=table_row, column=1, sticky="ew", padx=2, pady=2)
-        color = tk.Button(self.signal_table, background=row.color, width=3, relief="flat",
-                          activebackground=row.color, cursor="hand2",
-                          state="disabled" if row.hidden else "normal",
+        # The color cell stays neutral: markers take their color from the
+        # ANNOTATIONS menu, one color per annotation.
+        color = tk.Button(self.signal_table,
+                          background=UI_SURFACE if is_annotations else row.color,
+                          width=3, relief="flat",
+                          activebackground=UI_SURFACE if is_annotations else row.color,
+                          cursor="hand2" if not is_annotations else "arrow",
+                          state="disabled" if (row.hidden or is_annotations) else "normal",
                           command=lambda w=widgets: self._choose_color(w))
         color.grid(row=table_row, column=2, sticky="ew", padx=2, pady=2)
         stack = ttk.Spinbox(self.signal_table, from_=1, to=PLOT_ROWS_MAX, width=3,
@@ -1074,6 +1340,17 @@ class Workspace:
         row.device = widgets["device"].get()
         row.signal = self._default_signal(row)
         self._apply_range_default(row)
+        if row.device == "annotations":
+            # No per-row color: markers take the menu's per-annotation colors.
+            row.color = ""
+            widgets["color"].configure(background=UI_SURFACE, activebackground=UI_SURFACE,
+                                       state="disabled")
+        else:
+            if not row.color:
+                row.color = _next_color(existing.color for existing in self.signal_rows
+                                        if existing is not row)
+                widgets["color"].configure(background=row.color, activebackground=row.color)
+            widgets["color"].configure(state="disabled" if row.hidden else "normal")
         self._update_range_widgets(widgets)
         self._update_signal_values(widgets)
         self._update_comparison_columns()
@@ -1140,18 +1417,25 @@ class Workspace:
 
     def _choose_color(self, widgets):
         row = widgets["row"]
-        chosen = colorchooser.askcolor(color=row.color, parent=self.root)
-        if chosen and chosen[1]:
-            row.color = chosen[1]
-            widgets["color"].configure(background=row.color, activebackground=row.color)
+
+        def pick(color):
+            row.color = color
+            widgets["color"].configure(background=color, activebackground=color)
             self._state_changed()
+
+        # Same discrete matrix as the annotation menu (no RGB color chooser).
+        self._open_color_palette(widgets["color"], pick)
 
     def _toggle_row_hidden(self, widgets):
         """Hide a row from the plots without removing or unconfiguring it."""
         row = widgets["row"]
         row.hidden = not row.hidden
         widgets["hide"].configure(text="Show" if row.hidden else "Hide")
-        widgets["color"].configure(state="disabled" if row.hidden else "normal")
+        widgets["color"].configure(state="disabled" if (row.hidden or row.device == "annotations")
+                                   else "normal")
+        if row.device == "annotations":
+            # Hiding the annotations row suppresses every marker immediately.
+            self._push_annotation_lines()
         self._state_changed()
 
     def _remove_row(self, widgets):
@@ -1172,6 +1456,320 @@ class Workspace:
                     info = widget.grid_info()
                     if info:
                         widget.grid(row=index)
+
+    # ------------------------------------------------------------- annotations
+
+    def _refresh_annotation_signal_choices(self):
+        box = getattr(self, "annotation_signal_box", None)
+        if box is None:
+            return
+        values = ["(timestamp only)"] + self._all_series_keys()
+        current = self.annotation_signal_var.get()
+        # A saved association to a device that is not enabled stays visible.
+        if current and current not in values:
+            values.append(current)
+        box.configure(values=values)
+
+    def _annotation_signal_value(self):
+        value = self.annotation_signal_var.get()
+        return "" if value == "(timestamp only)" else value
+
+    def _annotation_signal_chosen(self, _event=None):
+        if self.annotation_edit_active and self.selected_annotation is not None:
+            self.selected_annotation.signal = self._annotation_signal_value()
+            self._push_annotation_lines()
+            self._navigate()
+
+    def _open_color_palette(self, button, on_pick):
+        """Open the discrete color matrix above ``button``; ``on_pick(color)``
+        fires when one swatch is clicked. Esc or an outside click closes it."""
+        popover = tk.Toplevel(self.root)
+        # Built while hidden and shown in one step: mapping the window after
+        # every swatch exists avoids the matrix visibly popping in corner by
+        # corner (Tk lays out each button as it is created).
+        popover.withdraw()
+        popover.overrideredirect(True)  # Borderless picker, closes on selection.
+        grid = tk.Frame(popover, background=UI_BORDER, padx=1, pady=1)
+        grid.pack()
+        for index, color in enumerate(ANNOTATION_PALETTE):
+            tk.Button(grid, background=color, width=2, height=1, relief="flat",
+                      cursor="hand2", activebackground=color, bd=0,
+                      command=lambda c=color: (on_pick(c), popover.destroy())
+                      ).grid(row=index // 6, column=index % 6, padx=1, pady=1)
+        popover.bind("<Escape>", lambda _e: popover.destroy())
+        # Any press that is not on a color button (i.e. outside the matrix)
+        # dismisses the picker.
+        popover.bind("<Button-1>", lambda e: popover.destroy()
+                     if e.widget is grid or e.widget is popover else None)
+        popover.update_idletasks()
+        # Open above the button so it does not cover the fields below it.
+        popover.geometry(f"+{button.winfo_rootx()}+"
+                         f"{max(0, button.winfo_rooty() - popover.winfo_reqheight() - 4)}")
+        popover.deiconify()
+        popover.grab_set()
+        return popover
+
+    def _choose_annotation_color(self):
+        """Open the discrete color matrix under the annotation color button."""
+        self._open_color_palette(self.annotation_color_button, self._set_annotation_color)
+
+    def _set_annotation_color(self, color):
+        self.annotation_color = color
+        self.annotation_color_button.configure(background=color, activebackground=color)
+        if self.annotation_edit_active and self.selected_annotation is not None:
+            self.selected_annotation.color = color
+            self._redraw_annotation_lines()
+
+    def _annotation_description_changed(self, _event=None):
+        text = self.annotation_description_text
+        if not text.edit_modified():
+            return  # Our own flag reset; nothing was typed.
+        text.edit_modified(False)
+        self._apply_field_edits()
+
+    def _apply_field_edits(self, *_args):
+        """While editing, field changes apply to the marker immediately."""
+        if not self.annotation_edit_active or self.selected_annotation is None:
+            return
+        annotation = self.selected_annotation
+        annotation.label = widget_value(self.annotation_label_entry)
+        annotation.description = widget_value(self.annotation_description_text)
+        try:
+            stamp = float(self.annotation_time_var.get())
+        except ValueError:
+            pass  # Incomplete while being typed; the last valid time is kept.
+        else:
+            if math.isfinite(stamp) and stamp >= 0:
+                annotation.time = stamp
+        self._redraw_annotation_lines()
+        self._refresh_annotation_list()
+
+    def _redraw_annotation_lines(self):
+        """Cheap visual refresh of the markers (no background recomputation)."""
+        for plot in self.row_plots.values():
+            plot.redraw()
+
+    def _push_annotation_lines(self):
+        """Refresh the drawn markers on every plot right away, so added,
+        deleted or re-associated annotations appear without waiting for the
+        background frame computation."""
+        lines = self._compute_annotation_lines(set(self.row_plots))
+        for number, plot in self.row_plots.items():
+            plot.annotation_lines = lines.get(number, [])
+            plot.redraw()
+
+    def _select_annotation(self, annotation):
+        """Select one annotation, mirror it in the menu fields, move the
+        inspect cursor onto the marker and bring it into view."""
+        if self.annotation_edit_active:
+            self._annotation_edit_finish(cancel=True)
+        self.selected_annotation = annotation
+        if annotation is not None:
+            self.annotation_time_var.set(f"{annotation.time:g}")
+            set_widget_value(self.annotation_label_entry, annotation.label)
+            set_widget_value(self.annotation_description_text, annotation.description)
+            self.annotation_signal_var.set(annotation.signal or "(timestamp only)")
+            self._refresh_annotation_signal_choices()
+            self.annotation_color = annotation.color or "#ffffff"
+            self.annotation_color_button.configure(background=self.annotation_color,
+                                                   activebackground=self.annotation_color)
+            self.viewport.follow = False
+            self.viewport.cursor = annotation.time
+            span = self.viewport.span
+            if not self.viewport.start <= annotation.time <= self.viewport.start + span:
+                self.viewport.start = max(0.0, min(annotation.time - span / 2,
+                                                   max(0.0, self.viewport.latest - span)))
+        self._refresh_annotation_list()
+        self._sync_annotation_buttons()
+        self._redraw_annotation_lines()
+        self._navigate()
+
+    def _refresh_annotation_list(self):
+        box = getattr(self, "annotation_list", None)
+        if box is None:
+            return
+        box.delete(0, "end")
+        for index, annotation in enumerate(self.annotations):
+            text = f"{annotation.time:g}s  {annotation.label or '(no label)'}"
+            if annotation.signal:
+                text += f"  ·  {annotation.signal}"
+            box.insert("end", text)
+            box.itemconfigure(index, foreground=annotation.color or "#ffffff")
+            if annotation is self.selected_annotation:
+                box.selection_set(index)
+                box.see(index)
+
+    def _annotation_list_selected(self, _event=None):
+        selection = self.annotation_list.curselection()
+        if selection and 0 <= selection[0] < len(self.annotations):
+            self._select_annotation(self.annotations[selection[0]])
+
+    def _on_plot_click(self, plot, stamp):
+        """A plot was clicked: select a marker within ±1% of the visible span."""
+        if self.annotation_edit_active and self.selected_annotation is not None:
+            # While editing, a plot click re-times the marker being edited.
+            self.selected_annotation.time = float(stamp)
+            self.annotation_time_var.set(f"{stamp:g}")
+            self._redraw_annotation_lines()
+            self._refresh_annotation_list()
+            return
+        if self.annotation_edit_active:
+            self._annotation_edit_finish(cancel=True)
+        tolerance = 0.01 * self.viewport.span
+        candidates = [item for item in plot.annotation_lines
+                      if abs(item[0] - stamp) <= tolerance and item[1] in self.annotations]
+        if candidates:
+            self._select_annotation(min(candidates, key=lambda item: abs(item[0] - stamp))[1])
+            return
+        # No marker nearby: deselect and compose a new annotation here.
+        self.selected_annotation = None
+        self.annotation_time_var.set(f"{stamp:g}")
+        self._refresh_annotation_list()
+        self._sync_annotation_buttons()
+        self._redraw_annotation_lines()
+
+    def _annotation_add(self):
+        if self.annotation_edit_active:
+            self._annotation_edit_finish(cancel=True)
+        # The Time field is kept in sync with every plot click, so it is the
+        # freshest "where" (the inspect cursor alone can lag behind listbox
+        # selections); fall back to the cursor for a never-clicked session.
+        try:
+            stamp = float(self.annotation_time_var.get())
+        except ValueError:
+            stamp = self.viewport.cursor
+        if stamp is None:
+            self._log_message("Annotations: click a plot to choose a timestamp first.", show=True)
+            return
+        if not math.isfinite(stamp) or stamp < 0:
+            self._log_message("Annotations: invalid timestamp; nothing added.", show=True)
+            return
+        annotation = Annotation(time=float(stamp), label=widget_value(self.annotation_label_entry),
+                                description=widget_value(self.annotation_description_text),
+                                color=self.annotation_color,
+                                signal=self._annotation_signal_value())
+        self.annotations.append(annotation)
+        self.annotations.sort(key=lambda item: item.time)
+        # Show the new marker right away; the background frame computation
+        # only refines the underlying traces.
+        self._push_annotation_lines()
+        self._select_annotation(annotation)
+        self._navigate()
+
+    def _annotation_edit(self):
+        annotation = self.selected_annotation
+        if annotation is None or self.annotation_edit_active:
+            return
+        self.annotation_edit_active = True
+        self.annotation_edit_backup = {"time": annotation.time, "label": annotation.label,
+                                       "description": annotation.description,
+                                       "color": annotation.color, "signal": annotation.signal}
+        self.annotation_time_entry.state(["!disabled"])
+        self.annotation_hint.configure(text="Enter accepts · Esc cancels")
+        # Root-level bindings catch Enter/Escape in any field while editing.
+        self._edit_bind_ids = [
+            self.root.bind("<Return>", self._annotation_edit_accept),
+            self.root.bind("<Escape>", lambda _e: self._annotation_edit_finish(cancel=True)),
+        ]
+        self._sync_annotation_buttons()
+
+    def _annotation_edit_accept(self, _event=None):
+        self._annotation_edit_finish(cancel=False)
+
+    def _annotation_edit_finish(self, cancel):
+        if not self.annotation_edit_active:
+            return
+        for sequence, binding in zip(("<Return>", "<Escape>"), self._edit_bind_ids):
+            try:
+                self.root.unbind(sequence, binding)
+            except Exception:
+                pass  # The binding id may already be gone; editing still ends.
+        self._edit_bind_ids = []
+        annotation = self.selected_annotation
+        if cancel and annotation is not None and self.annotation_edit_backup is not None:
+            for name, value in self.annotation_edit_backup.items():
+                setattr(annotation, name, value)
+        self.annotation_edit_active = False
+        self.annotation_edit_backup = None
+        self.annotation_time_entry.state(["disabled"])
+        self.annotation_hint.configure(text="")
+        if annotation is not None:
+            if not cancel:
+                # Apply typed-but-unapplied field changes; `_apply_field_edits`
+                # only runs while editing, so do it before clearing the flag.
+                self.annotation_edit_active = True
+                self._apply_field_edits()
+                self.annotation_edit_active = False
+            self._select_annotation(annotation)
+        else:
+            self._refresh_annotation_list()
+            self._sync_annotation_buttons()
+            self._redraw_annotation_lines()
+        self._navigate()
+
+    def _annotation_delete(self):
+        annotation = self.selected_annotation
+        if annotation is None:
+            return
+        # The fields keep label/description/color/signal on purpose: + Add
+        # re-creates the marker from them (at the still-shown timestamp).
+        self.annotations.remove(annotation)
+        self.selected_annotation = None
+        self._push_annotation_lines()
+        self._refresh_annotation_list()
+        self._sync_annotation_buttons()
+        self._navigate()
+
+    def _sync_annotation_buttons(self):
+        editing = self.annotation_edit_active
+        selected = self.selected_annotation is not None
+        self.annotation_add_button.state(["disabled" if editing else "!disabled"])
+        self.annotation_edit_button.state(["disabled" if editing or not selected else "!disabled"])
+        self.annotation_delete_button.state(["disabled" if editing or not selected else "!disabled"])
+
+    def _compute_annotation_lines(self, stacks):
+        """Per-stack annotation markers for the visible window.
+
+        Each entry is (time, annotation, selected); the plot reads the
+        annotation's label/color at draw time so edits show up immediately.
+        Timestamp-only annotations appear on every plot row; those tied to a
+        "device:signal" appear only on the rows showing that signal.
+        """
+        if not getattr(self, "annotations", None):
+            return {}
+        rows = getattr(self, "signal_rows", None)
+        # The synthetic annotations row hides every marker when hidden.
+        if any(row.device == "annotations" and row.hidden for row in rows or ()):
+            return {}
+        if not stacks:
+            return {}
+        signal_stacks = {}
+        for row in rows or ():
+            if row.hidden:
+                continue
+            if row.device == "annotations":
+                continue
+            if row.device not in ("comparison", "features"):
+                signal_stacks.setdefault(f"{row.device}:{row.signal}", set()).add(row.stack)
+            elif row.device == "features" and row.source_a:
+                signal_stacks.setdefault(row.source_a, set()).add(row.stack)
+        start, span = self.viewport.start, self.viewport.span
+        lines = {}
+        for annotation in sorted(self.annotations, key=lambda item: item.time):
+            if not start - span <= annotation.time <= start + 2 * span:
+                continue
+            targets = (sorted(signal_stacks.get(annotation.signal, stacks))
+                       if annotation.signal else sorted(stacks))
+            for stack in targets:
+                if stack in stacks:
+                    lines.setdefault(stack, []).append(
+                        (annotation.time, annotation,
+                         annotation is getattr(self, "selected_annotation", None)))
+        # Bound Tk work regardless of how many annotations exist.
+        for stack, items in lines.items():
+            if len(items) > 300:
+                lines[stack] = items[::max(1, (len(items) + 299) // 300)]
+        return lines
 
     # --------------------------------------------------------------- plotting
 
@@ -1364,6 +1962,8 @@ class Workspace:
         renderer.panels = panels
         renderer.viewport = replace(self.viewport)
         renderer.signal_rows = [replace(row) for row in self.signal_rows]
+        renderer.annotations = list(self.annotations)
+        renderer.selected_annotation = self.selected_annotation
         renderer.feature_cache, renderer.error_seen = {}, set()
         self.plot_request_generation = self.plot_generation
         self.plot_started = now
@@ -1442,11 +2042,24 @@ class Workspace:
                        for stamp, labels, colors, count in buckets.values()]
         if markers:
             built.append({"event_markers": sorted(markers)})
+        annotation_lines = self._compute_annotation_lines(
+            {trace["row_key"][0] for trace in built if "row_key" in trace}
+            | {row.stack for row in self.signal_rows
+               if row.device == "annotations" and not row.hidden})
+        if annotation_lines:
+            built.append({"annotation_lines": annotation_lines})
         return built, merged[::max(1, (len(merged) + 399) // 400)]
 
     def _render_frame(self, built, invalid):
         markers = [marker for trace in built for marker in trace.get("event_markers", [])]
-        built = [trace for trace in built if "event_markers" not in trace]
+        annotation_lines = {}
+        kept = []
+        for trace in built:
+            if "annotation_lines" in trace:
+                annotation_lines = trace["annotation_lines"]
+            else:
+                kept.append(trace)
+        built = kept
         traces_per_stack = {}
         annotations_per_stack = {}
         peaks_per_stack = {}
@@ -1475,7 +2088,11 @@ class Workspace:
                 axis_labels = axis_labels_per_stack.setdefault(stack, {False: [], True: []})
                 if axis_label not in axis_labels[trace["right"]]:
                     axis_labels[trace["right"]].append(axis_label)
-        stacks = sorted(traces_per_stack) or [1]
+        # A visible annotations row keeps its stack plotted even when no trace
+        # lives there, so its markers have somewhere to appear.
+        stacks = sorted(set(traces_per_stack)
+                        | {row.stack for row in self.signal_rows
+                           if row.device == "annotations" and not row.hidden}) or [1]
         self._ensure_stack_plots(stacks)
         for number, plot in self.row_plots.items():
             plot.grid()
@@ -1488,7 +2105,8 @@ class Workspace:
                           markers=markers,
                           peaks=peaks_per_stack.get(number, []),
                           annotations=annotations_per_stack.get(number, []),
-                          fixed_bounds=fixed)
+                          fixed_bounds=fixed,
+                          annotation_lines=annotation_lines.get(number, []))
         for number, plot in self.row_plots.items():
             if number not in stacks:
                 plot.grid_remove()
@@ -1505,6 +2123,7 @@ class Workspace:
             if number not in self.row_plots:
                 plot = TimePlot(self.plot_area, self.viewport, f"Row {number}", "",
                                 self._navigate, height=200)
+                plot.on_click = lambda stamp, p=plot: self._on_plot_click(p, stamp)
                 plot.grid(row=number, column=0, sticky="nsew", pady=(0, 6))
                 self.row_plots[number] = plot
         self.plot_area.rowconfigure(0, weight=0)
@@ -1596,12 +2215,25 @@ class Workspace:
                                                "clock": "host monotonic", "origin_monotonic_s": self.clock_origin}
             renderer.signal_rows = [replace(row) for row in self.signal_rows]
             renderer.feature_cache, renderer.error_seen = {}, set()
+            annotations = []
+            for annotation in self.annotations:
+                try:
+                    annotations.append({"time": float(annotation.time),
+                                        "label": str(annotation.label),
+                                        "description": str(annotation.description),
+                                        "color": str(annotation.color),
+                                        "signal": str(annotation.signal)})
+                except (TypeError, ValueError):
+                    self._log_message(f"Annotation not exported (invalid timestamp): {annotation!r}",
+                                      show=True)
+            OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
             path = filedialog.asksaveasfilename(
                 parent=self.root, title="Save all devices and signals", defaultextension=".csv",
-                filetypes=[("Workspace CSV", "*.csv")])
+                initialdir=str(OUTPUTS_DIR), filetypes=[("Workspace CSV", "*.csv")])
             if not path:
                 return
-            self.file_future = submit(write_session, path, configuration, recordings, renderer._export_signals())
+            self.file_future = submit(write_session, path, configuration, recordings,
+                                      renderer._export_signals(), annotations)
             self.file_action = "save"
             self.file_status.set("Saving all devices and signals…")
         except (OSError, ValueError) as error:
@@ -1665,7 +2297,7 @@ class Workspace:
             if action == "save":
                 self.file_status.set(f"Saved workspace: {result.name}")
                 return
-            directory, configuration, files = result
+            directory, configuration, files, notes = result
             try:
                 self._validate_configuration_bundle(configuration)
                 if not self._can_load_workspace():
@@ -1709,7 +2341,41 @@ class Workspace:
             self.recording_directories.append(directory)
             self.viewport.latest = 0
             self.viewport.live()
+            # Import annotations best-effort: one malformed row must not sink
+            # the load, and unknown/missing columns are tolerated (see notes).
+            self.annotations, skipped_annotations = [], 0
+            for values in notes.get("annotations", []):
+                try:
+                    annotation = Annotation(time=float(values["time"]),
+                                            label=str(values.get("label") or ""),
+                                            description=str(values.get("description") or ""),
+                                            color=str(values.get("color") or "#ffffff"),
+                                            signal=str(values.get("signal") or ""))
+                except (KeyError, TypeError, ValueError):
+                    skipped_annotations += 1
+                    continue
+                if math.isfinite(annotation.time):
+                    self.annotations.append(annotation)
+                else:
+                    skipped_annotations += 1
+            self.annotations.sort(key=lambda item: item.time)
+            self.selected_annotation = None
+            set_widget_value(self.annotation_label_entry, "")
+            set_widget_value(self.annotation_description_text, "")
+            self.annotation_time_var.set("")
+            self.annotation_signal_var.set("(timestamp only)")
+            self.annotation_color = "#ffffff"
+            self.annotation_color_button.configure(background=self.annotation_color,
+                                                   activebackground=self.annotation_color)
+            self._refresh_annotation_list()
+            self._sync_annotation_buttons()
+            self._push_annotation_lines()
             self._navigate()
+            skipped_unknown = int(notes.get("skipped_rows", 0) or 0)
+            if skipped_annotations or skipped_unknown:
+                self._log_message(
+                    f"Workspace load: skipped {skipped_annotations} unreadable annotation(s) "
+                    f"and {skipped_unknown} unknown record(s); everything else loaded.", show=True)
             if skipped:
                 self.file_status.set(
                     "Loaded workspace (skipped: "
@@ -1808,8 +2474,11 @@ class Workspace:
         # has a Left-axis trace, the new one takes the Right axis so the two
         # devices read side by side instead of overlapping.
         if not any(row.device == device for row in self.signal_rows):
+            # Annotations occupy no axis (they draw no trace), so they do not
+            # influence the side the new trace takes.
             axis = ("Right" if any(row.stack == 1 and row.axis == "Left"
-                                   for row in self.signal_rows) else "Left")
+                                   for row in self.signal_rows if row.device != "annotations")
+                    else "Left")
             self.add_signal_row(device, self._primary_signal(device), axis=axis)
         self.viewport.live()
         self._sync_decomposition()
@@ -1821,6 +2490,7 @@ class Workspace:
             return
         self.error_seen.add(message)
         print(f"[workspace] {message}", file=sys.stderr)
+        self._log_message(f"Error: {message}")
 
     # ----------------------------------------------------------- persistence
 
@@ -1873,6 +2543,7 @@ class Workspace:
                 self._add_table_row(row)
             except (TypeError, ValueError):
                 continue
+        self._ensure_annotations_row()
 
     @staticmethod
     def _migrate_legacy_state(state):
@@ -1890,12 +2561,15 @@ class Workspace:
     def _load_state(self):
         self.table_rows = []
         if not WORKSPACE_CONFIG.exists():
+            self._ensure_annotations_row()
             return
         try:
             state = json.loads(WORKSPACE_CONFIG.read_text(encoding="utf-8"))
         except (OSError, ValueError):
+            self._ensure_annotations_row()
             return
         if not isinstance(state, dict) or state.get("version") != 1:
+            self._ensure_annotations_row()
             return
         self.viewport.span = 30.0
         if "workspace" in state:

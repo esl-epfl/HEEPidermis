@@ -5,6 +5,7 @@ from __future__ import annotations
 import bisect
 from dataclasses import dataclass
 import math
+import sys
 import tkinter as tk
 from tkinter import font as tkfont
 
@@ -133,9 +134,11 @@ class TimePlot(tk.Canvas):
         self.right_unit, self.on_navigate = right_unit, on_navigate
         self.traces, self.markers, self.invalid, self.peaks = [], [], [], []
         self.annotations = []  # (time, value, label, right-axis) in data coordinates.
+        self.annotation_lines = []  # (time, annotation, selected); vertical user markers.
+        self.on_click = None  # Optional callback(time) on Button-1 press.
         self.fixed_bounds = {}  # Per-axis (lo, hi) when a row pins the range.
         self.bind("<Configure>", lambda _e: self.redraw())
-        self.bind("<Button-1>", self._cursor)
+        self.bind("<Button-1>", self._press)
         self.bind("<B1-Motion>", self._cursor)
         self.bind("<Button-4>", lambda _e: self._wheel(-1))
         self.bind("<Button-5>", lambda _e: self._wheel(1))
@@ -151,6 +154,17 @@ class TimePlot(tk.Canvas):
         if changed and redraw:
             self.redraw()
 
+    def _press(self, event):
+        """Button-1 press: notify an optional click callback, then move the cursor."""
+        if self.on_click is not None:
+            try:
+                width = max(1, self.winfo_width() - self.LEFT - self.RIGHT)
+                stamp = self.viewport.start + max(0, min(width, event.x - self.LEFT)) / width * self.viewport.span
+                self.on_click(stamp)
+            except Exception as error:  # A click must never break plotting.
+                print(f"[plot] click callback failed: {error}", file=sys.stderr)
+        self._cursor(event)
+
     def _cursor(self, event):
         width = max(1, self.winfo_width() - self.LEFT - self.RIGHT)
         self.viewport.cursor = self.viewport.start + max(0, min(width, event.x - self.LEFT)) / width * self.viewport.span
@@ -163,9 +177,10 @@ class TimePlot(tk.Canvas):
         return "break"
 
     def set_data(self, traces, markers=(), invalid=(), peaks=(), annotations=(),
-                 fixed_bounds=None):
+                 fixed_bounds=None, annotation_lines=()):
         self.traces, self.markers, self.invalid, self.peaks = traces, markers, invalid, peaks
         self.annotations = list(annotations)
+        self.annotation_lines = list(annotation_lines)
         self.fixed_bounds = dict(fixed_bounds or {})
         self.redraw()
 
@@ -259,6 +274,11 @@ class TimePlot(tk.Canvas):
             self.create_text(px - 6 if near_right else px + 6, py - 1,
                              text=label, anchor="e" if near_right else "w",
                              fill="#ffffff", font=("Helvetica", 8, "bold"))
+        # User annotations: vertical lines spanning the full plot height, with
+        # their label at the bottom of the line. Line items keep a reference to
+        # the annotation object, so label/color edits show up on a plain redraw.
+        if self.annotation_lines:
+            self._draw_annotation_lines(x, top, bottom, start, end)
         cursor = self.viewport.cursor
         if cursor is not None and start <= cursor <= end:
             self.create_line(x(cursor), top, x(cursor), bottom, fill=UI_TEXT, dash=(4, 3))
@@ -285,7 +305,7 @@ class TimePlot(tk.Canvas):
                     break
         if not ranges[False] and not ranges[True] and not markers:
             message = ("No signals with data — add rows in SIGNALS or load a CSV"
-                       if not self.traces else
+                       if not self.traces and not self.annotation_lines else
                        "No data in the visible window — Live returns to the newest samples")
             self.create_text((left + right) / 2, (top + bottom) / 2, text=message,
                              fill=UI_MUTED, font=("Helvetica", 11))
@@ -336,6 +356,41 @@ class TimePlot(tk.Canvas):
         if hidden_labels:
             self.create_text(right - 4, bottom - 4, anchor="se", fill="#ffffff",
                              text=f"Zoom in for {hidden_labels} more event labels", font=("Helvetica", 8))
+
+    def _draw_annotation_lines(self, x, top, bottom, start, end):
+        """Full-height annotation lines; each label sits left-aligned just to
+        the right of its line, staggered into lanes to avoid overlaps."""
+        font = tkfont.Font(family="Helvetica", size=8, weight="bold")
+        gap = 4  # Space between the marker line and its label.
+        lane_spans: list[list[tuple[float, float]]] = []  # Occupied x spans per label lane.
+        for stamp, annotation, selected in sorted(self.annotation_lines, key=lambda item: item[0]):
+            if not start <= stamp <= end:
+                continue
+            px = x(stamp)
+            color = getattr(annotation, "color", "") or "#ffffff"
+            self.create_line(px, top, px, bottom, fill=color,
+                             width=3 if selected else 1)
+            if selected:  # A soft double edge makes the selected marker stand out.
+                self.create_line(px - 1.5, top, px - 1.5, bottom, fill=color)
+                self.create_line(px + 1.5, top, px + 1.5, bottom, fill=color)
+            label = str(getattr(annotation, "label", "") or "")
+            if not label:
+                continue
+            left = px + gap
+            right = left + font.measure(label)
+            lane = next((i for i, spans in enumerate(lane_spans)
+                         if all(left > b or right < a for a, b in spans)), None)
+            if lane is None and len(lane_spans) < 3:
+                lane = len(lane_spans)
+            if lane is None:  # No room: keep a small tick at the bottom.
+                self.create_rectangle(px - 2, bottom - 3, px + 2, bottom + 1,
+                                      fill=color, outline="")
+                continue
+            if lane == len(lane_spans):
+                lane_spans.append([])
+            lane_spans[lane].append((left, right))
+            self.create_text(left, bottom - 3 - lane * 12, text=label, anchor="sw",
+                             fill=color, font=font)
 
     def _legend_entry(self, px, py, trace, font, anchor="w"):
         """Draw one legend entry (color box + name); returns the next edge x."""

@@ -1,7 +1,8 @@
 """One workspace CSV and JSON sidecar, preserving native samples and signal rows.
 
 CSV uses a union of native device columns. `workspace_kind` distinguishes native
-samples from calculated signals, which keep their own timestamps (no resampling).
+samples from calculated signals, which keep their own timestamps (no resampling),
+and from user annotations (vertical markers with label/color/description).
 All functions here run without Tk or acquisition-worker access.
 """
 
@@ -15,19 +16,27 @@ import tempfile
 FORMAT = "heepidermis-workspace-recording"
 PREFIX = ("workspace_kind", "workspace_device", "workspace_signal", "workspace_row",
           "workspace_value", "workspace_unit", "workspace_segment")
+# Columns written for workspace_kind == "annotation" rows. Older GUI versions
+# simply ignore them; newer versions tolerate files where they are missing.
+ANNOTATION_COLUMNS = ("annotation_color", "annotation_description")
 
 
 def metadata_path(path):
     return Path(str(path) + ".workspace.json")
 
 
-def write_session(path, configuration, recordings, signals):
-    """Publish a complete snapshot. Existing recordings are never overwritten."""
+def write_session(path, configuration, recordings, signals, annotations=()):
+    """Publish a complete snapshot. Existing recordings are never overwritten.
+
+    ``annotations`` is an optional iterable of plain dicts with the keys
+    ``time``, ``label``, ``description``, ``color`` and ``signal`` (an empty
+    ``signal`` means the annotation belongs to the timestamp only).
+    """
     path = Path(path)
     sidecar = metadata_path(path)
     if path.exists() or sidecar.exists():
         raise FileExistsError("Choose a new filename; a workspace recording already exists there.")
-    columns = [*PREFIX, "workspace_label"]
+    columns = [*PREFIX, "workspace_label", *ANNOTATION_COLUMNS]
     for recording in recordings.values():
         columns.extend(name for name in recording["columns"] if name not in columns)
     if "time_s" not in columns:
@@ -48,6 +57,19 @@ def write_session(path, configuration, recordings, signals):
                 for values in recording["rows"]():
                     writer.writerow({**dict(zip(recording["columns"], values)),
                                      "workspace_kind": "sample", "workspace_device": device})
+            for annotation in annotations:
+                if not isinstance(annotation, dict):
+                    continue  # Never let one malformed annotation sink the save.
+                signal = str(annotation.get("signal") or "")
+                device, _, name = signal.partition(":")
+                writer.writerow({"workspace_kind": "annotation",
+                                 "workspace_device": device if signal else "",
+                                 "workspace_signal": name if signal else "",
+                                 "time_s": annotation.get("time", ""),
+                                 "workspace_label": str(annotation.get("label") or ""),
+                                 "workspace_value": "", "workspace_unit": "",
+                                 "annotation_color": str(annotation.get("color") or ""),
+                                 "annotation_description": str(annotation.get("description") or "")})
             for signal in signals:
                 data = signal["data"]
                 segments = data.get("segments")
@@ -107,12 +129,32 @@ def read_session(path, validators, aliases=None):
             reader = csv.DictReader(stream)
             if not set(PREFIX).issubset(reader.fieldnames or []):
                 raise ValueError("Not a workspace CSV")
+            # Recordings may come from other GUI versions with unknown or
+            # missing columns; unreadable rows are skipped and counted so the
+            # rest of the workspace still loads.
+            annotations, skipped_rows = [], 0
             for row in reader:
-                if row["workspace_kind"] == "signal":
+                kind = row.get("workspace_kind") or ""
+                if kind == "annotation":
+                    try:
+                        annotations.append({
+                            "time": float(row.get("time_s")),
+                            "label": row.get("workspace_label") or "",
+                            "color": row.get("annotation_color") or "#ffffff",
+                            "description": row.get("annotation_description") or "",
+                            "signal": (f"{row.get('workspace_device')}:{row.get('workspace_signal')}"
+                                       if row.get("workspace_signal") else ""),
+                        })
+                    except (TypeError, ValueError):
+                        skipped_rows += 1  # Annotation without a usable timestamp.
+                    continue
+                if kind == "signal":
                     continue  # Recomputed from native samples and the restored signal table.
-                device = aliases.get(row["workspace_device"], row["workspace_device"])
-                if row["workspace_kind"] != "sample" or device not in writers:
-                    raise ValueError("Invalid workspace CSV record")
+                device = aliases.get(row.get("workspace_device") or "",
+                                     row.get("workspace_device") or "")
+                if kind != "sample" or device not in writers:
+                    skipped_rows += 1  # Unknown record kind or device: keep what we can.
+                    continue
                 writers[device].writerow({name: row[name] for name in recordings[device]["columns"]})
                 counts[device] += 1
         for stream in streams.values():
@@ -121,7 +163,7 @@ def read_session(path, validators, aliases=None):
             if counts[device] != recordings[device]["count"]:
                 raise ValueError(f"Incomplete recording for {device}")
             validators[device](target)
-        return directory, configuration, files
+        return directory, configuration, files, {"annotations": annotations, "skipped_rows": skipped_rows}
     except BaseException:
         for stream in streams.values():
             stream.close()

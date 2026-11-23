@@ -769,7 +769,11 @@ class BiopacGUI:
     def export_csv(self, path=None):
         if not self.recording.samples or self.save_future is not None:
             return
-        path = path or filedialog.asksaveasfilename(parent=self.root, title="Save recording (rename CSV and sidecars)", defaultextension=".csv", filetypes=[("CSV", "*.csv")])
+        path = path or filedialog.asksaveasfilename(
+            parent=self.root, title="Save recording (rename CSV and sidecars)", defaultextension=".csv",
+            initialdir=str(self.session_path.parent if self.session_path
+                           else Path(__file__).resolve().parents[2] / "outs"),
+            filetypes=[("CSV", "*.csv")])
         if not path:
             return
         if self.session_path is not None:

@@ -15,8 +15,13 @@ The window is organized for wide screens:
 * **Right** — stacks of time plots sharing one time axis and cursor. The
   signal table decides which device signal goes to which stack row and y-axis,
   and with which style, amplification, color, transparency (α), and z-order.
-* **Bottom** — per-device report tabs on the left (output, messages, status)
-  and shared navigation on the right (time zoom, live, save, load).
+  User annotations draw full-height vertical markers on every row.
+* **Bottom** — per-device report tabs on the left (output, messages, status),
+  the **ANNOTATIONS** menu in the middle, and shared navigation on the right
+  (time zoom, live, save, load). The sash between the plots and the bottom bar
+  is draggable, so the reports and annotation menu can be given more vertical
+  space when needed. A workspace **Messages** tab collects anything that could
+  not be done (skipped recordings, unreadable rows, display errors).
 
 ## Devices and SDKs
 
@@ -118,7 +123,11 @@ the remaining columns scroll horizontally inside the table when the window is
 narrow. **Hide** removes a signal from the plots without deleting it — its
 settings stay in the table, its data keeps recording and saving, and the
 button flips to **Show** to bring it back (a hidden row is restored hidden
-after **Load CSV…**). Per row you choose the device, one of its
+after **Load CSV…**). The table starts with a permanent **annotations** row
+(device `annotations`, signal `markers`): it cannot be removed (**X** is
+disabled) and has no color cell — it exists so the **Hide**/**Show** toggle
+can silence or restore every annotation marker at once. Per row you choose the
+device, one of its
 signals, the stack row (each stack row is one plot; all share the time axis),
 the y-axis side (Left/Right), the y-axis **Range** — `Auto` fits the visible
 data, `Fixed` pins it to the Min/Max fields (NRMSE defaults to 0–100,
@@ -128,7 +137,9 @@ correlation to −1–1, device signals to Auto) — the line style
 z-order also layers event lines against the signals). `normalize row/axis`
 applies one common scale to every signal in the same stack and y-axis,
 overriding their individual amplification settings. When several fixed rows
-share one axis, the axis spans the union of their ranges.
+share one axis, the axis spans the union of their ranges. Row colors are
+picked from the same discrete color matrix as the annotations (no free-form
+RGB chooser).
 
 **+ Add comparison (A vs B)** adds a derived signal computed on the host
 between two recorded signals — NRMSE, correlation, difference or ratio. Because
@@ -174,7 +185,9 @@ Both acquisition workers write and flush CSV independently of GUI updates:
 **Pause → Start** appends to the same recording. **Stop → Start**, Reset/New session,
 or the first recording in a new application session replaces `last_output.csv`.
 
-**Save CSV…** asks for one filename and saves **all enabled devices and all
+**Save CSV…** asks for one filename (defaulting to `sw/gui/outs/`, the shared
+recordings folder, which is created if missing) and saves **all enabled devices
+and all
 signal rows together**, over the full history available to the workspace at the
 snapshot. Export runs in the background while acquisition continues writing its
 original autosaves. The named snapshot is complete when the workspace status
@@ -182,8 +195,9 @@ says it was saved; later samples belong to subsequent snapshots.
 
 Keep the following two files together:
 
-* `<name>.csv`: native device samples, every device signal, and configured
-  signal/comparison/feature rows, with their original timestamps. No common-grid
+* `<name>.csv`: native device samples, every device signal, configured
+  signal/comparison/feature rows, and user annotations, with their original
+  timestamps. No common-grid
   resampling is imposed on independent device signals. Test events are native
   rows of the `tests` device (`event_label`, `event_color`, `event_monotonic_s`, …);
   signal rows additionally carry `workspace_label` when a row has per-sample
@@ -193,8 +207,9 @@ Keep the following two files together:
   (`time_alignment.offsets_s`), and calibration/verification metadata needed
   to reload.
 
-The CSV's `workspace_kind` is `sample` for native data and `signal` for calculated
-series. `workspace_device` identifies the source. Signal rows use
+The CSV's `workspace_kind` is `sample` for native data, `signal` for calculated
+series, and `annotation` for user annotations. `workspace_device` identifies the
+source. Signal rows use
 `workspace_signal`, `time_s`, `workspace_value`, `workspace_unit`, and
 `workspace_segment`; `workspace_row` is the 1-based signal-table row, or blank
 for a device's signal catalogue. Values retain physical units; visual
@@ -203,7 +218,7 @@ their SDK column names. Transport-level UART logs and BIOPAC full-rate binary
 captures remain alongside the original device autosaves.
 
 **Load CSV…** restores the complete saved workspace in one operation, including
-the devices, signal table, and shared decomposition settings. All native
+the devices, signal table, annotations, and shared decomposition settings. All native
 recordings are validated before panels are changed. Stop HEEPidermis and
 disconnect BIOPAC before loading. Missing sidecars or incomplete recordings are
 reported rather than loading only part of the session. Choose a new filename
@@ -212,6 +227,47 @@ when saving; existing workspace recordings are not overwritten.
 For compatibility, Load CSV also imports older single-device CSVs, detecting
 HEEPidermis by `vco_p_uV` and BIOPAC by `adc_count`. Their native sidecars are
 restored when available. The next workspace save includes all enabled devices.
+
+### Annotations
+
+The **ANNOTATIONS** menu (bottom bar) manages user markers on the shared time
+axis. Click a plot to place the inspect cursor: a vertical dashed line. Click
+within ±1% of the visible time window around an existing marker to select it.
+Timestamp-only markers span every plot row; markers tied to a device signal
+(choose it in the menu's **Signal** box) appear only on the rows showing that
+signal.
+
+The menu is laid out compactly: **+ Add / Edit / Delete** share the first row,
+**Time**, color and **Signal** sit below it, the **label** field below that,
+and the **description** field (hint shown inside the empty field) uses the
+remaining height. The annotation list (time + label) runs down the right side
+across the full menu height.
+
+* The marker's **label** (drawn left-aligned just to the right of its line,
+  in the marker color), **color**, **signal** association and **description**
+  (kept in the menu; useful for notes) are set in the menu fields. Colors are
+  picked from a discrete matrix (a luminosity ramp plus hue families) that
+  opens above the color button.
+* **+ Add** inserts a marker at the shown timestamp with the current fields;
+  it appears on the plots immediately.
+* **Edit** (only with a selected marker) applies field changes live; **Enter**
+  accepts them, **Esc** cancels and restores, and clicking anywhere in the
+  plots re-times the marker being edited. The timestamp is editable here too.
+* **Delete** removes the selected marker but keeps its fields, so **+ Add**
+  re-creates it (e.g. after nudging the timestamp).
+* The list shows every annotation with its time and label; selecting one moves
+  the inspect cursor to it, brings it into view and fills the fields.
+
+Annotations also have a permanent **annotations** row in the SIGNALS table. It
+has no trace color (each marker uses the color chosen in the menu) and its
+**X** button is disabled — it cannot be deleted, only **hidden** with the
+Hide/Show toggle, which removes every marker from the plots until shown again.
+
+Annotations are exported as `workspace_kind="annotation"` CSV rows and restored
+by **Load CSV…**. Reading is tolerant: unknown record kinds, unreadable
+annotations, and missing columns are skipped and reported in the workspace
+**Messages** tab instead of failing the load, so recordings from other GUI
+versions always load whatever they can.
 
 ### Running a device panel standalone
 

@@ -1663,6 +1663,12 @@ class VCOGui:
         self.messages.configure(yscrollcommand=message_scroll.set)
         self.messages.tag_configure("uart", foreground=UI_ACCENT, spacing3=8)
         self.messages.tag_configure("gui", foreground=UI_WARNING, spacing3=8)
+        if self.embedded:
+            # Compact by default so the workspace bottom bar (annotation menu,
+            # shared navigation) stays small; the texts still scroll, and the
+            # user can drag the workspace's bottom sash to give them more room.
+            for widget in (self.terminal, self.uart_terminal, self.messages):
+                widget.configure(height=2)
         if not self.embedded:
             bottom_controls = ttk.LabelFrame(bottom_row, text="NAVIGATION", padding=(12, 8))
             bottom_controls.grid(row=0, column=2, sticky="nsew")

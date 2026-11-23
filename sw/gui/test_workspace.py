@@ -207,7 +207,8 @@ class LoadCsvTests(unittest.TestCase):
     def test_feature_and_comparison_sources_survive_disabled_devices(self):
         # Restored feature/comparison rows keep their saved sources while the
         # referenced device's panel is not enabled yet (same keep-until-
-        # validatable rule as device/signal rows).
+        # validatable rule as device/signal rows). The built-in annotations
+        # row sits first in the table, hence the negative indices.
         features = app.SignalRow(device="features", signal="SCR frequency",
                                  source_a="biopac:conductance_uS", color="#ff0000")
         comparison = app.SignalRow(device="comparison", signal=app.COMPARISON_CHOICES[0],
@@ -215,9 +216,9 @@ class LoadCsvTests(unittest.TestCase):
                                    source_b="heepidermis:conductance_uS", color="#00ff00")
         self.workspace._add_table_row(features)
         self.workspace._add_table_row(comparison)
-        self.assertEqual(self.workspace.table_rows[0]["source_a"].get(), "biopac:conductance_uS")
-        self.assertEqual(self.workspace.table_rows[1]["source_a"].get(), "biopac:conductance_uS")
-        self.assertEqual(self.workspace.table_rows[1]["source_b"].get(), "heepidermis:conductance_uS")
+        self.assertEqual(self.workspace.table_rows[-2]["source_a"].get(), "biopac:conductance_uS")
+        self.assertEqual(self.workspace.table_rows[-1]["source_a"].get(), "biopac:conductance_uS")
+        self.assertEqual(self.workspace.table_rows[-1]["source_b"].get(), "heepidermis:conductance_uS")
 
     def test_sources_keep_until_the_referenced_panel_validates_them(self):
         # Enabling an unrelated panel must not touch biopac sources; enabling
@@ -350,6 +351,103 @@ class LoadCsvTests(unittest.TestCase):
             self.workspace._finish_file_operation()
         error.assert_called_once()
         self.assertFalse(any(panel.paths for panel in panels.values()))
+
+    def test_annotation_menu_add_edit_delete_cycle(self):
+        ws = self.workspace
+        ws.viewport.cursor = 7.0
+        app.set_widget_value(ws.annotation_label_entry, "event")
+        ws._annotation_add()
+        self.assertEqual([(a.time, a.label) for a in ws.annotations], [(7.0, "event")])
+        self.assertTrue(ws.annotation_edit_button.instate(["!disabled"]))
+        # Editing applies changes live; Escape restores the previous values.
+        ws._annotation_edit()
+        self.assertEqual(len(ws._edit_bind_ids), 2)  # Root Enter/Escape bindings.
+        app.set_widget_value(ws.annotation_description_text, "changed")
+        ws.annotation_description_text.edit_modified(True)
+        ws._annotation_description_changed()
+        self.assertEqual(ws.annotations[0].description, "changed")
+        ws._annotation_edit_finish(cancel=True)
+        self.assertEqual(ws.annotations[0].description, "")
+        self.assertEqual(ws._edit_bind_ids, [])
+        # Enter accepts the edits instead.
+        ws._annotation_edit()
+        app.set_widget_value(ws.annotation_label_entry, "renamed")
+        ws._annotation_edit_finish(cancel=False)
+        self.assertEqual(ws.annotations[0].label, "renamed")
+        # Deleting keeps the fields so + Add re-creates the same marker.
+        ws._annotation_delete()
+        self.assertEqual(ws.annotations, [])
+        self.assertEqual(app.widget_value(ws.annotation_label_entry), "renamed")
+        ws.annotation_time_var.set("7.0")
+        ws._annotation_add()
+        self.assertEqual([(a.time, a.label) for a in ws.annotations], [(7.0, "renamed")])
+
+    def test_annotation_click_selects_within_one_percent_of_the_window(self):
+        ws = self.workspace
+        from gui.common.plots import TimePlot
+        plot = TimePlot(ws.root, ws.viewport, "Row 1", "", lambda: None)
+        annotation = app.Annotation(time=50.0, label="mid")
+        ws.annotations.append(annotation)
+        plot.annotation_lines = [(50.0, annotation, False)]
+        ws.viewport.span = 100.0  # Tolerance: ±1 s around the marker.
+        ws._on_plot_click(plot, 50.7)
+        self.assertIs(ws.selected_annotation, annotation)
+        ws._on_plot_click(plot, 51.5)
+        self.assertIsNone(ws.selected_annotation)
+
+    def test_annotations_round_trip_through_workspace_csv(self):
+        panels = self.session_panels()
+        ws = self.workspace
+        ws.add_signal_row("heepidermis", "conductance_uS", color="#123456")
+        ws.viewport.cursor = 12.5
+        app.set_widget_value(ws.annotation_label_entry, "tap")
+        app.set_widget_value(ws.annotation_description_text, "stimulus onset")
+        ws.annotation_signal_var.set("heepidermis:conductance_uS")
+        ws._annotation_add()
+        path = self.directory / "annotated.csv"
+        with patch.object(app.filedialog, "asksaveasfilename", return_value=str(path)):
+            ws.save_all()
+        ws.file_future.result(timeout=20)
+        ws._finish_file_operation()
+        with path.open() as stream:
+            rows = list(csv.DictReader(stream))
+        saved = [row for row in rows if row["workspace_kind"] == "annotation"]
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0]["workspace_label"], "tap")
+        self.assertEqual(saved[0]["annotation_description"], "stimulus onset")
+        self.assertEqual((saved[0]["workspace_device"], saved[0]["workspace_signal"]),
+                         ("heepidermis", "conductance_uS"))
+        # Load the file back into a cleared workspace.
+        ws.annotations = []
+        ws.selected_annotation = None
+        with patch.object(app.filedialog, "askopenfilename", return_value=str(path)):
+            ws.load_csv()
+        ws.file_future.result(timeout=20)
+        ws._finish_file_operation()
+        self.assertEqual([(a.time, a.label, a.description, a.signal) for a in ws.annotations],
+                         [(12.5, "tap", "stimulus onset", "heepidermis:conductance_uS")])
+        for directory in ws.recording_directories:
+            directory.cleanup()
+
+    def test_unknown_rows_are_skipped_and_reported_on_load(self):
+        panels = self.session_panels()
+        ws = self.workspace
+        path = self.directory / "all.csv"
+        write_session(path, ws._configuration_bundle(),
+                      {key: panel.recording_snapshot() for key, panel in panels.items()}, [],
+                      [{"time": 4.0, "label": "keep", "description": "", "color": "#00ff00", "signal": ""}])
+        # Junk from another GUI version: unknown record kind and an annotation
+        # without a usable timestamp. Loading must keep everything readable.
+        path.write_text(path.read_text() + "bogus_kind,x,y\nannotation,,,,,\n")
+        with patch.object(app.filedialog, "askopenfilename", return_value=str(path)):
+            ws.load_csv()
+        ws.file_future.result(timeout=20)
+        ws._finish_file_operation()
+        self.assertEqual([(a.time, a.label, a.color) for a in ws.annotations], [(4.0, "keep", "#00ff00")])
+        self.assertIn("skipped 0 unreadable annotation(s) and 2 unknown record(s)",
+                      ws.messages_text.get("1.0", "end"))
+        for directory in ws.recording_directories:
+            directory.cleanup()
 
 
 if __name__ == "__main__":
