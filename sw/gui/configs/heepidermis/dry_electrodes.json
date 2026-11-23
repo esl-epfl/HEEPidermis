@@ -4,6 +4,8 @@
   "mcu_freq": 10000000,
   "port": "/dev/serial/by-id/usb-FTDI_Quad_RS232-HS-if02-port0",
   "baud": 500000,
+  "spi_port": "/dev/ttyACM0",
+  "vco_is_sysclk": false,
   "sampling_index": 18,
   "current_code": 48,
   "differential_mode": "Chip software P−N",

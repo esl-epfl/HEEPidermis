@@ -263,6 +263,50 @@ return to a known-working clock (10 MHz on the tested board), reset the board,
 and rebuild. The physical cause of a failed halt needs a board-level clock,
 power, and JTAG check; changing the firmware clock constant cannot repair it.
 
+### JTAG or SPI programming interface
+
+**Programming interface** (under SERIAL COMMUNICATION) selects how the GUI
+loads firmware and changes live settings. JTAG is the default and behaves as
+described above. The choice is latched when recording starts. SPI mode needs the
+Pico programmer tools in `sw/arduino` and their make targets, plus `pyelftools`.
+
+| | JTAG (FTDI probe) | SPI (Raspberry Pi Pico programmer) |
+|---|---|---|
+| **Build** | `make jtag_build` | `make spi_build` (`BOOT_MODE=force`, plus `CDEFS=VCO_IS_SYSCLK` if ticked), then `make spi-program verify`: the image is loaded and verified, and the CPU waits in Boot ROM |
+| **Record** | `make jtag_open`, then GDB loads and starts the ELF | opens the chip UART, then starts the loaded image (nothing is programmed). If the firmware already runs, it reconnects and sends `?` on the UART so the firmware reprints its configuration |
+| **Live settings** | OpenOCD halts the CPU, writes, reads back, resumes | Pico writes each `gsr_*` word through the SPI slave and reads it back while the CPU runs |
+| **Config. board** | `make board_freq PLL_FREQ=...` (CHEEP PLL) | `make programmer-clock-off programmer-clock-set programmer-clock-on CLK_FREQ=...` |
+| **Pause** | `make jtag_close` | closes the UART; the firmware keeps running |
+
+In SPI mode, Record reads `BOOT_EXIT_LOOP`. The Pico's reset clears it and
+starting the CPU sets it. Zero means the CPU is waiting in Boot ROM: the GUI
+compares the start of SRAM against `sw/build/main.elf` and jumps to its entry
+point. If SRAM no longer matches, for example after a power cycle, press
+**Build** again. Nonzero means the firmware is already running, so the GUI
+reconnects. To restart acquisition from scratch, press **Build**.
+
+**VCO is system clock (VCO_IS_SYSCLK)** applies to SPI builds only. It stops
+the firmware from ever writing the VCOp enable bit. Tick it only when the ASIC
+runs from its internal VCOp clock. With the external Pico clock, leave it off:
+otherwise VCOp is never enabled and the P channel reads as lead-off.
+
+In SPI mode, set **SPI programmer port** to the Pico (the GUI defaults to the
+port saved by `make spi-port`). **Serial port** must still be the chip UART,
+which is a separate USB-UART adapter, not the Pico. The ASIC clock must be
+running before Record: use **Config. board** or `make programmer-clock-on`.
+If you run from the internal VCO clock, do not press **Config. board** or the
+workspace **Connect** button (which runs the same action) in SPI mode, since
+both turn the Pico clock back on. See
+[the SPI programmer guide](../arduino/README.md).
+
+SPI cannot halt the CPU, so the three dLC words are written one after the other
+(enable last). The firmware may reconfigure once per word instead of once for
+the whole change. The final state and its UART confirmation are the same.
+
+The configuration keys are `interface`, `spi_port` and `vco_is_sysclk`.
+Configurations saved without them still load and leave the current selections
+unchanged.
+
 Set **Sampling frequency** with the slider below **Record**. It offers
 0.1–0.9 Hz, 1–9 Hz, 10–90 Hz, and the same 1–9 steps through 10,000 Hz. It
 starts at the rate in the demo source. Moving the slider while recording writes
@@ -331,7 +375,9 @@ Informative lines are separate from samples. `[i] Current set: <nA> nA` and
 The dLC enable, level width and time-bit controls use the same atomic JTAG/readback
 path and wait for `A`/`B` metadata confirmation. The GUI waits for these firmware
 acknowledgments after JTAG writes. The demo still accepts
-`I=<nA>` commands on UART for use outside the GUI.
+`I=<nA>` commands on UART for use outside the GUI. `?` followed by a newline makes
+it reconfigure acquisition and resend its `A`/`B` metadata and ready banner, so a
+host that reconnects to running firmware can resync.
 
 The upper right plot shows P and N in mV, auto-scaled
 to the visible samples with about 5% headroom so the data uses roughly 90% of

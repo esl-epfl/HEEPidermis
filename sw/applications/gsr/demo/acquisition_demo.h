@@ -202,6 +202,13 @@ configure:
                 }
             }
         }
+        if (command.resend) {
+#ifdef GSR_USE_DLC
+            if (dlc_enabled && dlc_pending) continue;
+#endif
+            // Reconfiguring reprints A/B metadata and the ready banner.
+            command.resend = 0U; goto configure;
+        }
         uint32_t requested_rate = gsr_sample_rate_millihz, requested_supply = gsr_supply_rate_millihz;
         if (requested_rate != rate || requested_supply != supply_setting) {
 #ifdef GSR_USE_DLC

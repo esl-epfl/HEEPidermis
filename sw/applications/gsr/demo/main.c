@@ -14,7 +14,7 @@
 #include "uart.h"
 #include "uart_regs.h"
 
-// Build values provide startup defaults; the GUI can update the volatile runtime words over JTAG.
+// Build values provide startup defaults; the GUI can update the volatile runtime words over JTAG or SPI.
 #define SYS_FCLK_HZ 10000000
 #define VCO_FS_HZ 10
 #define VCO_SAMPLE_RATE_MILLIHZ 10000
@@ -119,9 +119,11 @@ static void print_setting(const char *name, uint32_t value, const char *unit) {
 typedef struct {
     uint32_t value_nA;
     uint8_t state;
+    uint8_t resend; // Set by ?\n: reprint the acquisition configuration.
 } current_command_t;
 
-// Accept one short ASCII command: I=<current in nA>\n.
+// Accept short ASCII commands: I=<current in nA>\n, or ?\n to resend the
+// configuration so a host that reconnects to running firmware can resync.
 static void poll_current_command(const uart_t *uart, current_command_t *command) {
     while (!(mmio_region_read32(uart->base_addr, UART_STATUS_REG_OFFSET) &
              (1U << UART_STATUS_RXEMPTY_BIT))) {
@@ -130,6 +132,11 @@ static void poll_current_command(const uart_t *uart, current_command_t *command)
         if (byte == 'I') {
             command->state = 1U;
             command->value_nA = 0U;
+        } else if (byte == '?') {
+            command->state = 3U;
+        } else if (command->state == 3U && (byte == '\n' || byte == '\r')) {
+            command->resend = 1U;
+            command->state = 0U;
         } else if (command->state == 1U && byte == '=') {
             command->state = 2U;
         } else if (command->state == 2U && byte >= '0' && byte <= '9' &&
