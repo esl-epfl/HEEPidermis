@@ -90,6 +90,7 @@ class CognitiveTest:
 
     NAME: str = "cognitive"
     ConfigClass = TestConfig
+    _font_family = None  # Resolved once per process from TkDefaultFont.
 
     def __init__(self, config: Optional[TestConfig] = None, **overrides):
         """Build a test from a config (or its defaults) plus keyword overrides.
@@ -221,10 +222,21 @@ class CognitiveTest:
         self._after_jobs.append(self._root.after(ms, callback))
 
     def font(self, size: int = 0, bold: bool = True):
-        """A Tk font tuple; ``size <= 0`` resolves the automatic base size."""
+        """A Tk font tuple; ``size <= 0`` resolves the automatic base size.
+
+        The family is the system UI font (TkDefaultFont), which renders
+        anti-aliased; a hard-coded family can fall back to bitmap fonts.
+        """
         if size <= 0:
             size = self.config.font_size or self._auto_font_size()
-        return ("Helvetica", size, "bold" if bold else "normal")
+        if CognitiveTest._font_family is None:
+            try:
+                from tkinter import font as tkfont
+                CognitiveTest._font_family = (tkfont.nametofont("TkDefaultFont").actual("family")
+                                              or "Helvetica")
+            except Exception:
+                CognitiveTest._font_family = "Helvetica"
+        return (CognitiveTest._font_family, size, "bold" if bold else "normal")
 
     def record(self, **event) -> None:
         """Append one event (trial/response) and notify the GUI if attached."""

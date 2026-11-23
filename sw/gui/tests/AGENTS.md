@@ -16,6 +16,8 @@ sw/gui/tests/
 │   ├── settings.py    ← HJSON settings loader (config_kwargs)
 │   ├── audio.py       ← synthesized feedback sounds (no assets)
 │   ├── voice.py       ← Vosk keyword spotting (lazy imports)
+│   ├── vocal.py       ← single-stream phrase recognition and vocal pitch
+│   ├── media.py       ← cancellable clips, English speech and reference tones
 │   └── visuals.py     ← shared verdict symbols and palette
 ├── Stroop/            ← one folder = one test (capitalized name)
 │   ├── __init__.py    ← re-exports the spec contract
@@ -24,7 +26,8 @@ sw/gui/tests/
 │   ├── configs/       ← defaults.hjson + user-saved configurations
 │   └── ...            ← implementation modules, unit tests
 ├── MIST/              ← arithmetic stress task (same spec/configs/test layout)
-└── SSST/              ← placeholder: selection reports "No such test was found"
+└── SSST/              ← headphone speech/pitch exercises and singing stress
+    └── songs/         ← numbered local clips and x_lyrics.txt karaoke lines
 ```
 
 Discovery rules (`gui/tests/__init__.py`):

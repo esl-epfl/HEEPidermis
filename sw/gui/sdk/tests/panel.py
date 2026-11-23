@@ -263,8 +263,12 @@ class TestsPanel:
                 ttk.Label(self.form_frame, text=field.get("label", key)).pack(anchor="w", pady=(4, 0))
                 if kind == "dropdown":
                     variable = tk.StringVar(value=str(base))
-                    widget = ttk.Combobox(self.form_frame, values=[str(o) for o in field["options"]],
+                    widget = ttk.Combobox(self.form_frame, values=self._dropdown_options(field),
                                           textvariable=variable, state="readonly")
+                    # Re-resolve on every open (e.g. SSST lists the songs that
+                    # actually exist in the configured folder).
+                    widget.configure(postcommand=lambda w=widget, f=field:
+                                     w.configure(values=self._dropdown_options(f)))
                     widget.pack(fill="x")
                 elif kind == "slider":
                     variable = tk.StringVar(value=self._widget_text(base))
@@ -283,6 +287,18 @@ class TestsPanel:
             if key in self.form_values:
                 self.form_values[key].trace_add("write", lambda *_: self._update_section_states())
         self._update_section_states()
+
+    def _dropdown_options(self, field):
+        """Static options, or a spec's lightweight current-config provider."""
+        options = field["options"]
+        if callable(options):
+            values = {**self.form_base, **{key: var.get() for key, var in self.form_values.items()}}
+            try:
+                options = options(values)
+            except (ValueError, OSError) as error:
+                self.config_status.set(str(error))
+                return []
+        return [str(option) for option in options]
 
     def _update_section_states(self):
         """Grey out the sections whose ``enabled_by`` condition is not met.

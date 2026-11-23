@@ -381,13 +381,15 @@ class GUIIntegrationTests(unittest.TestCase):
 
     def test_real_window_runs_all_phases_and_publishes_events(self):
         path = Path(self.directory.name) / "events.jsonl"
-        task = Test(practice_time=0.12, rest_time=0.04, test_time=0.16,
-                    feedback_time=0.02, isi=0, sounds=False)
+        # Blocks long enough that a slow interpreter (e.g. Python 3.8) still
+        # gets a stimulus inside each block and can answer it.
+        task = Test(practice_time=0.36, rest_time=0.12, test_time=0.48,
+                    feedback_time=0.05, isi=0, sounds=False)
         task.run(parent=self.root, event_path=path)
         self.addCleanup(lambda: task._finish(task.state != "summary"))
         task._handle_key("space")
         import time
-        until = time.monotonic() + 3
+        until = time.monotonic() + 10
         while task.state != "summary" and time.monotonic() < until:
             self.root.update()
             if task.state == "stimulus":

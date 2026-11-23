@@ -1,0 +1,46 @@
+{
+  ssst: {
+    # Timing in seconds. This headphone adaptation adds reading aloud and
+    # pitch matching to van der Mee et al.'s anticipation-based short SSST.
+    instruction_time: 10.0  # Instruction screens; SPACE skips them.
+    neutral_countdown: 5.0
+    response_time: 12.0  # Silence fallback when recognition is unavailable.
+    rest_time: 10.0
+    anticipation_time: 10.0
+    # Total supplied clip duration.
+    test_time: 60.0
+    recovery_time: 30.0
+
+    # Neutral English phrases, shown on screen and read aloud.
+    phrases: "A vacuum cleaner collects dust and small particles from floors.|The dust is collected in a bag or a removable container.|Different attachments can be used to clean different surfaces."
+    # A pause of this length after speaking finishes the read-aloud trial
+    # early (0 keeps the full response window).
+    pause_time: 1.2
+    # Empty string disables the tone exercise. Frequencies are in Hz.
+    tone_frequencies: "150 180 220 260"
+    tone_duration: 2.0
+    tone_response_time: 6.0
+    # Cents: 100 is one semitone; octave errors are NOT treated as correct.
+    pitch_tolerance: 100.0
+    voice_enabled: true
+    mic_device: -1  # System microphone; output follows system headphones.
+    vosk_model: ""  # Existing shared English Vosk model, downloaded if absent.
+    mic_threshold: 0.01  # Minimum normalized RMS for voiced pitch estimates.
+
+    # participant = hidden number choice. A menu song forces that selection.
+    song: participant
+    songs_dir: ""  # Empty means sw/gui/tests/SSST/songs, independent of cwd.
+    lead_in: 8.0  # Preparation time before the singing cue.
+    auto_lead_in: true  # Sing at the first nonempty lyric timestamp (minimum lead_in).
+    lyrics_offset: 0.0  # Positive shifts lyrics later; excerpt-relative timestamps.
+    negative_feedback: true  # Scripted, not a measured singing assessment.
+    feedback_delay: 8.0  # After the singing cue (not the clip start).
+    feedback_interval: 8.0
+    feedback_messages: "Pitch accuracy below target.|Timing inconsistent.|Performance below the reference level."
+
+    fullscreen: false
+    font_size: 0  # Automatic stimulus/lyric size.
+    background: "#101014"
+    foreground: "#f2f2f2"
+  }
+}

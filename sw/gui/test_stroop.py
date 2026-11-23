@@ -465,7 +465,9 @@ class PanelTests(unittest.TestCase):
         self.assertTrue(all(not w.instate(["disabled"]) for w in widgets))
 
     def test_placeholder_tests_refuse_to_launch(self):
-        self.panel.test_selection.set("SSST")  # Folder exists, test does not.
+        self.panel.tests["Placeholder"] = {"key": "placeholder", "title": "Placeholder",
+                                            "implemented": False, "spec": None}
+        self.panel.test_selection.set("Placeholder")
         self.panel._build_form()
         with patch("gui.sdk.tests.panel.subprocess.Popen") as popen:
             self.panel.launch()

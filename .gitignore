@@ -17,6 +17,8 @@ build/
 *.csv
 *.pid
 
+**.mp3
+
 #generated files
 tb/tb_util.svh
 hw/vendor/x-heep/sw/device/lib/crt/crt0.S

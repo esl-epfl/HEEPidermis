@@ -27,6 +27,7 @@ import random
 import time
 
 from ..common.base import CognitiveTest
+from ..common.visuals import draw_instructions_panel
 from .spec import COLOR_POOL, StroopConfig, TITLE
 
 RESPONSE_KEYS = "1234567890"
@@ -91,6 +92,9 @@ class StroopTest(CognitiveTest):
 
     def _draw_instructions(self):
         self._clear_all()
+        size = self._canvas.winfo_width() or 1000
+        height = self._canvas.winfo_height() or 700
+        draw_instructions_panel(self._canvas, size, height, self.config.background)
         if self._spotter is not None:
             lines = [
                 "STROOP TEST",

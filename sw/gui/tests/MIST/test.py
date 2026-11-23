@@ -6,7 +6,7 @@ import time
 
 from ..common.audio import SoundPlayer
 from ..common.base import CognitiveTest
-from ..common.visuals import GREEN, RED, draw_verdict
+from ..common.visuals import GREEN, RED, draw_instructions_panel, draw_verdict
 from .arithmetic import generate_problem
 from .spec import Config, TITLE
 
@@ -363,6 +363,7 @@ class Test(CognitiveTest):
         w, h = max(640, c.winfo_width()), max(480, c.winfo_height())
         self._text(w / 2, 30, "MIST · MENTAL ARITHMETIC", 22, "#8ab4c8")
         if self.state == "instructions":
+            draw_instructions_panel(c, w, h, self.config.background)
             lines = ["MONTREAL IMAGING STRESS TASK", "",
                      "Solve the expression. Every answer is a digit from 0 to 9.",
                      "Say the answer or press its digit." if self._spotter else "Press the answer's digit (0–9). No Enter needed.",
