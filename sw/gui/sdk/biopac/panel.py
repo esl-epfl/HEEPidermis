@@ -25,7 +25,7 @@ try:
     from ...common.plots import TimePlot, TimeViewport, Trace
     from ...common.theme import (UI_ACCENT, UI_BACKGROUND, UI_BORDER, UI_MUTED,
                                  UI_PLOT, UI_TEXT, configure_style)
-    from ...common.widgets import Tooltip, Collapsible, ScrollPane
+    from ...common.widgets import Tooltip, ScrollPane, submenu
     from .acquire import RATES
     from .configuration import (Configuration, ProcessingSettings, default_path,
                                 read_configuration, write_configuration)
@@ -95,13 +95,16 @@ class BiopacGUI:
 
     def _build(self):
         parent = self.host or self.root
-        header = ttk.Frame(parent, style="App.TFrame", padding=(18, 12))
-        header.pack(fill="x")
-        ttk.Label(header, text="BIOPAC", style="PlotTitle.TLabel", font=("Helvetica", 19, "bold")).pack(side="left")
-        ttk.Label(header, text="MP160 · EDA100C / BioNomadix EDA · native Linux",
-                  style="WorkspaceMuted.TLabel").pack(side="left", padx=18)
+        # The workspace panels (HEEPidermis, Shimmer) show no embedded header;
+        # keep the title bar for the standalone window only.
         self.status = tk.StringVar(value="Disconnected")
-        ttk.Label(header, textvariable=self.status, style="Workspace.TLabel").pack(side="right")
+        if not self.embedded:
+            header = ttk.Frame(parent, style="App.TFrame", padding=(18, 12))
+            header.pack(fill="x")
+            ttk.Label(header, text="BIOPAC", style="PlotTitle.TLabel", font=("Helvetica", 19, "bold")).pack(side="left")
+            ttk.Label(header, text="MP160 · EDA100C / BioNomadix EDA · native Linux",
+                      style="WorkspaceMuted.TLabel").pack(side="left", padx=18)
+            ttk.Label(header, textvariable=self.status, style="Workspace.TLabel").pack(side="right")
 
         body = ttk.Frame(parent, style="App.TFrame", padding=(12, 0, 12, 10))
         body.pack(fill="both", expand=True)
@@ -122,7 +125,7 @@ class BiopacGUI:
             sidebar.bind("<Configure>", lambda _e: sidebar_canvas.configure(scrollregion=sidebar_canvas.bbox("all")))
             sidebar_canvas.bind("<Configure>", lambda e: sidebar_canvas.itemconfigure(sidebar_window, width=e.width))
 
-        network = self._section(sidebar, "01  MP160 connection")
+        network = self._section(sidebar, "Connection")
         self.interface, self.ip, self.output_dir = tk.StringVar(), tk.StringVar(), tk.StringVar()
         interface_field = self._field(network, "Ethernet interface (blank = find on any)",
                                       self.interface, 0,
@@ -141,7 +144,7 @@ class BiopacGUI:
         self.device_text = tk.StringVar(value="No device connected")
         ttk.Label(network, textvariable=self.device_text, style="Muted.TLabel", wraplength=298).grid(row=5, column=0, sticky="w", pady=(6, 0))
 
-        hardware = self._section(sidebar, "02  Acquisition + manual hardware settings")
+        hardware = self._section(sidebar, "Acquisition + manual hardware settings")
         self.profile_var = tk.StringVar()
         self.profile_combo = self._field(hardware, "Hardware profile (manual preset)", self.profile_var, 0,
                                         values=tuple(PROFILE_CHOICES), readonly=True, group=self.hardware_widgets)
@@ -212,7 +215,7 @@ class BiopacGUI:
         # rows with their own parameter dialogs), not a BIOPAC configuration:
         # the raw stream is always exported unmodified with default analysis.
 
-        files = ttk.Frame(sidebar) if self.embedded else self._section(sidebar, "03  Files")
+        files = ttk.Frame(sidebar) if self.embedded else self._section(sidebar, "Files")
         ttk.Label(files, text="Autosave folder (next connection)", style="Muted.TLabel").pack(anchor="w")
         output_entry = ttk.Entry(files, textvariable=self.output_dir)
         output_entry.pack(fill="x", pady=(3, 6))
@@ -291,10 +294,9 @@ class BiopacGUI:
 
     @staticmethod
     def _section(parent, text):
-        section = ttk.LabelFrame(parent, text=text, padding=10)
-        section.pack(fill="x", pady=(0, 10))
-        section.columnconfigure(0, weight=1)
-        return section
+        # Shared nested-section look, defined once in common.widgets so every
+        # device menu is built from the same code.
+        return submenu(parent, text)
 
     @staticmethod
     def _field(parent, label, variable, row, *, values=None, readonly=False, group=None):

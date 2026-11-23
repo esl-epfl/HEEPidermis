@@ -44,6 +44,7 @@ from .common.theme import (UI_BACKGROUND, UI_BORDER, UI_MUTED, UI_PLOT, UI_SURFA
 from .common.widgets import Collapsible, ScrollPane, Tooltip
 from .sdk.heepidermis.panel import VCOGui
 from .sdk.biopac.panel import BiopacGUI
+from .sdk.shimmer.panel import ShimmerGUI
 from .sdk.tests.panel import TestsPanel
 from .sdk.tests.recording import MARKER_COLORS  # Standard event-marker palette.
 
@@ -107,8 +108,9 @@ DEVICES = (
      "description": "MP160 + EDA100C / BioNomadix over native Linux UDP."},
     {"key": "tests", "name": "Tests", "panel": TestsPanel,
      "description": "Cognitive tests (sw/gui/tests): events as green/red/white markers on all plots."},
-    {"key": "shimmer", "name": "Shimmer", "panel": None,
-     "description": "Not implemented yet; SDK slot reserved in sw/gui/sdk/shimmer."},
+    {"key": "shimmer", "name": "Shimmer", "panel": ShimmerGUI,
+     "description": "Shimmer3 GSR+ skin conductance over Bluetooth SPP or dock UART; "
+                    "connection is automatic (pairing + serial bind handled in-app)."},
     {"key": "empatica", "name": "Empatica", "panel": None,
      "description": "Not implemented yet; SDK slot reserved in sw/gui/sdk/empatica."},
 )
@@ -519,7 +521,11 @@ class Workspace:
     def _device_section(self, device) -> Collapsible:
         key = device["key"]
         if key in self.device_sections:
-            return self.device_sections[key]
+            section = self.device_sections[key]
+            # A previously unchecked device reappears where it was: grid_remove
+            # remembers the grid options, so a plain grid() restores them.
+            section.grid()
+            return section
         section = Collapsible(self.config_pane.body, device["name"].upper(), opened=False)
         section.grid(row=self.device_config_row, column=0, sticky="ew", pady=(0, 8))
         self.device_config_row += 1
@@ -545,11 +551,21 @@ class Workspace:
         tab.rowconfigure(0, weight=1)
         self.reports.add(tab, text=device["name"])
         self.report_tabs[key] = tab
+        # A previous instance may still be shutting down after a quick
+        # uncheck/recheck; its leftover widgets must not stack under this one.
+        for child in body.winfo_children():
+            child.destroy()
         if self._reports_placeholder is not None and self._reports_placeholder.winfo_exists():
             self.reports.forget(self._reports_placeholder)
             self._reports_placeholder = None
         try:
-            panel = device["panel"](self.root, host=body, reports=tab, on_closed=lambda k=key: self._device_closed(k))
+            holder = {}
+
+            def on_closed():
+                self._device_closed(key, holder.get("panel"))
+
+            panel = device["panel"](self.root, host=body, reports=tab, on_closed=on_closed)
+            holder["panel"] = panel
         except Exception as error:
             traceback.print_exc()
             for child in body.winfo_children():
@@ -588,9 +604,17 @@ class Workspace:
         if key in self.report_tabs:
             self.reports.forget(self.report_tabs.pop(key))
         body = self.device_bodies.get(key)
-        if body is not None and device["panel"] is None:
+        if body is not None and panel is None:
+            # Placeholder devices have no worker to wait for: clear the body
+            # right away. Real panels are cleared from _device_closed once
+            # their acquisition thread finished closing.
             for child in body.winfo_children():
                 child.destroy()
+        section = self.device_sections.get(key)
+        if section is not None:
+            # The configuration menu disappears from the bar immediately; the
+            # Collapsible remembers its grid options for the next enable.
+            section.grid_remove()
         frame = self.device_frames.get(key)
         if frame is not None:
             frame["cluster"].place_forget()
@@ -642,9 +666,22 @@ class Workspace:
             if str(frame["connect_button"].cget("text")) != label:
                 frame["connect_button"].configure(text=label)
 
-    def _device_closed(self, key: str):
+    def _device_closed(self, key: str, panel=None):
         """A panel closed itself (window shutdown or fatal acquisition error)."""
+        current = self.panels.get(key)
+        if panel is not None and current is not None and current is not panel:
+            return  # The device was re-enabled with a fresh panel meanwhile.
         self.panels.pop(key, None)
+        # Remove the configuration menu and its widgets only now that the
+        # panel's worker thread is done: destroying earlier would leave the
+        # closing panel's UI pump poking at destroyed widgets.
+        body = self.device_bodies.get(key)
+        if body is not None:
+            for child in body.winfo_children():
+                child.destroy()
+        section = self.device_sections.get(key)
+        if section is not None:
+            section.grid_remove()
         variable = self.device_frames.get(key, {}).get("variable")
         if variable is not None:
             variable.set(False)
@@ -936,8 +973,8 @@ class Workspace:
                             command=lambda w=widgets: self._configure_feature(w))
         params.grid(row=table_row, column=16, sticky="ew", padx=2, pady=2)
         params.grid_remove()
-        widgets.update(device=device_box, signal=signal_box, hide=hide, stack=stack, axis=axis,
-                       y_scale=y_scale, y_min=y_min, y_max=y_max, transform=transform,
+        widgets.update(device=device_box, signal=signal_box, hide=hide, remove=remove, stack=stack,
+                       axis=axis, y_scale=y_scale, y_min=y_min, y_max=y_max, transform=transform,
                        amplify=amplify, color=color, alpha=alpha, zorder=zorder,
                        source_a=source_a, source_b=source_b, params=params)
         self.table_rows.append(widgets)
@@ -1657,7 +1694,8 @@ class Workspace:
                         skipped.append((device, "panel could not be started"))
                         continue
                     try:
-                        loaded = panel.load_csv(path) if device == "biopac" else panel.load_recording(path)
+                        loaded = (panel.load_csv(path) if device in ("biopac", "shimmer")
+                                  else panel.load_recording(path))
                         if loaded is None:
                             raise ValueError("the device refused the recording")
                     except Exception as error:
@@ -1696,6 +1734,8 @@ class Workspace:
             return None
         if "vco_p_uV" in header:
             return "heepidermis"
+        if "gsr_raw16" in header:
+            return "shimmer"
         if "adc_count" in header:
             return "biopac"
         if "event_label" in header:
@@ -1719,10 +1759,12 @@ class Workspace:
                     return
                 from .sdk.heepidermis.recording import read_recording as read_heepidermis
                 from .sdk.biopac.recording import load_recording as read_biopac
+                from .sdk.shimmer.recording import load_recording as read_shimmer
                 from .sdk.tests.recording import read_recording as read_tests
                 self.file_future = submit(read_session, path,
                                           {"heepidermis": read_heepidermis,
-                                           "biopac": read_biopac, "tests": read_tests},
+                                           "biopac": read_biopac, "tests": read_tests,
+                                           "shimmer": read_shimmer},
                                           {"stroop": "tests"})
                 self.file_action = "load"
                 self.file_status.set("Loading all devices and signals…")
@@ -1744,10 +1786,10 @@ class Workspace:
             messagebox.showerror(parent=self.root, title="Load CSV",
                                  message=f"The {device} panel could not be started.")
             return
-        if device == "biopac":
+        if device in ("biopac", "shimmer"):
             if getattr(panel, "state", "disconnected") != "disconnected" or panel.pending:
                 messagebox.showinfo(parent=self.root, title="Load CSV",
-                                    message="Disconnect BIOPAC (and wait for pending commands) "
+                                    message=f"Disconnect {device.upper()} (and wait for pending commands) "
                                             "before loading a recording into it.")
                 return
             panel.load_csv(path)
@@ -1929,6 +1971,9 @@ class Workspace:
                 Configuration.parse(values)
             elif key == "heepidermis":
                 validate_configuration(values, VCOGui._configuration_choices(None), len(SAMPLING_RATES_HZ))
+            elif key == "shimmer":
+                from .sdk.shimmer.configuration import Configuration as ShimmerConfiguration
+                ShimmerConfiguration.parse(values)
             elif key == "tests":
                 from .sdk.tests.panel import validate_configuration as validate_tests
                 validate_tests(values)

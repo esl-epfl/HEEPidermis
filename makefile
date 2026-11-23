@@ -520,6 +520,12 @@ BIOPAC_ARGS ?= --profile bionomadix-ppged-r --interface enxa0cec8057fcf --ip 169
 biopac:
 	cd sw && python3 -m gui.sdk.biopac.panel $(BIOPAC_ARGS)
 
+## Launch the Shimmer GSR+ panel standalone (override SHIMMER_ARGS for --address or --demo)
+SHIMMER_ARGS ?=
+.PHONY: shimmer
+shimmer:
+	cd sw && python3 -m gui.sdk.shimmer.panel $(SHIMMER_ARGS)
+
 ## @section CHEEP boards control
 
 # Configure PLL

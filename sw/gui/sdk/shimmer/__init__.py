@@ -1,1 +1,1 @@
-"""Shimmer wireless GSR/ECG sensor; SDK slot reserved (not implemented yet)."""
+"""Shimmer3 GSR+ skin conductance: automatic Bluetooth/dock acquisition SDK."""

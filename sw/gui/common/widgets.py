@@ -36,6 +36,29 @@ class Collapsible(ttk.Frame):
         self.set_open(not self.opened)
 
 
+SUBMENU_INDENT = 14  # Left inset of a device menu's nested sections, px.
+
+
+def submenu(parent: tk.Misc, title: str, opened: bool = True) -> ttk.Frame:
+    """A nested section inside a device configuration menu, shared by every
+    device panel so all menus look and behave alike.
+
+    The title is upper-cased ("Connection" → "▾  CONNECTION") and the section
+    is indented under the device's own disclosure to make the hierarchy
+    visible.  Works in pack-managed (BIOPAC, Shimmer sidebars) and
+    grid-managed (HEEPidermis) parents.  Returns the section body for the
+    caller's fields.
+    """
+    frame = Collapsible(parent, title.upper(), opened=opened)
+    if parent.winfo_manager() == "pack":
+        frame.pack(fill="x", padx=(SUBMENU_INDENT, 0), pady=(0, 8))
+    else:
+        frame.grid(row=parent.grid_size()[1], column=0, sticky="ew",
+                   padx=(SUBMENU_INDENT, 0), pady=(0, 8))
+    frame.body.columnconfigure(0, weight=1)
+    return frame.body
+
+
 class ScrollPane(ttk.Frame):
     """Scrollable container (vertical always, horizontal when needed).
 

@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "address": "",
+  "name": "",
+  "connection": "auto",
+  "output_dir": "/home/juan/Desktop/ESL/HEEPidermis/open_repo/sw/gui/outs/shimmer",
+  "acquisition": {
+    "rate": 51.2,
+    "output_rate": null,
+    "device_name": "",
+    "address": ""
+  },
+  "moving_average": 1,
+  "span": 30.0
+}

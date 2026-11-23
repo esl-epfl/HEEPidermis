@@ -30,7 +30,7 @@ from ...common.theme import (UI_BACKGROUND, UI_SURFACE, UI_SURFACE_RAISED, UI_PL
                               UI_ACCENT, UI_ACCENT_DARK, UI_WARNING,
                               UI_DISABLED_BACKGROUND, UI_DISABLED_BORDER,
                               UI_DISABLED_TEXT, configure_style)
-from ...common.widgets import Tooltip, Collapsible, ScrollPane
+from ...common.widgets import SUBMENU_INDENT, Tooltip, Collapsible, ScrollPane
 
 from .acquisition import DLCDecoder, RecordingHistory
 from .recording import (Sample, MotionDetector, conductance_us, read_recording,
@@ -1254,8 +1254,13 @@ class VCOGui:
     def _build_layout(self) -> None:
         container = ttk.Frame(self.host or self.root, padding=6, style="App.TFrame")
         container.pack(fill="both", expand=True)
-        container.columnconfigure(0, minsize=575)
-        container.columnconfigure(1, weight=1)
+        if self.embedded:
+            # Span the workspace's shared configuration pane, like the other
+            # device panels; standalone keeps its fixed 575 px sidebar window.
+            container.columnconfigure(0, weight=1)
+        else:
+            container.columnconfigure(0, minsize=575)
+            container.columnconfigure(1, weight=1)
         container.rowconfigure(1, weight=1)
 
         self.side_canvas = None
@@ -1288,7 +1293,8 @@ class VCOGui:
 
         def section(title, row, opened=True):
             frame = Collapsible(controls, title, opened=opened)
-            frame.grid(row=row, column=0, sticky="ew", pady=(0, 8))
+            # Indented like the other panels' nested sections (common.widgets).
+            frame.grid(row=row, column=0, sticky="ew", padx=(SUBMENU_INDENT, 0), pady=(0, 8))
             frame.body.columnconfigure(0, weight=1, uniform="fields")
             frame.body.columnconfigure(1, weight=1, uniform="fields")
             return frame.body
