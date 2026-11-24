@@ -63,7 +63,8 @@ DPI_CINC			:= -I$(dir $(shell which verilator))../share/verilator/include/vltstd
 
 # Simulation configuration
 LOG_LEVEL			?= LOG_FULL
-BOOT_MODE			?= force # jtag: wait for JTAG (default), flash: boot from flash, force: load firmware into SRAM
+#  Default boot mode: jtag: wait for JTAG (default), flash: boot from flash, force: load firmware into SRAM
+BOOT_MODE			?= force
 FIRMWARE			?= $(ROOT_DIR)/build/sw/app/main.hex
 LINKER 				?= on_chip
 ifeq ($(BOOT_MODE), jtag)
@@ -76,7 +77,8 @@ else
 FIRMWARE			= $(ROOT_DIR)/build/sw/app/main.hex
 LINKER 				= flash_load
 endif
-VCD_MODE			?= 0 # QuestaSim-only - 0: no dump, 1: dump always active, 2: dump triggered by GPIO 0
+VCD_MODE			?= 0
+# QuestaSim-only - 0: no dump, 1: dump always active, 2: dump triggered by GPIO 0
 MAX_CYCLES			?= 100000000
 FUSESOC_FLAGS		?=
 FUSESOC_ARGS		?=
@@ -143,7 +145,7 @@ endif
 
 
 # Conda environemnt variables
-REQS_XHEEP 	:= hw/vendor/x-heep/util/python-requirements.txt
+REQS_XHEEP 	:= hw/vendor/x-heep/python-requirements.txt
 REQS_CHEEP 	:= util/cheep-python-requirements.txt
 ENV_NAME 	:= heepidermis
 
@@ -382,7 +384,7 @@ endif
 ## Dummy target to force software rebuild
 $(PARAMS):
 	@echo "### Rebuilding software..."
-
+	
 ## @section Utilities
 
 ## Check if the firmware is compiled
@@ -495,10 +497,16 @@ gsr-linker-gen:
 		--outdir $(GSR_LINK_FOLDER) \
 		--linker_script $(GSR_LINK_TEMPLATE)
 
+# Compile an app for SRAM loading through the SPI programmer (make spi-program).
+# Pass CDEFS=VCO_IS_SYSCLK when the ASIC runs from its internal VCOp clock.
+.PHONY: spi_build
+spi_build:
+	$(MAKE) app BOOT_MODE=force LINK_FOLDER=$(LINK_FOLDER) COMPILER_FLAGS="$(COMPILER_FLAGS)"
+
 ifeq ($(PROJECT),gsr/demo)
-jtag_build: gsr-linker-gen
-jtag_build: LINK_FOLDER=$(GSR_LINK_FOLDER)
-jtag_build: COMPILER_FLAGS += -Os
+jtag_build spi_build: gsr-linker-gen
+jtag_build spi_build: LINK_FOLDER=$(GSR_LINK_FOLDER)
+jtag_build spi_build: COMPILER_FLAGS += -Os
 endif
 #COMPILER_FLAGS="-DUART_BAUDRATE=$(UART_BAUD) -DREFERENCE_CLOCK_Hz=$(PLL_FREQ)"
 
@@ -579,4 +587,5 @@ export EXTERNAL_DOMAINS
 export FLASHWRITE_FILE
 export HEEP_DIR = $(ROOT_DIR)/hw/vendor/x-heep
 XHEEP_MAKE 		= $(HEEP_DIR)/external.mk
+include $(ROOT_DIR)/sw/arduino/spi.mk
 include $(XHEEP_MAKE)

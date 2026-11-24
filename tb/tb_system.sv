@@ -23,6 +23,13 @@ module tb_system #(
     inout wire jtag_tdi_i,
     inout wire jtag_tdo_o,
 
+    // External SPI master interface for testbench-driven transactions
+    input  wire spi_tb_enable_i,
+    input  wire spi_tb_sck_i,
+    input  wire spi_tb_cs_i,
+    input  wire spi_tb_mosi_i,
+    output wire spi_tb_miso_o,
+
     // Exit signals
     inout wire        exit_valid_o,
     inout wire [31:0] exit_value_o
@@ -59,6 +66,30 @@ module tb_system #(
   wire spi_flash_sd_1;
 
 `endif
+
+  // SPI slave interface
+  //
+  // By default, the HEEPidermis SPI slave is connected to the internal SPI
+  // master, preserving the original self-test configuration.
+  //
+  // When spi_tb_enable_i is asserted, the slave is instead driven directly
+  // by the external Verilator testbench, allowing the testbench to emulate
+  // an external SPI programmer.
+
+  wire spi_slave_sck;
+  wire spi_slave_cs;
+  wire spi_slave_mosi;
+  wire spi_slave_miso;
+
+  assign spi_slave_sck  = spi_tb_enable_i ? spi_tb_sck_i  : spi_flash_sck;
+  assign spi_slave_cs   = spi_tb_enable_i ? spi_tb_cs_i   : spi_flash_cs_1;
+  assign spi_slave_mosi = spi_tb_enable_i ? spi_tb_mosi_i : spi_flash_sd_0;
+
+  assign spi_tb_miso_o  = spi_slave_miso;
+
+  // Disconnect the internal SPI master MISO path while the external
+  // testbench master controls the SPI slave.
+  assign spi_flash_sd_1 = spi_tb_enable_i ? 1'bz : spi_slave_miso;
 
   // GPIO
   wire clk_div;
@@ -158,11 +189,13 @@ module tb_system #(
       .exit_valid_o        (exit_valid_o),
       .gpio_0_io           (gpio),
 
-      .spi_slave_sck_i(spi_flash_sck),
-      .spi_slave_cs_i(spi_flash_cs_1),
-      .spi_slave_mosi_i(spi_flash_sd_0),
-      .spi_slave_miso_io(spi_flash_sd_1),
+      // SPI Slave Settings
+      .spi_slave_sck_i (spi_slave_sck),
+      .spi_slave_cs_i  (spi_slave_cs),
+      .spi_slave_mosi_i(spi_slave_mosi),
+      .spi_slave_miso_io(spi_slave_miso),
 
+      // SPI Master Settings
       .spi_flash_sck_o  (spi_flash_sck),
       .spi_flash_cs_0_o (spi_flash_cs_0),
       .spi_flash_cs_1_io(spi_flash_cs_1),

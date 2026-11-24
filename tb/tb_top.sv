@@ -55,6 +55,8 @@ module tb_top;
   wire         exit_valid;
   wire  [31:0] exit_value;
 
+
+
   // TB configuration
   typedef enum int {
     BOOT_MODE_JTAG  = 0,
@@ -105,7 +107,6 @@ module tb_top;
   wire jtag_tdi;
   wire jtag_tdo;
 
-
   int entry_point;
   int rd_cnt;
   int num_stim;
@@ -118,7 +119,6 @@ module tb_top;
   // modelsim exit code, will be overwritten when successfull
   int exit_value_jtag = EXIT_ERROR;
   int exit_valid_jtag = 0;
-
 
   // ----------------
   // TB CONFIGURATION
@@ -521,6 +521,13 @@ module tb_top;
       .jtag_trst_ni        (jtag_trst_n),
       .jtag_tms_i          (jtag_tms),
       .jtag_tdi_i          (jtag_tdi),
-      .jtag_tdo_o          (jtag_tdo)
+      .jtag_tdo_o          (jtag_tdo),
+
+      // SPI master signals
+      .spi_tb_enable_i     (1'b0),
+      .spi_tb_sck_i        (1'b0),
+      .spi_tb_cs_i         (1'b1),
+      .spi_tb_mosi_i       (1'b0),
+      .spi_tb_miso_o       ()
   );
 endmodule

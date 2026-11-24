@@ -265,8 +265,11 @@ Testing... we seem to have a bug on the main board that prevents this from worki
 
 ### Programming through SPI
 
-Testing...
+HEEPidermis supports SRAM programming through its SPI slave interface using a Raspberry Pi Pico. The Pico also provides a configurable external system clock.
 
+The system supports operation from the ASIC's internal VCOp oscillator, allowing the external clock to be disconnected after initialization.
+
+For hardware connections, programming commands, clock configuration, VCO-based clock operation, and troubleshooting, see the **[SPI Programmer and Clock Configuration Guide](./sw/arduino/README.md)**.
 
 ## RTL Simulation
 

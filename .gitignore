@@ -71,7 +71,10 @@ hw/vendor/x-heep/tb/ext_bus.sv
 sw/applications/test_dsm_exploration/out*
 scripts/plotter/explore.ipynb
 scripts/plotter/evaluation/*
+<<<<<<< ours
 
 
 # Exclude tests for now
 tests/**
+=======
+*Zone.Identifier

@@ -18,10 +18,17 @@
 * @param enable enable=true to enable the VCOp, enable=false to disable it.
 */
 static inline void VCOp_enable( bool enable ){
+    #ifdef VCO_IS_SYSCLK
+    // VCOp is the system clock.
+    // Never modify its enable bit.
+    (void)enable;
+
+    #else
     // Reset the VCOp enable bit to 0 and then set it to the new value
     *(volatile uint32_t *)(VCO_DECODER_START_ADDRESS + VCO_DECODER_ENABLE_REG_OFFSET) &= ~((uint32_t)1 << VCO_DECODER_ENABLE_P_ENABLE_BIT);
     *(volatile uint32_t *)(VCO_DECODER_START_ADDRESS + VCO_DECODER_ENABLE_REG_OFFSET) |= (uint32_t) enable << VCO_DECODER_ENABLE_P_ENABLE_BIT;
-}
+    #endif    
+}   
 
 /**
 * @brief Enable/disable VCOn
