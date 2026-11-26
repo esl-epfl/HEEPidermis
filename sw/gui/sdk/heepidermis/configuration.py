@@ -33,7 +33,7 @@ def validate_configuration(values, choices, rate_count):
             if name == "dlc_width" and int(number) & (int(number) - 1):
                 raise ValueError("dLC level width must be a power of two")
             result[name] = int(number) if integer else number
-        elif name in ("use_dlc", "compare_dlc", "supply_follow", "motion_enabled"):
+        elif name in ("use_dlc", "compare_dlc", "supply_follow", "motion_enabled", "vco_is_sysclk"):
             if not isinstance(value, bool):
                 raise ValueError(f"{name} must be true or false")
             result[name] = value
@@ -44,6 +44,11 @@ def validate_configuration(values, choices, rate_count):
         elif name == "port":
             if not isinstance(value, str) or not value.strip():
                 raise ValueError("Serial port must be nonempty")
+            result[name] = value
+        elif name == "spi_port":
+            # May be empty: only SPI mode needs it, and it is checked there.
+            if not isinstance(value, str):
+                raise ValueError("SPI programmer port must be text")
             result[name] = value
     mode = result.get("differential_mode")
     if mode == "GUI P−N":

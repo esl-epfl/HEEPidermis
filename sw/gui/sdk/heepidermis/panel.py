@@ -61,6 +61,9 @@ ELF_MAP = ROOT / "sw" / "build" / "main.map"
 LOGO_PNG = ROOT / "docs" / "img" / "cheep_logo.png"
 QR_PNG = ROOT / "docs" / "img" / "HEEPidermis_QR.png"
 DEFAULT_PORT = "/dev/serial/by-id/usb-FTDI_Quad_RS232-HS-if02-port0"
+SPI_TOOLS = ROOT / "sw" / "arduino"
+SPI_PORT_FILE = SPI_TOOLS / ".spi-port"  # Written by `make spi-port PORT=...`.
+INTERFACES = ("JTAG", "SPI")
 LAST_CONFIGURATION = ROOT / "sw" / "gui" / "configs" / "heepidermis" / "last.json"
 CONFIGURATION_DIR = ROOT / "sw" / "gui" / "configs" / "heepidermis"
 SIGNAL_LEFT, SIGNAL_RIGHT = 78, 65
@@ -143,6 +146,14 @@ def nominal_voltage_uv(curve: list[tuple[float, float]], frequency_hz: int) -> i
     return round((v0 + (target_khz - f0) * (v1 - v0) / (f1 - f0)) * 1000)
 
 
+def default_spi_port() -> str:
+    try:
+        saved = SPI_PORT_FILE.read_text().strip()
+    except OSError:
+        saved = ""
+    return saved or "/dev/ttyACM0"
+
+
 def read_define(name: str, source: Path = DEMO_SOURCE) -> int:
     match = re.search(rf"^#define\s+{re.escape(name)}\s+(\d+)\s*$", source.read_text(), re.MULTILINE)
     if match is None:
@@ -160,12 +171,50 @@ def write_defines(changes: dict[str, int], path: Path = DEMO_SOURCE) -> None:
     path.write_text(source)
 
 
-def write_runtime_words(values: dict[str, int]) -> dict[str, int]:
-    """Atomically write volatile GSR runtime settings through OpenOCD's Tcl port."""
-    matches = {name: int(address, 16) for address, name in RUNTIME_SYMBOL.findall(ELF_MAP.read_text())}
+def runtime_symbol_addresses() -> dict[str, int]:
+    return {name: int(address, 16) for address, name in RUNTIME_SYMBOL.findall(ELF_MAP.read_text())}
+
+
+def write_runtime_words(values: dict[str, int], interface: str = "JTAG",
+                        spi_port: str | None = None) -> dict[str, int]:
+    """Write volatile GSR runtime settings through the selected debug interface."""
+    matches = runtime_symbol_addresses()
     missing = values.keys() - matches.keys()
     if missing:
         raise RuntimeError(f"The built firmware has no {', '.join(sorted(missing))} symbol. Build gsr/demo first.")
+    if interface == "SPI":
+        return _write_runtime_words_spi(values, matches, spi_port or default_spi_port())
+    return _write_runtime_words_jtag(values, matches)
+
+
+SPI_LOCK = threading.Lock()
+
+
+def _write_runtime_words_spi(values: dict[str, int], matches: dict[str, int], port: str) -> dict[str, int]:
+    """Write runtime words through the SPI slave while the CPU keeps running.
+
+    Unlike JTAG, SPI cannot halt the CPU, so a multi-word update is not atomic:
+    the firmware may apply it in more than one reconfiguration. Words are written
+    in the given order, so callers put the word that enables a feature last.
+    """
+    if str(SPI_TOOLS) not in sys.path:
+        sys.path.insert(0, str(SPI_TOOLS))
+    try:
+        from heep_sdk import HEEPidermis
+    except ImportError as error:
+        raise RuntimeError(f"Could not load the SPI programmer SDK from {SPI_TOOLS}: {error}") from error
+    with SPI_LOCK, HEEPidermis(port) as heep:
+        for symbol, value in values.items():
+            address = matches[symbol]
+            heep.write_u32(address, value)
+            readback = heep.read_u32(address)
+            if readback != value:
+                raise RuntimeError(f"SPI readback for {symbol} was 0x{readback:08x}, expected 0x{value:08x}.")
+    return {symbol: matches[symbol] for symbol in values}
+
+
+def _write_runtime_words_jtag(values: dict[str, int], matches: dict[str, int]) -> dict[str, int]:
+    """Atomically write volatile GSR runtime settings through OpenOCD's Tcl port."""
     with socket.create_connection(("127.0.0.1", 6666), timeout=4) as connection:
         connection.settimeout(4)
 
@@ -198,8 +247,9 @@ def write_runtime_words(values: dict[str, int]) -> dict[str, int]:
     return {symbol: matches[symbol] for symbol in values}
 
 
-def write_runtime_word(symbol: str, value: int) -> int:
-    return write_runtime_words({symbol: value})[symbol]
+def write_runtime_word(symbol: str, value: int, interface: str = "JTAG",
+                       spi_port: str | None = None) -> int:
+    return write_runtime_words({symbol: value}, interface, spi_port)[symbol]
 
 
 class SignalPlot(tk.Canvas):
@@ -998,7 +1048,11 @@ class VCOGui:
         self.stop_reader = threading.Event()
         self.run_pending = False
         self.recording_state = "stopped"
-        self.gdb_opened = False
+        self.gdb_opened = False  # True once the firmware was loaded and started (GDB or SPI).
+        # Interface and SPI port latched when recording starts, so editing the
+        # selector mid-session cannot redirect live writes or the close step.
+        self.active_interface = "JTAG"
+        self.active_spi_port = default_spi_port()
         self.close_completed = False
         self.operation: str | None = None
         self.open_requested = False
@@ -1025,11 +1079,12 @@ class VCOGui:
     def _configuration_choices(self):
         return {"project": tuple(path.parent.relative_to(APPLICATIONS).as_posix() for path in APPLICATIONS.rglob("main.c")),
                 "algorithm": ALGORITHMS, "differential_mode": DIFFERENTIAL_MODES,
+                "interface": INTERFACES,
                 "dlc_interpolation": DLC_INTERPOLATION_MODES,
                 "memory_color": ("Acquisition type", "Average sampling rate")}
 
     def _initialize_configuration(self):
-        names = ("project", "mcu_freq", "port", "baud", "sampling_index", "current_code", "differential_mode",
+        names = ("project", "mcu_freq", "port", "baud", "interface", "spi_port", "vco_is_sysclk", "sampling_index", "current_code", "differential_mode",
                  "supply_follow", "supply_index", "use_dlc", "dlc_width", "dlc_time_bits", "dlc_buffer_events", "compare_dlc", "dlc_interpolation", "memory_color",
                  "filter_window", "rate_window", "algorithm", "smoothing", "peak_prominence", "motion_enabled",
                  "motion_window", "motion_threshold_mv", "motion_correlation", "voltage_offset_mv")
@@ -1460,6 +1515,27 @@ class VCOGui:
         baud_entry = tip(ttk.Entry(serial_section, textvariable=self.baud, width=12),
                          "Sets the UART baud rate expected from the running firmware. The normal value is the MCU clock divided by twenty.")
         baud_entry.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(3, 8))
+        ttk.Label(serial_section, text="Programming interface").grid(row=2, column=0, sticky="w")
+        ttk.Label(serial_section, text="SPI programmer port").grid(row=2, column=1, sticky="w", padx=8)
+        self.interface = tk.StringVar(value="JTAG")
+        self.spi_port = tk.StringVar(value=default_spi_port())
+        interface_box = tip(ttk.Combobox(serial_section, textvariable=self.interface, values=INTERFACES, state="readonly", width=8),
+                            "JTAG: Build compiles; Record opens OpenOCD and loads the firmware with GDB; live settings use OpenOCD. "
+                            "SPI: Build compiles (BOOT_MODE=force) and loads the firmware into SRAM through the Raspberry Pi Pico "
+                            "programmer, leaving the CPU waiting in Boot ROM; Record only starts it, or reconnects if it already runs. "
+                            "Live settings are written through the SPI slave. "
+                            "Config. board sets the CHEEP PLL (JTAG) or the Pico clock output (SPI).")
+        interface_box.grid(row=3, column=0, sticky="ew", pady=(3, 8))
+        spi_port_entry = tip(ttk.Entry(serial_section, textvariable=self.spi_port, width=18),
+                             "Serial device of the Pico SPI programmer (used only in SPI mode). This is not the chip UART: "
+                             "the chip UART still needs its own USB-UART adapter on the Serial port above.")
+        spi_port_entry.grid(row=3, column=1, sticky="ew", padx=(8, 0), pady=(3, 8))
+        self.vco_is_sysclk = tk.BooleanVar(value=False)
+        tip(ttk.Checkbutton(serial_section, text="VCO is system clock (VCO_IS_SYSCLK)", variable=self.vco_is_sysclk),
+            "SPI builds only: compiles with CDEFS=VCO_IS_SYSCLK, so the firmware never toggles the VCOp enable bit. "
+            "Enable it only when the ASIC runs from its internal VCOp clock (after make VCO_clock). "
+            "Leave it off with the external Pico clock: the firmware would then never enable VCOp and the P channel would read as lead-off."
+            ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(0, 4))
         ttk.Label(visualization_section, text="Memory bar colors").grid(row=0, column=0, columnspan=2, sticky="w")
         self.memory_color = tk.StringVar(value="Acquisition type")
         memory_color_box = tip(ttk.Combobox(visualization_section, textvariable=self.memory_color, values=("Acquisition type", "Average sampling rate"), state="readonly", width=20),
@@ -2982,7 +3058,7 @@ class VCOGui:
         if self.recording_state == "running" and self.firmware_is_demo:
             if self.run_pending:
                 self.startup_current_pending = True
-                self.current_status.set("Applying selected current when GDB finishes starting…")
+                self.current_status.set("Applying selected current when the firmware finishes starting…")
                 self._log(self.current_status.get())
             else:
                 self.apply_current()
@@ -3054,14 +3130,15 @@ class VCOGui:
         self.dlc_checkbox.configure(state="disabled")
         self.dlc_width_box.configure(state="disabled")
         self.dlc_time_spin.configure(state="disabled")
-        self.dlc_status.set("Applying dLC configuration via JTAG…")
+        self.dlc_status.set(f"Applying dLC configuration via {self.active_interface}…")
         enabled, log_width, time_bits = requested
 
         def worker():
             try:
                 addresses = write_runtime_words({"gsr_dlc_log_width": log_width,
                                                  "gsr_dlc_time_bits": time_bits,
-                                                 "gsr_dlc_enabled": int(enabled)})
+                                                 "gsr_dlc_enabled": int(enabled)},
+                                                self.active_interface, self.active_spi_port)
                 self.events.put(("dlc_write_done", request_id, requested, addresses, None))
             except (OSError, ValueError, RuntimeError) as error:
                 self.events.put(("dlc_write_done", request_id, requested, None, str(error)))
@@ -3089,10 +3166,10 @@ class VCOGui:
         request_id = self.supply_request_id
         self.pending_supply_millihz = requested
         self._supply_slider_changed()
-        self.supply_status.set(f"Applying P {rate:g} Hz via JTAG…")
+        self.supply_status.set(f"Applying P {rate:g} Hz via {self.active_interface}…")
         def worker():
             try:
-                address = write_runtime_word("gsr_supply_rate_millihz", requested)
+                address = write_runtime_word("gsr_supply_rate_millihz", requested, self.active_interface, self.active_spi_port)
                 self.events.put(("supply_write_done", request_id, requested, address, None))
             except (OSError, ValueError, RuntimeError) as error:
                 self.events.put(("supply_write_done", request_id, requested, None, str(error)))
@@ -3130,12 +3207,12 @@ class VCOGui:
         request_id = self.sample_request_id
         self.pending_sample_millihz = rate_millihz
         self.sampling_scale.configure(state="disabled")
-        self.sampling_status.set(f"Applying {rate:g} Hz via JTAG…")
-        self._log(f"Applying {rate:g} Hz via JTAG; waiting for the firmware to confirm it.")
+        self.sampling_status.set(f"Applying {rate:g} Hz via {self.active_interface}…")
+        self._log(f"Applying {rate:g} Hz via {self.active_interface}; waiting for the firmware to confirm it.")
 
         def worker() -> None:
             try:
-                address = write_runtime_word("gsr_sample_rate_millihz", rate_millihz)
+                address = write_runtime_word("gsr_sample_rate_millihz", rate_millihz, self.active_interface, self.active_spi_port)
                 self.events.put(("sampling_write_done", request_id, rate_millihz, address, None))
             except (OSError, ValueError, RuntimeError) as error:
                 self.events.put(("sampling_write_done", request_id, rate_millihz, None, str(error)))
@@ -3162,12 +3239,12 @@ class VCOGui:
         request_id = self.current_request_id
         self.pending_current_na = current_na
         self.current_scale.configure(state="disabled")
-        self.current_status.set(f"Applying {current_na / 1000:.2f} µA via JTAG…")
-        self._log(f"Applying {current_na / 1000:.2f} µA via JTAG; waiting for the firmware to confirm it.")
+        self.current_status.set(f"Applying {current_na / 1000:.2f} µA via {self.active_interface}…")
+        self._log(f"Applying {current_na / 1000:.2f} µA via {self.active_interface}; waiting for the firmware to confirm it.")
 
         def worker() -> None:
             try:
-                address = write_runtime_word("gsr_injected_current_nA", current_na)
+                address = write_runtime_word("gsr_injected_current_nA", current_na, self.active_interface, self.active_spi_port)
                 self.events.put(("current_write_done", request_id, current_na, address, None))
             except (OSError, ValueError, RuntimeError) as error:
                 self.events.put(("current_write_done", request_id, current_na, None, str(error)))
@@ -3186,6 +3263,12 @@ class VCOGui:
         else:
             self.current_status.set(f"Firmware current: {self.applied_current_ua:.2f} µA")
 
+    def _selected_spi_port(self) -> str:
+        port = self.spi_port.get().strip()
+        if not port:
+            raise ValueError("Enter the SPI programmer serial port.")
+        return port
+
     def _run_make(self, tag: str, *arguments: str, on_success=None) -> None:
         if self.shutting_down:
             return
@@ -3199,6 +3282,7 @@ class VCOGui:
         self._log("$ " + " ".join(command), message_source=None)
         self._show_message({"build": "Building firmware…", "board": "Configuring the board clock…",
                             "open": "Opening JTAG and UART…", "run": "Loading and starting firmware…",
+                            "program": "Loading firmware into SRAM through the SPI programmer…",
                             "close": "Closing the device…"}.get(tag, f"Starting {tag}…"))
 
         def worker() -> None:
@@ -3233,10 +3317,12 @@ class VCOGui:
         if self.recording_state != "stopped":
             self._log("Pause recording before configuring the board.")
             return
+        spi = self.interface.get() == "SPI"
         try:
             frequency = self._positive_int(self.mcu_freq.get(), "MCU frequency")
             if frequency < 20:
                 raise ValueError("MCU frequency must be at least 20 Hz for the UART baud rate.")
+            spi_port = self._selected_spi_port() if spi else None
         except ValueError as error:
             self._log(str(error))
             return
@@ -3245,8 +3331,12 @@ class VCOGui:
             self.configured_freq = frequency
             self.baud.set(str(frequency // 20))
             self._sampling_slider_changed(str(self.sampling_index.get()))
-            self.board_reset_notice.set("MCU frequency configured. Please reset the hardware before starting a recording.")
-            self._log(self.board_reset_notice.get())
+            if spi:
+                # Build resets the CPU through SPI before loading, so no manual reset is needed.
+                self._log(f"Pico clock output set to {frequency} Hz and enabled.")
+            else:
+                self.board_reset_notice.set("MCU frequency configured. Please reset the hardware before starting a recording.")
+                self._log(self.board_reset_notice.get())
             try:
                 for source in (DEMO_SOURCE, TEST_SOURCE):
                     write_defines({"SYS_FCLK_HZ": frequency}, source)
@@ -3257,7 +3347,12 @@ class VCOGui:
                 self._stop_serial()
                 self._open_serial()
 
-        self._run_make("board", "board_freq", f"PLL_FREQ={frequency}", on_success=configured)
+        if spi:
+            # The Pico only accepts a new frequency while its clock output is off.
+            self._run_make("board", "programmer-clock-off", "programmer-clock-set", "programmer-clock-on",
+                           f"CLK_FREQ={frequency}", f"SPI_PORT={spi_port}", on_success=configured)
+        else:
+            self._run_make("board", "board_freq", f"PLL_FREQ={frequency}", on_success=configured)
 
     def build(self) -> None:
         if self.recording_state != "stopped":
@@ -3270,6 +3365,13 @@ class VCOGui:
         if not project or not (APPLICATIONS / project).is_dir():
             self._log("Select a valid application before building.")
             return
+        spi = self.interface.get() == "SPI"
+        if spi:
+            try:
+                spi_port = self._selected_spi_port()
+            except ValueError as error:
+                self._log(f"Build not started: {error}")
+                return
         applied_current = None
         if project in ("gsr/demo", "test_VCO_counter"):
             try:
@@ -3321,9 +3423,27 @@ class VCOGui:
                 self.current_status.set(f"Built startup current: {applied_current:.2f} µA")
                 self._log(f"Startup current set to {applied_current * 1000:.0f} nA ({int(applied_current * 1000 / IDAC_STEP_NA)} iDAC steps).")
             self._show_memory()
+            if spi:
+                self._load_over_spi(spi_port)
 
         self.memory.set("Building…")
-        self._run_make("build", "jtag_build", f"PROJECT={project}", on_success=built)
+        if spi:
+            arguments = ["spi_build", f"PROJECT={project}"]
+            if self.vco_is_sysclk.get():
+                arguments.append("CDEFS=VCO_IS_SYSCLK")
+            self._run_make("build", *arguments, on_success=built)
+        else:
+            self._run_make("build", "jtag_build", f"PROJECT={project}", on_success=built)
+
+    def _load_over_spi(self, spi_port: str) -> None:
+        """Load the freshly built ELF into SRAM and leave the CPU waiting in Boot ROM.
+
+        Recording then only has to start the CPU, which takes two register writes.
+        """
+        def loaded() -> None:
+            self._log("Firmware loaded and verified; the CPU waits in Boot ROM. Press Record to start it.")
+
+        self._run_make("program", "spi-program", "verify", f"SPI_PORT={spi_port}", on_success=loaded)
 
     def _show_memory(self) -> None:
         def worker() -> None:
@@ -3348,11 +3468,33 @@ class VCOGui:
         if self.serial_port and self.serial_port.is_open:
             self._log("Serial port is already open.")
             return
-        self.open_requested = True
+        interface = self.interface.get()
+        if interface == "SPI":
+            try:
+                spi_port = self._selected_spi_port()
+            except ValueError as error:
+                self._log(str(error))
+                self._set_recording_state("stopped")
+                return
+            if spi_port == self.port.get().strip():
+                self._log("The SPI programmer port and the chip UART serial port must be different devices.")
+                self._set_recording_state("stopped")
+                return
+            self.active_spi_port = spi_port
+        self.active_interface = interface
         self.firmware_is_demo = False
         self.current_status.set("Firmware current: connecting…")
         self.connection_generation += 1
         generation = self.connection_generation
+        if interface == "SPI":
+            # No debugger to open: listen on the UART first so the startup
+            # banner is not missed, then start the loaded firmware over SPI.
+            if self._open_serial():
+                self.run()
+            else:
+                self.close_device()
+            return
+        self.open_requested = True
         self._run_make("open", "jtag_open", "GUI_SERIAL=1", on_success=lambda: self.root.after(600, self._finish_open, generation))
 
     def _finish_open(self, generation: int) -> None:
@@ -3462,15 +3604,56 @@ class VCOGui:
         with self.process_lock:
             running = "run" in self.processes
         if running or self.run_pending:
-            self._log("GDB is already running.")
+            self._log("Firmware loading is already in progress.")
             self.close_device()
             return
         self.dlc_decoder = None
         self.run_pending = True
         self.gdb_opened = False
         self.startup_current_pending = self.project.get() == "gsr/demo"
-        self._run_make("run", "jtag_run", "GUI_MODE=1")
+        if self.active_interface == "SPI":
+            self._start_over_spi()
+        else:
+            self._run_make("run", "jtag_run", "GUI_MODE=1")
         self._set_recording_state("running")
+
+    def _start_over_spi(self) -> None:
+        """Start the firmware that Build loaded, or reconnect to it if it already runs.
+
+        Nothing is programmed here. The Pico's reset clears BOOT_EXIT_LOOP and
+        starting the CPU sets it, so the word tells the two cases apart.
+        Reports through the same "make_done"/"run" event as the JTAG path.
+        """
+        port, generation = self.active_spi_port, self.connection_generation
+        self._show_message("Starting firmware through the SPI programmer…")
+
+        def worker() -> None:
+            code, reconnect = 1, False
+            try:
+                if str(SPI_TOOLS) not in sys.path:
+                    sys.path.insert(0, str(SPI_TOOLS))
+                from heep_sdk import BOOT_EXIT_LOOP, HEEPidermis, load_elf
+                elf = ROOT / "sw" / "build" / "main.elf"
+                with SPI_LOCK, HEEPidermis(port) as heep:
+                    if heep.read_u32(BOOT_EXIT_LOOP):
+                        reconnect = True
+                    else:
+                        entry, regions = load_elf(elf)
+                        # Cheap check that SRAM still holds this build (e.g. not
+                        # lost to a power cycle) before jumping into it.
+                        for address, payload in regions[:1]:
+                            head = payload[:256]
+                            if heep.read(address, len(head)) != head:
+                                raise RuntimeError("SRAM does not hold the current build "
+                                                   "(power cycle or rebuild?). Press Build to load it again.")
+                        heep.run(entry)
+                        self.events.put(("output", f"CPU started at 0x{entry:08x}."))
+                code = 0
+            except Exception as error:  # SDK, serial and ELF errors all end the attempt.
+                self.events.put(("output", f"SPI start failed: {error}"))
+            self.events.put(("spi_started", generation, reconnect, code))
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _terminate_processes(self) -> None:
         with self.process_lock:
@@ -3511,7 +3694,13 @@ class VCOGui:
         self.startup_current_pending = False
         self.connection_generation += 1
         self._terminate_processes()
-        self._run_make("close", "jtag_close")
+        if self.active_interface == "SPI":
+            # Nothing to tear down: the UART is closed and the SPI programmer
+            # is only opened per operation. The firmware keeps running, so the
+            # next Record reconnects to it.
+            self.events.put(("make_done", "close", 0, None))
+        else:
+            self._run_make("close", "jtag_close")
 
     def _drain_events(self) -> None:
         try:
@@ -3660,25 +3849,25 @@ class VCOGui:
                 if request_id == self.current_request_id and self.pending_current_na == current_na:
                     if error:
                         self._finish_current_request("Current change failed; see terminal output")
-                        self._log(f"JTAG current write failed: {error}")
+                        self._log(f"{self.active_interface} current write failed: {error}")
                     else:
-                        self._log(f"JTAG wrote {current_na} nA to 0x{address:08x}; waiting for firmware confirmation.")
+                        self._log(f"{self.active_interface} wrote {current_na} nA to 0x{address:08x}; waiting for firmware confirmation.")
                         self.root.after(6000, self._current_request_timeout, request_id)
             elif event[0] == "sampling_write_done":
                 _, request_id, rate_millihz, address, error = event
                 if request_id == self.sample_request_id and self.pending_sample_millihz == rate_millihz:
                     if error:
                         self._finish_sampling_request("Sampling update failed; see terminal output")
-                        self._log(f"JTAG sampling-rate write failed: {error}")
+                        self._log(f"{self.active_interface} sampling-rate write failed: {error}")
                     else:
-                        self._log(f"JTAG wrote {rate_millihz / 1000:g} Hz to 0x{address:08x}; waiting for firmware confirmation.")
+                        self._log(f"{self.active_interface} wrote {rate_millihz / 1000:g} Hz to 0x{address:08x}; waiting for firmware confirmation.")
                         self.root.after(6000, self._sampling_request_timeout, request_id)
             elif event[0] == "supply_write_done":
                 _, request_id, requested, address, error = event
                 if request_id == self.supply_request_id and self.pending_supply_millihz == requested:
                     if error: self._finish_supply_request(f"P sampling write failed: {error}")
                     else:
-                        self._log(f"JTAG wrote P supply setting to 0x{address:08x}; waiting for firmware confirmation.")
+                        self._log(f"{self.active_interface} wrote P supply setting to 0x{address:08x}; waiting for firmware confirmation.")
                         self.root.after(6000, self._supply_request_timeout, request_id)
             elif event[0] == "dlc_write_done":
                 _, request_id, requested, addresses, error = event
@@ -3687,7 +3876,7 @@ class VCOGui:
                         self._finish_dlc_request(f"dLC update failed: {error}")
                     else:
                         locations = ", ".join(f"0x{address:08x}" for address in addresses.values())
-                        self._log(f"JTAG wrote dLC settings at {locations}; waiting for firmware metadata.")
+                        self._log(f"{self.active_interface} wrote dLC settings at {locations}; waiting for firmware metadata.")
                         self.root.after(6000, self._dlc_request_timeout, request_id)
             elif event[0] == "analysis_done":
                 self.analysis_running = False
@@ -3698,6 +3887,19 @@ class VCOGui:
             elif event[0] == "memory":
                 self.memory.set(event[1])
                 self._log(event[1].replace("\n", " | "), message_source=None)
+            elif event[0] == "spi_started":
+                _, generation, reconnect, code = event
+                if code == 0 and reconnect and generation == self.connection_generation:
+                    # The banner and A/B metadata were printed long ago; ask the
+                    # firmware to reconfigure so they are sent again.
+                    try:
+                        if self.serial_port is None:
+                            raise OSError("UART is not open")
+                        self.serial_port.write(b"?\n")
+                        self._log("Firmware already running; reconnected and requested its configuration.")
+                    except (serial.SerialException, OSError) as error:
+                        self._log(f"Could not request the firmware configuration over UART: {error}")
+                self.events.put(("make_done", "run", code, None))
             elif event[0] == "make_done":
                 _, tag, code, on_success = event
                 if tag == "run":
