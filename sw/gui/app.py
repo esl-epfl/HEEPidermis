@@ -26,8 +26,10 @@ import bisect
 import csv
 import json
 import math
+import os
 from pathlib import Path
 import sys
+import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 import traceback
@@ -46,6 +48,7 @@ from .sdk.heepidermis.panel import VCOGui
 from .sdk.biopac.panel import BiopacGUI
 from .sdk.shimmer.panel import ShimmerGUI
 from .sdk.tests.panel import TestsPanel
+from .sdk.classification.panel import ClassificationPanel
 from .sdk.tests.recording import MARKER_COLORS  # Standard event-marker palette.
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -54,12 +57,13 @@ WORKSPACE_CONFIG = ROOT / "sw" / "gui" / "configs" / "workspace" / "last.json"
 OUTPUTS_DIR = ROOT / "sw" / "gui" / "outs"
 
 AMPLIFY_CHOICES = ("0.01x", "0.1x", "1x", "10x", "100x", "normalize", "normalize row/axis")
-TRANSFORM_CHOICES = ("line", "markers", "steps")
+TRANSFORM_CHOICES = ("line", "markers", "steps", "spline")
 COMPARISON_CHOICES = ("NRMSE (A vs B)", "Correlation (A vs B)", "Difference (A − B)", "Ratio (A / B)")
-FEATURE_CHOICES = ("Phasic peak detection", "Peak-to-peak amplitude",
-                   "Peak rising time", "Peak falling time")
 PLOT_ROWS_MAX = 16
 REFRESH_MS = 200
+# Seconds the close sequence may take in the background before the process is
+# force-exited (device flushes normally finish well inside this window).
+CLOSE_GRACE_S = 3.0
 STATUS_COLORS = {"ok": "#2ea043", "warning": "#f2bd62", "off": "#dc3545"}
 
 
@@ -86,8 +90,8 @@ class SignalRow:
     y_min: float = 0.0
     y_max: float = 1.0
     range_set: bool = False  # True once the user edits any range field.
-    # Feature-extraction settings (device == "features"); the algorithm and
-    # peak parameters can override the shared decomposition for this feature.
+    # Feature-extraction settings (device == "features"): the decomposition
+    # algorithm and peak parameters used by this feature row.
     algorithm: str = ""
     smoothing: float = 1.0
     prominence: float = 0.01
@@ -115,22 +119,78 @@ def range_default(row: SignalRow):
             return "Fixed", 0.0, 100.0  # dB error metric, non-negative.
         if "Correlation" in row.signal:
             return "Fixed", -1.0, 1.0  # Pearson coefficient bounds.
+    if row.device == "classification" and row.signal == "decision":
+        return "Fixed", 0.0, 1.0  # 0 = NEGATIVE, 1 = POSITIVE; the red area matters.
     return "Auto", 0.0, 1.0
 
 
 DEVICES = (
-    {"key": "heepidermis", "name": "HEEPidermis", "panel": VCOGui,
+    {"key": "heepidermis", "name": "HEEPidermis", "panel": VCOGui, "category": "Devices",
      "description": "X-HEEP VCO GSR board over UART/JTAG (dLC, iDAC, sampling)."},
-    {"key": "biopac", "name": "BIOPAC", "panel": BiopacGUI,
+    {"key": "biopac", "name": "BIOPAC", "panel": BiopacGUI, "category": "Devices",
      "description": "MP160 + EDA100C / BioNomadix over native Linux UDP."},
-    {"key": "tests", "name": "Tests", "panel": TestsPanel,
-     "description": "Cognitive tests (sw/gui/tests): events as green/red/white markers on all plots."},
-    {"key": "shimmer", "name": "Shimmer", "panel": ShimmerGUI,
+    {"key": "shimmer", "name": "Shimmer", "panel": ShimmerGUI, "category": "Devices",
      "description": "Shimmer3 GSR+ skin conductance over Bluetooth SPP or dock UART; "
                     "connection is automatic (pairing + serial bind handled in-app)."},
-    {"key": "empatica", "name": "Empatica", "panel": None,
+    {"key": "empatica", "name": "Empatica", "panel": None, "category": "Devices",
      "description": "Not implemented yet; SDK slot reserved in sw/gui/sdk/empatica."},
+    {"key": "classification", "name": "Classification", "panel": ClassificationPanel,
+     "category": "Processing",
+     "description": "Live SVM classification (sw/classification): Setz features, margin "
+                    "and POSITIVE/NEGATIVE decision from any loaded .joblib model."},
+    {"key": "tests", "name": "Tests", "panel": TestsPanel, "category": "Stimuli",
+     "description": "Cognitive tests (sw/gui/tests): events as green/red/white markers on all plots."},
 )
+
+# Computed signal-table sources: they have no panel of their own and are not
+# shown in the SOURCES pane — their rows compute from other sources' signals.
+COMPUTED_SOURCES = (
+    {"key": "comparison", "name": "Comparison", "category": "Processing"},
+    {"key": "features", "name": "Features", "category": "Processing"},
+)
+# The built-in annotations row is a marker toggle, not a data source.
+MARKER_SOURCE = {"key": "annotations", "name": "Annotations", "category": "Markers"}
+SOURCE_CATEGORY_ORDER = ("Devices", "Processing", "Stimuli", "Markers")
+
+
+def all_sources():
+    """Every signal-table source, grouped in display category order."""
+    groups = {category: [] for category in SOURCE_CATEGORY_ORDER}
+    for device in DEVICES:
+        groups[device.get("category", "Devices")].append(device)
+    for source in COMPUTED_SOURCES:
+        groups[source["category"]].append(source)
+    groups[MARKER_SOURCE["category"]].append(MARKER_SOURCE)
+    return groups
+
+
+def source_choices():
+    """Display strings for the Source column: one header per category."""
+    entries = []
+    for category in SOURCE_CATEGORY_ORDER:
+        sources = all_sources()[category]
+        if sources:
+            entries.append(f"— {category} —")
+            entries.extend(source["name"] for source in sources)
+    return entries
+
+
+def source_key(name):
+    """Signal-table key for a Source display name; None for category headers."""
+    for group in all_sources().values():
+        for source in group:
+            if source["name"] == name:
+                return source["key"]
+    return None
+
+
+def source_name(key):
+    """Display name for a Source key (falls back to the raw key)."""
+    for group in all_sources().values():
+        for source in group:
+            if source["key"] == key:
+                return source["name"]
+    return key
 
 
 def amplify_values(values, mode):
@@ -346,6 +406,7 @@ class Workspace:
         self.closing = False
         self.plot_future = None
         self.plot_generation = 0
+        self._last_frame = None  # Last rendered (built, invalid) for instant row removal.
         self.refresh_job = None
         self.file_future = None
         self.file_action = None
@@ -387,25 +448,33 @@ class Workspace:
         ttk.Button(actions, text="Load configuration…",
                    command=self.load_configuration).pack(side="left", padx=(8, 0))
 
-        devices = Collapsible(config, "DEVICES", opened=True)
+        devices = Collapsible(config, "SOURCES", opened=True)
         devices.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         self.devices_section = devices.body
         self.config_pane.canvas.bind("<Configure>", self._pin_connect_clusters, add="+")
         self.devices_section.bind("<Configure>", self._pin_connect_clusters, add="+")
         self.devices_section.columnconfigure(0, weight=1)
         self.devices_section.columnconfigure(1, weight=0)
-        for index, device in enumerate(DEVICES):
+        pane_row, last_category = 0, None
+        for device in DEVICES:
             key = device["key"]
+            if device["category"] != last_category:
+                # A small group heading between the source categories.
+                ttk.Label(self.devices_section, text=device["category"].upper(),
+                          style="Muted.TLabel").grid(row=pane_row, column=0, sticky="w",
+                                                     pady=(8 if pane_row else 2, 0))
+                pane_row += 1
+                last_category = device["category"]
             enabled = tk.BooleanVar(value=False)
             enabled.trace_add("write", lambda *_a, key=key: self._device_toggled(key))
             check = ttk.Checkbutton(self.devices_section, text=device["name"],
                                     variable=enabled, style="Workspace.TCheckbutton")
-            check.grid(row=index * 2, column=0, sticky="w", pady=(4, 0))
+            check.grid(row=pane_row, column=0, sticky="w", pady=(4, 0))
             ttk.Label(self.devices_section, text=device["description"],
-                      style="Muted.TLabel", wraplength=660).grid(row=index * 2 + 1,
+                      style="Muted.TLabel", wraplength=660).grid(row=pane_row + 1,
                                                                  column=0, columnspan=2, sticky="w")
             # Connect button + status circle + concise status message, pinned
-            # to the visible end of the DEVICES column (place, re-pinned on
+            # to the visible end of the SOURCES column (place, re-pinned on
             # pane resize) so it is reachable without horizontal scrolling.
             cluster = ttk.Frame(self.devices_section, style="App.TFrame")
             dot = tk.Canvas(cluster, width=11, height=11, highlightthickness=0,
@@ -424,6 +493,7 @@ class Workspace:
                                        "status_text": status_text,
                                        "connect_button": button, "check": check,
                                        "level": None, "message": None}
+            pane_row += 2
 
         signals = Collapsible(config, "SIGNALS", opened=True)
         signals.grid(row=2, column=0, sticky="ew", pady=(0, 8))
@@ -457,9 +527,9 @@ class Workspace:
         # each other, before the signal pickers.
         for column, (weight, minimum) in enumerate(zip(
                 (1, 1, 1, 2, 2, 1, 1, 1, 1, 1, 1, 2, 1, 1, 1, 1, 1),
-                (36, 42, 32, 80, 120, 40, 48, 58, 60, 60, 52, 68, 40, 36, 195, 195, 48))):
+                (36, 42, 32, 96, 120, 40, 48, 58, 60, 60, 52, 68, 40, 36, 195, 195, 48))):
             self.signal_table.columnconfigure(column, weight=weight, minsize=minimum)
-        headers = ("X", "Hide", "", "Device", "Signal", "St", "Y", "Range", "Min", "Max",
+        headers = ("X", "Hide", "", "Source", "Signal", "St", "Y", "Range", "Min", "Max",
                    "Style", "Amplify", "α", "Z", "A", "B", "Conf.")
         for column, title in enumerate(headers):
             label = ttk.Label(self.signal_table, text=title, style="Muted.TLabel")
@@ -471,12 +541,8 @@ class Workspace:
         self.params_header.grid_remove()
         add_bar = ttk.Frame(self.signals_section)
         add_bar.grid(row=1, column=0, sticky="w", pady=(6, 0))
-        ttk.Button(add_bar, text="+ Add signal row",
+        ttk.Button(add_bar, text="+ Add",
                    command=lambda: self.add_signal_row()).pack(side="left")
-        ttk.Button(add_bar, text="+ Add comparison (A vs B)",
-                   command=lambda: self.add_signal_row(device="comparison")).pack(side="left", padx=(8, 0))
-        ttk.Button(add_bar, text="+ Add feature extraction",
-                   command=lambda: self.add_signal_row(device="features")).pack(side="left", padx=(8, 0))
         self.signal_hint = ttk.Label(
             self.signals_section,
             text="Stack chooses the plot row (all rows share the time axis). "
@@ -485,35 +551,16 @@ class Workspace:
                  "device signals default to Auto). "
                  "'normalize row/axis' overrides the amplification of every other "
                  "signal in the same stack and y-axis. Feature rows (conf.) extract "
-                 "peaks and per-peak measures from a source signal; put them in "
-                 "the same stack as the peaks to see the white annotations.",
+                 "peaks, per-peak measures or the tonic/phasic decomposition from a "
+                 "source signal; put peak rows in the same stack as the peaks to "
+                 "see the white annotations.",
             style="Muted.TLabel", wraplength=680)
         self.signal_hint.grid(row=2, column=0, sticky="w", pady=(6, 0))
 
-        decomposition = Collapsible(config, "DECOMPOSITION · ALL DEVICES", opened=False)
-        decomposition.grid(row=3, column=0, sticky="ew", pady=(0, 8))
-        self.decomposition_variables = {
-            "algorithm": tk.StringVar(value=ALGORITHMS[1]),
-            "smoothing": tk.StringVar(value="1"),
-            "prominence": tk.StringVar(value="0.01"),
-        }
-        for column, (key, label) in enumerate((("algorithm", "Tonic/phasic algorithm"),
-                                               ("smoothing", "Smoothing λ"),
-                                               ("prominence", "Peak prominence (µS)"))):
-            ttk.Label(decomposition.body, text=label).grid(row=0, column=column, sticky="w", padx=4)
-            variable = self.decomposition_variables[key]
-            widget = (ttk.Combobox(decomposition.body, textvariable=variable, values=ALGORITHMS,
-                                   state="readonly", width=24) if key == "algorithm" else
-                      ttk.Entry(decomposition.body, textvariable=variable, width=12))
-            widget.grid(row=1, column=column, sticky="ew", padx=4, pady=4)
-            variable.trace_add("write", self._decomposition_changed)
-        ttk.Label(decomposition.body, text="Applies to tonic/phasic signals from every device. "
-                  "Feature rows retain their own conf. settings.", style="Muted.TLabel").grid(
-                      row=2, column=0, columnspan=3, sticky="w", padx=4)
         self.file_status = tk.StringVar()
         ttk.Label(actions, textvariable=self.file_status, style="Muted.TLabel").pack(side="left", padx=8)
 
-        self.device_config_row = 4
+        self.device_config_row = 3
         self.device_sections: dict[str, Collapsible] = {}
         self.device_bodies: dict[str, ttk.Frame] = {}
 
@@ -669,7 +716,9 @@ class Workspace:
         attach_placeholder(self.annotation_label_entry, "label")
         self.annotation_label_entry.bind("<KeyRelease>", self._apply_field_edits, add="+")
         self.annotation_label_entry.bind("<<Paste>>", self._apply_field_edits, add="+")
-        Tooltip(self.annotation_label_entry, "Shown at the bottom of the marker's line.")
+        self.annotation_label_entry.bind("<Return>", self._annotation_field_return)
+        Tooltip(self.annotation_label_entry, "Shown at the bottom of the marker's line. "
+                "Enter presses + Add.")
 
         self.annotation_description_text = tk.Text(menu, height=1, wrap="word",
                                                    background=UI_PLOT, foreground=UI_TEXT,
@@ -679,8 +728,9 @@ class Workspace:
         self.annotation_description_text.grid(row=3, column=0, sticky="nsew", pady=(4, 0))
         attach_placeholder(self.annotation_description_text, "description")
         self.annotation_description_text.bind("<<Modified>>", self._annotation_description_changed)
+        self.annotation_description_text.bind("<Return>", self._annotation_field_return)
         Tooltip(self.annotation_description_text, "Visible here when the annotation "
-                "is selected; stored with the CSV export.")
+                "is selected; stored with the CSV export. Enter presses + Add.")
 
         # The list of annotations stays thin on the right, across the menu.
         self.annotation_list = tk.Listbox(menu, width=20, exportselection=False,
@@ -794,12 +844,16 @@ class Workspace:
             if key in self.report_tabs:
                 self.reports.forget(self.report_tabs.pop(key))
             return
+        # Panels with WORKSPACE_HOOKS (e.g. the Classification device) read other
+        # devices' latest snapshots and want to know when signal choices change.
+        if getattr(device["panel"], "WORKSPACE_HOOKS", False):
+            panel.series_provider = self._series_provider
+            panel.on_change = self._rebuild_signal_choices
         self.panels[key] = panel
         if hasattr(panel, "set_workspace_clock"):
             panel.set_workspace_clock(self.clock_origin)
         if key in self.saved_device_configurations:
             panel.apply_configuration(self.saved_device_configurations[key])
-        self._sync_decomposition()
         frame = self.device_frames[key]
         self.root.after_idle(lambda k=key: self._pin_connect_cluster(k))
         frame["connect_button"].configure(state="normal")
@@ -923,30 +977,6 @@ class Workspace:
         for directory in self.recording_directories:
             directory.cleanup()
 
-    def _decomposition_settings(self):
-        values = {key: variable.get() for key, variable in self.decomposition_variables.items()}
-        values["smoothing"] = float(values["smoothing"])
-        values["prominence"] = float(values["prominence"])
-        if (values["algorithm"] not in ALGORITHMS or
-                not math.isfinite(values["smoothing"]) or not 0 <= values["smoothing"] <= 1000 or
-                not math.isfinite(values["prominence"]) or values["prominence"] <= 0):
-            raise ValueError("Choose a valid decomposition algorithm, smoothing (0–1000), and positive prominence.")
-        return values
-
-    def _sync_decomposition(self):
-        values = self._decomposition_settings()
-        for panel in self.panels.values():
-            setter = getattr(panel, "set_decomposition", None)
-            if setter is not None:
-                setter(**values)
-
-    def _decomposition_changed(self, *_args):
-        try:
-            self._sync_decomposition()
-        except ValueError:
-            return  # An entry may be incomplete while being edited.
-        self._state_changed()
-
     # ----------------------------------------------------------- signal table
 
     def _ensure_annotations_row(self):
@@ -960,7 +990,11 @@ class Workspace:
             return
         self.add_signal_row(device="annotations", signal="markers", color="")
 
-    def add_signal_row(self, device: str = "heepidermis", signal: str = "", **overrides):
+    def add_signal_row(self, device: str | None = None, signal: str = "", **overrides):
+        if device is None:
+            # New rows default to the first enabled source with a panel.
+            device = next((entry["key"] for entry in DEVICES if entry["key"] in self.panels
+                           and entry["panel"] is not None), "heepidermis")
         row = SignalRow(device=device, signal=signal, **overrides)
         row.signal = signal or self._default_signal(row)
         # The annotations row has no trace color; its markers use the menu's
@@ -1005,16 +1039,21 @@ class Workspace:
         if device == "comparison":
             return list(COMPARISON_CHOICES)
         if device == "features":
-            return list(FEATURE_CHOICES)
+            # Every feature the features module implements, in module order.
+            return list(features.FEATURE_LABELS)
         if device == "annotations":
             return ["markers"]
         panel = self.panels.get(device)
         if panel is None:
             return []
         try:
-            return list(panel.signals().keys())
+            catalogue = panel.signals()
         except Exception:
             return []
+        # Raw event feeds (kind "events") have no plot of their own; marker
+        # groups (kind "markers") are the selectable rows for event devices.
+        return [name for name, entry in catalogue.items()
+                if not (isinstance(entry, dict) and entry.get("kind") == "events")]
 
     def _signal_unit(self, key: str) -> str:
         """Unit of a 'device:signal' series, for the stack axis labels."""
@@ -1026,6 +1065,38 @@ class Workspace:
             except Exception:
                 pass
         return ""
+
+    def _series_units(self):
+        """Unit map for every catalogued 'device:signal', for hooked panels.
+
+        Event signals are skipped (they are markers, not plottable series);
+        everything else keeps its catalogue unit.
+        """
+        units = {}
+        for device in DEVICES:
+            panel = self.panels.get(device["key"])
+            if panel is None:
+                continue
+            try:
+                catalogue = panel.signals()
+            except Exception:
+                continue
+            for signal, entry in catalogue.items():
+                if isinstance(entry, dict) and entry.get("kind") in ("events", "markers"):
+                    continue
+                units[f"{device['key']}:{signal}"] = str(
+                    entry.get("unit", "")) if isinstance(entry, dict) else ""
+        return units
+
+    def _series_provider(self):
+        """Latest plot snapshots + units, read by workspace-hooked panels.
+
+        Runs on the caller's thread (the Classification worker); the snapshots
+        are the same plain-data objects the renderer uses, so no Tk is touched.
+        Returns ({device_key: AlignedSnapshot}, {"device:signal": unit}); an
+        empty dict before the first display refresh.
+        """
+        return dict(getattr(self, "_latest_snapshots", None) or {}), self._series_units()
 
     def _signal_label(self, key: str) -> str:
         """Human magnitude name of a 'device:signal' series, for axes/legend."""
@@ -1043,7 +1114,7 @@ class Workspace:
         for device in DEVICES:
             for signal in self._signal_choices(device["key"]):
                 panel = self.panels.get(device["key"])
-                if panel is not None and panel.signals().get(signal, {}).get("kind") == "events":
+                if panel is not None and panel.signals().get(signal, {}).get("kind") in ("events", "markers"):
                     continue
                 keys.append(f"{device['key']}:{signal}")
         return keys
@@ -1065,15 +1136,16 @@ class Workspace:
     def _rebuild_signal_choices(self):
         for widgets in self.table_rows:
             device_box, signal_box = widgets["device"], widgets["signal"]
-            current_device = device_box.get() or widgets["row"].device
-            # Every known device stays selectable; rows for a device whose
+            # Every known source stays selectable; rows for a source whose
             # panel is not enabled yet keep their saved selection until that
             # panel provides its signals (they must never be reassigned).
-            devices = [device["key"] for device in DEVICES] + ["comparison", "features", "annotations"]
-            device_box.configure(values=devices)
+            devices = [source["key"] for group in all_sources().values()
+                       for source in group]
+            current_device = widgets["row"].device
+            device_box.configure(values=source_choices())
             if current_device not in devices:
                 widgets["row"].device = devices[0] if devices else ""
-                device_box.set(widgets["row"].device)
+                device_box.set(source_name(widgets["row"].device))
                 widgets["row"].signal = self._default_signal(widgets["row"])
             self._update_signal_values(widgets)
         self._refresh_annotation_signal_choices()
@@ -1104,7 +1176,7 @@ class Workspace:
             widgets[key].configure(state="normal")
         widgets["stack"].configure(state="normal")
         if row.device == "features":
-            choices = FEATURE_CHOICES
+            choices = features.FEATURE_LABELS
             widgets["signal"].configure(values=choices)
             if row.signal not in choices:
                 row.signal = choices[0]
@@ -1156,13 +1228,12 @@ class Workspace:
         table_row = len(self.signal_rows)
         widgets = {"row": row}
         is_annotations = row.device == "annotations"
-        device_box = ttk.Combobox(self.signal_table, width=11, state="readonly",
-                                  values=[device["key"] for device in DEVICES]
-                                          + ["comparison", "features", "annotations"])
-        device_box.set(row.device)
+        device_box = ttk.Combobox(self.signal_table, width=13, state="readonly",
+                                  values=source_choices())
+        device_box.set(source_name(row.device))
         device_box.grid(row=table_row, column=3, sticky="ew", padx=2, pady=2)
         device_box.bind("<<ComboboxSelected>>",
-                        lambda _e, w=widgets: self._device_changed(w))
+                        lambda _e, w=widgets, box=device_box: self._source_changed(w, box))
         signal_box = ttk.Combobox(self.signal_table, width=14, state="readonly")
         signal_box.grid(row=table_row, column=4, sticky="ew", padx=2, pady=2)
         signal_box.bind("<<ComboboxSelected>>",
@@ -1211,7 +1282,7 @@ class Workspace:
         y_max.grid(row=table_row, column=9, sticky="ew", padx=2, pady=2)
         y_max.bind("<Return>", lambda _e, w=widgets, b=y_max: self._value_changed(w, "y_max", b.get()))
         y_max.bind("<FocusOut>", lambda _e, w=widgets, b=y_max: self._value_changed(w, "y_max", b.get()))
-        transform = ttk.Combobox(self.signal_table, values=TRANSFORM_CHOICES, width=4, state="readonly")
+        transform = ttk.Combobox(self.signal_table, values=TRANSFORM_CHOICES, width=7, state="readonly")
         transform.set(row.transform)
         transform.grid(row=table_row, column=10, sticky="ew", padx=2, pady=2)
         transform.bind("<<ComboboxSelected>>", lambda _e, w=widgets, b=transform: self._value_changed(w, "transform", b.get()))
@@ -1335,9 +1406,20 @@ class Workspace:
         dialog.grab_set()
         dialog.wait_window(dialog)
 
-    def _device_changed(self, widgets):
+    def _source_changed(self, widgets, box):
+        """Source column selection: map the display name back to its key."""
+        key = source_key(box.get())
+        if key is None:
+            # A category header was picked: revert to the current source.
+            box.set(source_name(widgets["row"].device))
+            return
+        if key != widgets["row"].device:
+            self._device_changed(widgets, key)
+
+    def _device_changed(self, widgets, key):
         row = widgets["row"]
-        row.device = widgets["device"].get()
+        row.device = key
+        widgets["device"].set(source_name(key))
         row.signal = self._default_signal(row)
         self._apply_range_default(row)
         if row.device == "annotations":
@@ -1436,6 +1518,7 @@ class Workspace:
         if row.device == "annotations":
             # Hiding the annotations row suppresses every marker immediately.
             self._push_annotation_lines()
+        self._prune_render()
         self._state_changed()
 
     def _remove_row(self, widgets):
@@ -1447,6 +1530,11 @@ class Workspace:
                 widget.destroy()
         self._regrid_table()
         self._update_comparison_columns()
+        # The deleted row's trace must leave the plots at once: the full frame
+        # is recomputed in the background, which can take a while (long
+        # decompositions over large windows) and used to leave the trace —
+        # sometimes its whole stack — visible until that job finished.
+        self._prune_render()
         self._state_changed()
 
     def _regrid_table(self):
@@ -1456,6 +1544,33 @@ class Workspace:
                     info = widget.grid_info()
                     if info:
                         widget.grid(row=index)
+
+    @staticmethod
+    def _trace_name(row: SignalRow):
+        """The trace name `_build_trace`/`_build_feature_trace` give a row."""
+        if row.device == "features":
+            return f"{row.signal} · {row.source_a}" if row.source_a else None
+        if row.device == "comparison":
+            if not row.signal or not row.source_a or not row.source_b:
+                return None
+            return f"{row.signal} · {row.source_a} / {row.source_b}"
+        return f"{row.device}:{row.signal}"
+
+    def _prune_render(self):
+        """Re-render the last frame without the now-removed/hidden rows.
+
+        Traces are matched by name, so this stays correct without rerunning
+        any computation; pseudo-traces (event markers, annotation lines) are
+        kept as-is and refined by the next background frame.
+        """
+        built, invalid = getattr(self, "_last_frame", None) or (None, None)
+        if built is None:
+            return  # Nothing rendered yet: the next frame reflects the change.
+        expected = {self._trace_name(row) for row in self.signal_rows if not row.hidden}
+        expected.discard(None)
+        self._render_frame([trace for trace in built
+                            if "row_key" not in trace or trace.get("name") in expected],
+                           invalid)
 
     # ------------------------------------------------------------- annotations
 
@@ -1627,6 +1742,19 @@ class Workspace:
         self._refresh_annotation_list()
         self._sync_annotation_buttons()
         self._redraw_annotation_lines()
+
+    def _annotation_field_return(self, _event=None):
+        """Enter in the label/description fields presses + Add.
+
+        While an annotation is being edited, Enter must accept the edit
+        instead (the root-level binding), so the event is left alone here.
+        Otherwise "break" stops the Text widget from inserting a newline:
+        Enter means "add this marker".
+        """
+        if self.annotation_edit_active:
+            return None
+        self._annotation_add()
+        return "break"
 
     def _annotation_add(self):
         if self.annotation_edit_active:
@@ -1844,10 +1972,16 @@ class Workspace:
         return cached
 
     def _build_feature_trace(self, row: SignalRow, series):
-        """Feature rows yield markers at the peaks plus per-peak annotations."""
+        """Feature rows yield markers at the peaks plus per-peak annotations,
+        or the full tonic/phasic decomposition series of the source signal."""
         data = series.get(row.source_a)
         if not data or not row.signal:
             return None
+        description = features.feature(row.signal)
+        if description is None:
+            return None
+        if description["kind"] == "series":
+            return self._build_series_feature_trace(row, data, description)
         peaks = self._cached_peaks(row, data)
         if peaks is None or not len(peaks[0]):
             return None
@@ -1862,18 +1996,58 @@ class Workspace:
                  "unit": unit if "time" not in row.signal.lower() else "s",
                  "label": row.signal, "peaks": list(peak_t), "annotations": [],
                  "y_range": self._row_range(row)}
-        if row.signal != "Phasic peak detection":
+        field = description.get("field")
+        if field is not None:
             measures = features.peak_measures(data["times"], data["values"], peak_t, peak_v)
-            suffix = f" {unit}" if unit and row.signal == "Peak-to-peak amplitude" else ""
+            suffix = f" {unit}" if unit and field == "amplitude" else ""
             for measure in measures:
-                if row.signal == "Peak-to-peak amplitude":
+                if field == "amplitude":
                     label = f"{measure['amplitude']:.3g}{suffix}"
-                elif row.signal == "Peak rising time":
+                elif field == "rise_s":
                     label = f"↑{measure['rise_s']:.2g}s"
                 else:
                     label = f"↓{measure['fall_s']:.2g}s"
                 trace["annotations"].append((measure["time"], measure["value"], label, right))
         return trace
+
+    def _cached_decomposition(self, row: SignalRow, data):
+        """Tonic/phasic series with a cache; recomputed only on new data or params."""
+        times = data["times"]
+        if len(times) < 3:
+            return None
+        key = ("series", row.source_a, row.algorithm or ALGORITHMS[1],
+               round(float(row.smoothing), 6), round(float(row.prominence), 6),
+               len(times), round(float(times[-1]), 6))
+        cached = self.feature_cache.get(key)
+        if cached is None:
+            try:
+                cached = features.decompose(
+                    times, data["values"], data.get("segments"),
+                    algorithm=row.algorithm or ALGORITHMS[1],
+                    smoothing=row.smoothing, prominence=row.prominence)
+            except Exception as error:
+                raise RuntimeError(f"Feature {row.signal} failed: {error}") from error
+            self.feature_cache[key] = cached
+            while len(self.feature_cache) > 12:
+                self.feature_cache.pop(next(iter(self.feature_cache)))
+        return cached
+
+    def _build_series_feature_trace(self, row: SignalRow, data, description):
+        """Tonic/phasic feature rows: the decomposition drawn as a full trace."""
+        decomposition = self._cached_decomposition(row, data)
+        if decomposition is None:
+            return None
+        tonic, phasic = decomposition
+        values = tonic if description["component"] == "tonic" else phasic
+        right = row.axis == "Right"
+        return {"times": list(data["times"]), "values": values.tolist(),
+                "segments": data.get("segments"),
+                "name": f"{row.signal} · {row.source_a}", "right": right,
+                "color": row.color, "alpha": row.alpha, "zorder": row.zorder,
+                "markers": False, "steps": False, "line": True,
+                "row_key": (row.stack, right), "amplify": row.amplify,
+                "unit": self._signal_unit(row.source_a), "label": row.signal,
+                "peaks": [], "annotations": [], "y_range": self._row_range(row)}
 
     def _build_trace(self, row: SignalRow, series):
         if row.device == "features":
@@ -1893,18 +2067,34 @@ class Workspace:
             data = series.get(f"{row.device}:{row.signal}")
             if not data:
                 return None
-            if data.get("kind") == "events":
+            if data.get("kind") in ("events", "markers"):
                 return None  # Event devices overlay every stack via get_markers().
             times, values = data["times"], list(data["values"])
             segments = data.get("segments")
             name = f"{row.device}:{row.signal}"
             unit = self._signal_unit(f"{row.device}:{row.signal}")
             label = self._signal_label(f"{row.device}:{row.signal}") or row.signal
+            if data.get("kind") == "decision":
+                # 0/1 steps (0 = NEGATIVE, 1 = POSITIVE) so CSV export stays
+                # numeric; the red POSITIVE areas ride along in decision_spans.
+                return {"times": times, "values": values, "segments": None,
+                        "name": name, "right": row.axis == "Right", "color": row.color,
+                        "alpha": row.alpha, "zorder": row.zorder, "markers": False,
+                        "steps": True, "line": False, "row_key": (row.stack, row.axis == "Right"),
+                        "amplify": "1x", "unit": unit, "label": label,
+                        "peaks": [], "annotations": [], "y_range": self._row_range(row),
+                        "decision_spans": data.get("spans", [])}
         values, _ = amplify_values(values, row.amplify)
+        # Transform is display-only: "markers" plots the raw samples as dots
+        # with no connecting line (useful to judge the real sampling rate),
+        # "steps" is zero-order hold, "line" linear, "spline" smooths between
+        # samples without touching the recorded data.
         return {"times": times, "values": values, "segments": segments, "name": name,
                 "right": row.axis == "Right", "color": row.color, "alpha": row.alpha,
                 "zorder": row.zorder, "markers": row.transform == "markers",
-                "steps": row.transform == "steps", "row_key": (row.stack, row.axis == "Right"),
+                "steps": row.transform == "steps", "line": row.transform != "markers",
+                "spline": row.transform == "spline",
+                "row_key": (row.stack, row.axis == "Right"),
                 "amplify": row.amplify, "unit": unit, "label": label,
                 "peaks": [], "annotations": [], "y_range": self._row_range(row)}
 
@@ -1943,12 +2133,18 @@ class Workspace:
         if now < getattr(self, "plot_next", 0):
             return
         # Snapshots contain plain Python data only. No Tk variables or widgets
-        # are accessed by the computation thread.
-        requested = {f"{row.device}:{row.signal}" for row in self.signal_rows}
-        requested.update(source for row in self.signal_rows for source in (row.source_a, row.source_b) if source)
+        # are accessed by the computation thread. Hidden rows request nothing:
+        # for event devices the requested signals ARE the shown marker groups.
+        visible_rows = [row for row in self.signal_rows if not row.hidden]
+        requested = {f"{row.device}:{row.signal}" for row in visible_rows}
+        requested.update(source for row in visible_rows
+                         for source in (row.source_a, row.source_b) if source)
         panels = {key: self._aligned_snapshot(key, panel.plot_snapshot({name.split(":", 1)[1] for name in requested
                                            if name.startswith(key + ":")}))
                   for key, panel in self.panels.items()}
+        # Workspace-hooked panels (Classification) read these from their own
+        # thread; AlignedSnapshots are plain-data reader views, safe to share.
+        self._latest_snapshots = panels
         latest = max((panel.latest for panel in panels.values()), default=0.0)
         self.viewport.update(latest)
         self.time_scroll.set(*self.viewport.fractions())
@@ -1984,7 +2180,9 @@ class Workspace:
         # overriding every other amplification in that group.
         groups = {}
         for trace in built:
-            groups.setdefault(trace["row_key"], []).append(trace)
+            key = trace.get("row_key")
+            if key is not None:
+                groups.setdefault(key, []).append(trace)
         for group in groups.values():
             if any(trace["amplify"] == "normalize row/axis" for trace in group):
                 peak = max((max((abs(v) for v in trace["values"]
@@ -2012,12 +2210,14 @@ class Workspace:
                 values = trace[key]
                 trace[key] = values[::max(1, (len(values) + 199) // 200)]
         markers = []
-        test_rows = [row for row in self.signal_rows if row.device == "tests"]
-        marker_zorder = min((row.zorder for row in test_rows), default=0)
-        hide_markers = bool(test_rows) and all(row.hidden for row in test_rows)
+        # Which marker groups appear is decided inside each event device's
+        # snapshot, from the signal-table rows requested above; a row's
+        # z-order layers every event line against the signal traces.
+        marker_zorder = min((row.zorder for row in self.signal_rows
+                             if row.device == "tests"), default=0)
         for panel in self.panels.values():
             method = getattr(panel, "get_markers", None)
-            if method is None or hide_markers:
+            if method is None:
                 continue
             for marker in method(self.viewport.start, self.viewport.start + window):
                 # Events carry their own color (palette name or hex); 2-tuples
@@ -2051,33 +2251,50 @@ class Workspace:
         return built, merged[::max(1, (len(merged) + 399) // 400)]
 
     def _render_frame(self, built, invalid):
+        # Keep the frame so a row removal/hide can re-render it instantly
+        # without that row (see _prune_render), instead of waiting for the
+        # next background computation.
+        self._last_frame = (built, invalid)
         markers = [marker for trace in built for marker in trace.get("event_markers", [])]
         annotation_lines = {}
         kept = []
         for trace in built:
             if "annotation_lines" in trace:
                 annotation_lines = trace["annotation_lines"]
-            else:
-                kept.append(trace)
+                continue
+            if "event_markers" in trace:
+                continue  # Pseudo-trace: its payload was already consumed above.
+            if "row_key" not in trace:
+                continue  # Skip anything malformed; one bad trace must never
+                # blank out the whole display (regression: the event_markers
+                # pseudo-trace used to reach the loop below and raise
+                # KeyError 'row_key', killing every refresh afterwards).
+            kept.append(trace)
         built = kept
         traces_per_stack = {}
         annotations_per_stack = {}
         peaks_per_stack = {}
+        areas_per_stack = {}   # (start, end) POSITIVE highlights per stack.
         axis_labels_per_stack = {}
         fixed_per_stack = {}
         for trace in built:
             stack = trace["row_key"][0]
+            right = trace.get("right", False)
             traces_per_stack.setdefault(stack, []).append(Trace(
-                trace["times"], trace["values"], trace["color"], name=trace["name"],
-                right=trace["right"], segments=trace["segments"], alpha=trace["alpha"],
-                zorder=trace["zorder"], markers=trace["markers"], steps=trace["steps"],
-                line=trace.get("line", True)))
+                trace["times"], trace["values"], trace.get("color", ""),
+                name=trace.get("name", ""), right=right,
+                segments=trace.get("segments"), alpha=trace.get("alpha", 1.0),
+                zorder=trace.get("zorder", 0), markers=trace.get("markers", False),
+                steps=trace.get("steps", False), line=trace.get("line", True),
+                spline=trace.get("spline", False)))
+            if trace.get("decision_spans"):
+                areas_per_stack.setdefault(stack, []).extend(trace["decision_spans"])
             y_range = trace.get("y_range")
             if y_range:
                 # Several fixed rows may share one axis: pin it to their union.
-                lo, hi = fixed_per_stack.get((stack, trace["right"]), y_range)
-                fixed_per_stack[(stack, trace["right"])] = (min(lo, y_range[0]),
-                                                            max(hi, y_range[1]))
+                lo, hi = fixed_per_stack.get((stack, right), y_range)
+                fixed_per_stack[(stack, right)] = (min(lo, y_range[0]),
+                                                   max(hi, y_range[1]))
             if trace.get("annotations"):
                 annotations_per_stack.setdefault(stack, []).extend(trace["annotations"])
             if trace.get("peaks"):
@@ -2086,8 +2303,8 @@ class Workspace:
             axis_label = f"{trace.get('label', '')} ({unit})" if unit else trace.get("label", "")
             if axis_label:
                 axis_labels = axis_labels_per_stack.setdefault(stack, {False: [], True: []})
-                if axis_label not in axis_labels[trace["right"]]:
-                    axis_labels[trace["right"]].append(axis_label)
+                if axis_label not in axis_labels[right]:
+                    axis_labels[right].append(axis_label)
         # A visible annotations row keeps its stack plotted even when no trace
         # lives there, so its markers have somewhere to appear.
         stacks = sorted(set(traces_per_stack)
@@ -2106,7 +2323,8 @@ class Workspace:
                           peaks=peaks_per_stack.get(number, []),
                           annotations=annotations_per_stack.get(number, []),
                           fixed_bounds=fixed,
-                          annotation_lines=annotation_lines.get(number, []))
+                          annotation_lines=annotation_lines.get(number, []),
+                          areas=areas_per_stack.get(number, []))
         for number, plot in self.row_plots.items():
             if number not in stacks:
                 plot.grid_remove()
@@ -2252,21 +2470,31 @@ class Workspace:
         for index, row in enumerate(self.signal_rows):
             if row.device == "features":
                 data = series.get(row.source_a)
-                if data is None:
+                description = features.feature(row.signal)
+                if data is None or description is None:
                     continue
-                peaks = self._cached_peaks(row, data)
-                if peaks is None:
-                    continue
-                times, values = peaks
                 unit = self._signal_unit(row.source_a)
-                if row.signal != "Phasic peak detection":
-                    measures = features.peak_measures(data["times"], data["values"], times, values)
-                    field = {"Peak-to-peak amplitude": "amplitude", "Peak rising time": "rise_s",
-                             "Peak falling time": "fall_s"}[row.signal]
-                    times, values = [m["time"] for m in measures], [m[field] for m in measures]
-                    if field != "amplitude":
-                        unit = "s"
-                data = {"times": times, "values": values}
+                if description["kind"] == "series":
+                    decomposition = self._cached_decomposition(row, data)
+                    if decomposition is None:
+                        continue
+                    tonic, phasic = decomposition
+                    values = tonic if description["component"] == "tonic" else phasic
+                    data = {"times": list(data["times"]), "values": values.tolist()}
+                else:
+                    peaks = self._cached_peaks(row, data)
+                    if peaks is None:
+                        continue
+                    times, values = peaks
+                    field = description.get("field")
+                    if field is not None:
+                        measures = features.peak_measures(data["times"], data["values"],
+                                                          times, values)
+                        times = [m["time"] for m in measures]
+                        values = [m[field] for m in measures]
+                        if field != "amplitude":
+                            unit = "s"
+                    data = {"times": list(times), "values": list(values)}
             else:
                 trace = self._build_trace(replace(row, amplify="1x"), series)
                 if trace is None:
@@ -2332,7 +2560,6 @@ class Workspace:
                             raise ValueError("the device refused the recording")
                     except Exception as error:
                         skipped.append((device, str(error) or type(error).__name__))
-                self._sync_decomposition()
                 self.timeline_offsets = {key: float(value) for key, value in
                                          configuration.get("time_alignment", {}).get("offsets_s", {}).items()}
             except BaseException:
@@ -2481,7 +2708,6 @@ class Workspace:
                     else "Left")
             self.add_signal_row(device, self._primary_signal(device), axis=axis)
         self.viewport.live()
-        self._sync_decomposition()
         self._show_report(device)
         self._navigate()
 
@@ -2516,16 +2742,14 @@ class Workspace:
             "devices": {key: frame["variable"].get() for key, frame in self.device_frames.items()},
             "span": self.viewport.span,
             "rows": [asdict(row) for row in self.signal_rows],
-            "decomposition": self._decomposition_settings(),
         }
 
     def _apply_workspace_state(self, state):
         if not isinstance(state, dict):
             return
         state = self._migrate_legacy_state(state)
-        for key, value in state.get("decomposition", {}).items():
-            if key in self.decomposition_variables:
-                self.decomposition_variables[key].set(str(value))
+        # Legacy states carry a "decomposition" block; its settings live in the
+        # feature rows' conf. dialog now, so the old values are simply ignored.
         try:
             self.viewport.span = max(1.0, min(7200.0, float(state.get("span", self.viewport.span))))
         except (TypeError, ValueError):
@@ -2636,8 +2860,10 @@ class Workspace:
         for row in state.get("rows", []):
             if not isinstance(row, dict):
                 raise ValueError("Invalid signal row")
-        from .sdk.biopac.configuration import Configuration, ProcessingSettings
-        ProcessingSettings.parse(state.get("decomposition", {}))
+        # Legacy bundles carry a workspace "decomposition" block; those
+        # settings now live in the feature rows, so they are not validated
+        # (or restored) here anymore.
+        from .sdk.biopac.configuration import Configuration
         from .sdk.heepidermis.configuration import validate_configuration
         from .sdk.heepidermis.panel import SAMPLING_RATES_HZ
         for key, values in bundle["devices"].items():
@@ -2651,6 +2877,9 @@ class Workspace:
             elif key == "tests":
                 from .sdk.tests.panel import validate_configuration as validate_tests
                 validate_tests(values)
+            elif key == "classification":
+                from .sdk.classification.panel import validate_configuration as validate_classification
+                validate_classification(values)
         offsets = bundle.get("time_alignment", {}).get("offsets_s", {})
         if not isinstance(offsets, dict) or any(not math.isfinite(float(value)) for value in offsets.values()):
             raise ValueError("Invalid recording time alignment")
@@ -2681,7 +2910,6 @@ class Workspace:
                 apply(values)
             except Exception as error:
                 self._log_error(f"{key} configuration not restored: {error}")
-        self._sync_decomposition()
         self._state_changed()
 
     def _device_configurations(self):
@@ -2701,9 +2929,27 @@ class Workspace:
         return snapshots
 
     def _on_close(self):
+        # Hand focus back to the desktop before any cleanup: saving state and
+        # stopping devices can take seconds, and a still-mapped window keeps
+        # receiving (and swallowing) every keystroke until it disappears.
+        try:
+            self.root.withdraw()
+        except tk.TclError:
+            pass
         self._save_state()
         self.close()
         self.root.destroy()
+        # The Tk window (and with it the process's X connection, focus and any
+        # grab) is gone, but background teardown — JTAG close, serial readers,
+        # recording flushes — can stall on a wedged device. A lingering process
+        # keeps the desktop's keystrokes queued until it dies, so leave the
+        # workers a bounded grace period and then exit unconditionally.
+        threading.Thread(target=self._exit_after_grace, name="workspace-exit",
+                         daemon=True).start()
+
+    def _exit_after_grace(self):
+        time.sleep(CLOSE_GRACE_S)
+        os._exit(0)  # Normal exit wins if nothing is stuck; this caps the wait.
 
 
 def main() -> None:

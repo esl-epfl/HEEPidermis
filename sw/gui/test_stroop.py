@@ -195,7 +195,7 @@ class PanelTests(unittest.TestCase):
         self.assertIn("1 events", self.panel.count_text.get())
         self.assertTrue(self.panel.connected)
 
-    def test_marker_groups_can_be_hidden_independently(self):
+    def test_marker_groups_are_chosen_by_the_requested_signals(self):
         self.panel.connect()
         colors = {"test start": "yellow", "stimulus": "white",
                   "correct": "green", "wrong": "red", "rest": "white"}
@@ -204,31 +204,26 @@ class PanelTests(unittest.TestCase):
             for sequence, label in enumerate(labels):
                 stream.write(json.dumps(message(label, sequence, color=colors[label])) + "\n")
         self.pump()
-        snapshot = self.panel.plot_snapshot({"events"})
-        # Defaults: everything except stimulus onsets.
+        groups = set(self.panel.signals())
+        # No Tests rows requested: nothing is drawn on the plots.
+        self.assertEqual(self.panel.plot_snapshot(()).get_markers(0, 1e9), [])
+        # Requesting every group but the stimulus onsets restores the old default.
+        snapshot = self.panel.plot_snapshot(groups - {"Stimulus onsets"})
         self.assertEqual([label for _, label, _c in snapshot.get_markers(0, 1e9)],
                          ["test start", "correct", "wrong", "rest"])
-        self.assertEqual(snapshot.revision, (5, (True, True, False, True)))
-        self.panel.show_stimuli.set(True)
-        # Snapshots are frozen; the toggle takes effect on the next snapshot.
-        refreshed = self.panel.plot_snapshot({"events"})
+        # Snapshots are frozen; the row selection takes effect on the next one.
+        refreshed = self.panel.plot_snapshot(groups)
         self.assertEqual([label for _, label, _c in refreshed.get_markers(0, 1e9)], list(labels))
-        self.assertEqual(refreshed.revision, (5, (True, True, True, True)))
         # Each remaining group hides on its own, in any combination.
-        self.panel.show_stimuli.set(False)
-        self.panel.show_verdicts.set(False)
-        verdicts_hidden = self.panel.plot_snapshot({"events"})
+        verdicts_hidden = self.panel.plot_snapshot(groups - {"Right/wrong", "Stimulus onsets"})
         self.assertEqual([label for _, label, _c in verdicts_hidden.get_markers(0, 1e9)],
                          ["test start", "rest"])
-        self.panel.show_phases.set(False)
-        only_start = self.panel.plot_snapshot({"events"})
+        only_start = self.panel.plot_snapshot({"Start/stop"})
         shown = only_start.get_markers(0, 1e9)
         self.assertEqual([label for _t, label, _c in shown], ["test start"])
         self.assertEqual(shown[0][2], "#f2bd62")  # Start/stop markers are yellow.
-        self.panel.show_start_stop.set(False)
-        none_left = self.panel.plot_snapshot({"events"})
-        self.assertEqual(none_left.get_markers(0, 1e9), [])
-        # The events series (CSV export shape) is never filtered.
+        # The events series (CSV export shape) is never filtered: hiding a
+        # group is display-only.
         series = snapshot.get_series()["events"]
         self.assertEqual(series["labels"], list(labels))
         self.assertEqual(series["kind"], "events")
@@ -479,9 +474,7 @@ class PanelTests(unittest.TestCase):
     def test_configuration_round_trip(self):
         values = {"event_path": "/tmp/feed.jsonl", "test": "Stroop",
                   "config_file": "defaults.hjson",
-                  "launch_options": "--fullscreen false", "show_stimuli": True,
-                  "show_start_stop": False, "show_verdicts": True,
-                  "show_phases": False,
+                  "launch_options": "--fullscreen false",
                   "values": {"test_time": "45", "seed": "3"}}
         self.panel.apply_configuration(values)
         snapshot = self.panel.configuration_snapshot()
@@ -517,7 +510,7 @@ class PanelTests(unittest.TestCase):
         self.assertFalse(self.panel.connected)
         self.assertIsNone(self.panel.clock_origin)
         self.assertEqual([e.label for e in self.panel.events], ["rest"])
-        self.assertEqual(self.panel.plot_snapshot({"events"}).get_markers(0, 1e9),
+        self.assertEqual(self.panel.plot_snapshot({"Other phases"}).get_markers(0, 1e9),
                          [(event.time_s, "rest", "#ffffff")])
 
     def test_default_feed_matches_the_publisher(self):
@@ -677,8 +670,8 @@ class WorkspaceMarkerFrameTests(unittest.TestCase):
         return [marker for trace in built for marker in trace.get("event_markers", [])]
 
     def test_markers_keep_event_colors_and_the_lowest_zorder(self):
-        rows = [app.SignalRow(device="tests", signal="events", zorder=-2),
-                app.SignalRow(device="tests", signal="events", zorder=3)]
+        rows = [app.SignalRow(device="tests", signal="Right/wrong", zorder=-2),
+                app.SignalRow(device="tests", signal="Other phases", zorder=3)]
         built, _ = self.renderer(rows, [(1.0, "correct", "#3fbf5f"), (2.0, "wrong", "#e04848"),
                                         (3.0, "timeout", "#e04848"), (4.0, "rest", "#ffffff")])._compute_frame()
         self.assertEqual(self.markers_of(built),
@@ -686,20 +679,18 @@ class WorkspaceMarkerFrameTests(unittest.TestCase):
                           (3.0, "timeout", "#e04848", -2), (4.0, "rest", "#ffffff", -2)])
 
     def test_palette_names_and_legacy_2tuples_fall_back_to_white(self):
-        rows = [app.SignalRow(device="tests", signal="events", zorder=0)]
+        rows = [app.SignalRow(device="tests", signal="Right/wrong", zorder=0)]
         built, _ = self.renderer(rows, [(1.0, "rest", "green"),
                                         (2.0, "legacy")])._compute_frame()
         self.assertEqual(self.markers_of(built),
                          [(1.0, "rest", "#3fbf5f", 0), (2.0, "legacy", "#ffffff", 0)])
 
-    def test_hiding_every_test_row_suppresses_the_markers(self):
-        rows = [app.SignalRow(device="tests", signal="events", hidden=True)]
-        built, _ = self.renderer(rows, [(1.0, "correct")])._compute_frame()
-        self.assertEqual(self.markers_of(built), [])
-
     def test_hidden_signal_rows_drop_traces_but_keep_the_markers(self):
+        # Which marker groups appear is decided inside the Tests snapshot from
+        # the visible Tests rows (see PanelTests); the frame only gathers what
+        # the snapshots emit.
         rows = [app.SignalRow(device="biopac", signal="conductance_uS", hidden=True),
-                app.SignalRow(device="tests", signal="events")]
+                app.SignalRow(device="tests", signal="Right/wrong")]
         built, _ = self.renderer(rows, [(1.0, "correct")], biopac=True)._compute_frame()
         self.assertEqual([trace for trace in built if "event_markers" not in trace], [])
         self.assertEqual(len(self.markers_of(built)), 1)
@@ -911,8 +902,9 @@ class EndToEndTests(unittest.TestCase):
         self.assertTrue(all(e.unix_s >= self.panel.since_unix for e in self.panel.events))
 
         # The panel's snapshot renders them as colored labeled lines: verdicts
-        # green/red, every phase white.
-        snapshot = self.panel.plot_snapshot({"events"})
+        # green/red, every phase white. Requesting the group rows is what the
+        # workspace signal table does.
+        snapshot = self.panel.plot_snapshot(set(self.panel.signals()))
         self.plot = TimePlot(self.root, TimeViewport(span=60.0, latest=snapshot.latest),
                              "Row 1", "", lambda: None, width=800, height=300)
         self.plot.pack()
@@ -939,8 +931,8 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual([e.time_s for e in fresh.events], times)
         # Offline alignment shifts the loaded timeline by the workspace offset.
         offset = 12.5
-        base = [t for t, *_ in fresh.plot_snapshot({"events"}).get_markers(0, 1e9)]
-        aligned = AlignedSnapshot(fresh.plot_snapshot({"events"}), offset)
+        base = [t for t, *_ in fresh.plot_snapshot(set(fresh.signals())).get_markers(0, 1e9)]
+        aligned = AlignedSnapshot(fresh.plot_snapshot(set(fresh.signals())), offset)
         self.assertEqual([t + offset for t in base],
                          [t for t, *_ in aligned.get_markers(0, 1e9)])
         self.assertEqual(aligned.latest, fresh.plot_snapshot({"events"}).latest + offset)

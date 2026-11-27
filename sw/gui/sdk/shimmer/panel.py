@@ -701,9 +701,6 @@ class ShimmerGUI:
     def apply_configuration(self, values):
         self._set_configuration(Configuration.parse(values))
 
-    def set_decomposition(self, algorithm, smoothing, prominence):
-        pass  # Decomposition is a workspace feature over the exported signal.
-
     def close(self):
         if self.closing:
             return

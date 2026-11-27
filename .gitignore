@@ -75,3 +75,6 @@ scripts/plotter/evaluation/*
 
 # Exclude tests for now
 tests/**
+
+**.pkl
+**/vosk-model**

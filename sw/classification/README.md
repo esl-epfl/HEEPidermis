@@ -51,6 +51,34 @@ non-stress condition is class `not stress`. An annotation timestamp starts a
 class that holds until the next timestamp; interval end markers restore `-1`,
 giving half-open intervals.
 
+### Scoring
+
+`classification/scoring.py` computes the performance metrics of the
+[SzCORE framework](https://eslweb.epfl.ch/epilepsybenchmarks/framework/#performance)
+(Epilepsia, doi:10.1111/epi.18113), which complement the window-level
+`accuracy`/`balanced_accuracy` of `evaluate_test` with time-axis metrics:
+
+- **Sample based** (`sample_scoring`): stress labels are sampled at 1 Hz from
+  the annotated stress intervals and from the predicted stress spans, and
+  compared sample by sample into TP/FP/FN seconds.
+- **Event based** (`event_scoring`): contiguous stress spans are matched as
+  events. Reference and hypothesis events are first merged (gaps below 90 s)
+  and split (longer than 5 min); a reference event is detected when the
+  hypothesis overlaps it at all, with 30 s of tolerance at its start and 60 s
+  at its end. Hypothesis events touching no detected reference event are
+  false positives.
+
+Both report `sensitivity`, `precision`, `f1` and `false_alarms_per_day`
+(FP/24 h); accuracy and specificity are deliberately omitted, following the
+framework. `evaluate_szcore` aggregates both scorings over the test
+recordings (counts summed before computing the metrics) and is included in
+`metrics.json` under `szcore` by `main.py`. Two differences with respect to
+`evaluate_test`: scoring happens on the time axis (overlapping windows do not
+multiply votes), and unannotated time (`-1`) is background, so a stress
+prediction there counts as a false alarm instead of being skipped. The
+implementation follows the semantics of the official `timescoring` package,
+which cannot be installed in the Python 3.8 project environments.
+
 ### Plotting options
 
 - `PLOT_FEATURES` selects which feature Timeseries are drawn in the per-recording
@@ -155,6 +183,16 @@ Model persistence: `save_model`/`load_model` in
 `classification/features_to_classification.py` store the fitted pipeline
 together with the Timeseries feature dictionaries used for training, so the
 feature-space plot and the processing settings survive a reload.
+
+Saved `.joblib` models are also consumed live by the measurement GUI: the
+workspace's **Classification** device loads a model, converts any selected
+device signal with the same conversion chain (`data_to_conductance_S`,
+`normalized_conductance` when the model expects normalized input), extracts
+the Setz features with `conductance_S_to_features` + `extraction_options`,
+and classifies each window with `classify_features` and a live-tunable
+inference-time threshold. Changes here (features, thresholds, conversion)
+are therefore reflected in the GUI without GUI-side re-implementations; see
+`sw/gui/README.md` and `sw/gui/sdk/classification/`.
 
 ## Inspecting recordings
 

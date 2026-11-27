@@ -53,3 +53,22 @@ Start with README.md and the documentation nearest the code being changed.
 - Report which checks ran, their results, and any checks blocked by
   missing tools, hardware, or the protected-file restrictions.
 - Update nearby documentation when usage or behavior changes.
+
+## Python environments
+- The project's Python code runs inside conda environments, not the system
+  Python. The project env is `heepidermis` (see environment.yml; Python 3.8),
+  and variants like `heepidermis_test*` exist. Verify with
+  `~/anaconda3/envs/<env>/bin/python --version`.
+- Whenever code needs a new module or dependency, install it into the
+  relevant conda environment(s) with their own pip (e.g.
+  `~/anaconda3/envs/heepidermis/bin/pip install <package>`), covering every
+  env that runs the affected code, and record it in the matching
+  requirements file (`sw/gui/requirements.txt`,
+  `sw/classification/requirements.txt`). Do not rely on system-site
+  packages: a module importable by /usr/bin/python3 may still be missing
+  where make gui actually runs.
+- Keep new code compatible with the environments' Python (3.8): no 3.9+
+  syntax (e.g. `list[str]` builtins generics without `from __future__
+  import annotations`, `match` statements).
+- Run tests with the environment interpreter when they exercise code whose
+  dependencies live there, not only with the system Python.

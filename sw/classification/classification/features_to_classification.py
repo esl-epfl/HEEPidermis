@@ -89,6 +89,32 @@ def _training_rows(feature_sets, annotations, names):
     return x, np.array(labels), np.array(groups)
 
 
+def plane_margins(model, pair, uu, vv, at=None):
+    """Raw SVM decision margins on a 2D grid over one feature pair.
+
+    The omitted model features are fixed to the values in ``at`` (a
+    name -> value mapping), falling back to each feature's training median
+    when a name is absent or its value is not finite. This is the slice the
+    feature-space plots draw: with ``at`` holding the latest live feature
+    values, the drawn boundary is the true slice through the current
+    operating point. Returns margins with the shape of ``uu``/``vv``, in raw
+    margin units — before any decision threshold.
+    """
+    pipeline, names = model["pipeline"], model["feature_names"]
+    if len(set(pair)) != 2 or not set(pair) <= set(names):
+        raise ValueError(f"plane_margins needs two model features; model has {list(names)}.")
+    index = [names.index(name) for name in pair]
+    imputer = pipeline.named_steps["simpleimputer"]
+    base = np.nan_to_num(imputer.statistics_, nan=0.)
+    for name, value in (at or {}).items():
+        if name in names and name not in pair and np.isfinite(value):
+            base[names.index(name)] = value
+    rows = np.tile(base, (uu.size, 1))
+    rows[:, index[0]], rows[:, index[1]] = uu.ravel(), vv.ravel()
+    preprocess, svm = pipeline[:-1], pipeline[-1]
+    return svm.decision_function(preprocess.transform(rows)).reshape(uu.shape)
+
+
 def train_svm(feature_sets, annotations, feature_names=MIST_LINEAR_FEATURES, **svm_options):
     """Fit an SVM; recordings/features/annotations remain Timeseries in the model.
 

@@ -1122,11 +1122,6 @@ class VCOGui:
     def apply_configuration(self, values):
         self._apply_configuration(values)
 
-    def set_decomposition(self, algorithm, smoothing, prominence):
-        self.algorithm.set(algorithm)
-        self.smoothing.set(str(smoothing))
-        self.peak_prominence.set(str(prominence))
-
     def load_configuration(self):
         if self.recording_state != "stopped" or self.operation is not None:
             self._log("Pause recording and wait for hardware operations before loading a configuration.")
@@ -2018,16 +2013,13 @@ class VCOGui:
     def _timeline_end(self) -> float:
         return max(self._visible_seconds(), self.times[-1] if self.times else 0.0, 0.001)
 
-    SERIES_NAMES = ("p_mv", "n_mv", "conductance_uS", "tonic_uS", "phasic_uS")
+    SERIES_NAMES = ("p_mv", "n_mv", "conductance_uS")
 
     def plot_snapshot(self, requested=()):
         data = SimpleNamespace(**{name: getattr(self, name) for name in
             ("samples", "times", "prefix_p", "prefix_n", "prefix_delta", "prefix_current",
              "offset_uv", "filter_size", "SERIES_NAMES")})
         data.count = len(self.times)
-        data.analysis_options = ((self.algorithm.get(), float(self.smoothing.get()),
-                                  float(self.peak_prominence.get()), self.dlc_interpolation.get())
-                                 if {"tonic_uS", "phasic_uS"}.intersection(requested) else None)
         return SimpleNamespace(get_series=partial(VCOGui.get_series, data),
                                invalid_spans=partial(VCOGui.invalid_spans, data),
                                signals=lambda: VCOGui.signals(None),
@@ -2072,19 +2064,7 @@ class VCOGui:
             current = (self.prefix_current[index + 1] - self.prefix_current[first_ma]) / count
             conductance = conductance_us(delta, current, self.offset_uv) if sample.analysis_valid else None
             data["conductance_uS"].append(conductance if conductance is not None else math.nan)
-            data["tonic_uS"].append(sample.tonic_us if sample.tonic_us is not None else math.nan)
-            data["phasic_uS"].append(sample.phasic_us if sample.phasic_us is not None else math.nan)
         window_times = self.times[first:last]
-        options = getattr(self, "analysis_options", None)
-        if options and window_times:
-            algorithm, smoothing, prominence, interpolation = options
-            selected = samples[first:last]
-            tonic, phasic, _ = analyze(window_times, data["conductance_uS"], segments,
-                                      algorithm, smoothing, prominence,
-                                      [sample.sample_hz for sample in selected],
-                                      [sample.source for sample in selected], interpolation,
-                                      [sample.dlc_amplitude_knot for sample in selected])
-            data["tonic_uS"], data["phasic_uS"] = list(tonic), list(phasic)
         for name, values in data.items():
             series[name] = {"times": window_times, "values": values, "segments": segments}
         return series
@@ -2098,13 +2078,16 @@ class VCOGui:
         return list(invalid_periods(samples)) + list(buffer_loss_periods(samples))
 
     def signals(self) -> dict[str, dict]:
-        """Signal catalogue for the workspace signal-selection table."""
+        """Signal catalogue for the workspace signal-selection table.
+
+        Tonic/phasic is not offered here: it is a workspace feature row
+        ("features" source) computed from a conductance signal, not a
+        magnitude the device itself measures.
+        """
         return {
             "p_mv": {"label": "VCO P voltage", "unit": "mV"},
             "n_mv": {"label": "VCO N voltage", "unit": "mV"},
             "conductance_uS": {"label": "Tissue conductance", "unit": "µS", "primary": True},
-            "tonic_uS": {"label": "Tonic conductance", "unit": "µS"},
-            "phasic_uS": {"label": "Phasic conductance", "unit": "µS"},
         }
 
     def _visible_seconds(self) -> float:
@@ -3103,7 +3086,10 @@ class VCOGui:
         if request_id == self.sample_request_id and self.pending_sample_millihz is not None:
             rate = self.pending_sample_millihz / 1000
             self._finish_sampling_request("No firmware confirmation; check terminal output")
-            self._log(f"Sampling rate {rate:g} Hz was not confirmed by the firmware.")
+            self._log(f"Sampling rate {rate:g} Hz was not confirmed by the firmware. "
+                      "If samples stopped arriving, stop and start the recording again "
+                      "(the run re-initializes the chip); the display also batches new "
+                      "samples about 5 times per second, which is not the sampling rate.")
 
     def apply_sampling_rate(self) -> None:
         if self.recording_state != "running" or not self.firmware_is_demo or self.serial_port is None:
@@ -3404,7 +3390,7 @@ class VCOGui:
         else:
             self.capture.resume(self)
         self.reader_thread = threading.Thread(target=self._read_serial, args=(port, self.stop_reader),
-                                              name="heepidermis-capture", daemon=False)
+                                              name="heepidermis-capture", daemon=True)
         self.reader_thread.start()
         self.recording_path_text.set(f"Autosave: {self.session_path}")
         self._log(f"Serial connected: {port.port} at {port.baudrate} baud")

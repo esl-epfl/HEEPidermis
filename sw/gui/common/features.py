@@ -19,6 +19,26 @@ from .eda import ALGORITHMS, analyze
 PEAK_WIDTH_S = 0.5      # Same minimum response width as the device GUI.
 PEAK_SEPARATION_S = 1.0  # Same minimum separation as the device GUI.
 
+# Feature catalogue for the workspace "features" source rows: the Signal
+# dropdown lists exactly these labels, in this order. Kinds:
+# * "peaks"   — one marker per detected response peak.
+# * "measure" — one value per peak (the named field of peak_measures()).
+# * "series"  — the full tonic/phasic decomposition of the source signal.
+FEATURES = (
+    {"label": "Phasic peak detection", "kind": "peaks"},
+    {"label": "Peak-to-peak amplitude", "kind": "measure", "field": "amplitude"},
+    {"label": "Peak rising time", "kind": "measure", "field": "rise_s", "unit": "s"},
+    {"label": "Peak falling time", "kind": "measure", "field": "fall_s", "unit": "s"},
+    {"label": "Tonic conductance", "kind": "series", "component": "tonic"},
+    {"label": "Phasic conductance", "kind": "series", "component": "phasic"},
+)
+FEATURE_LABELS = tuple(feature["label"] for feature in FEATURES)
+
+
+def feature(label):
+    """Catalogue entry for a feature label; None if the label is unknown."""
+    return next((entry for entry in FEATURES if entry["label"] == label), None)
+
 
 def _analysis_rate(times) -> float:
     """Sample rate used for peak geometry; EDA analysis never exceeds 10 Hz."""
@@ -74,6 +94,33 @@ def detect_peaks(times, values, segments=None, is_phasic=False,
                 keep.append(index)
         locations = np.asarray(keep, dtype=int)
     return times[locations], values[locations]
+
+
+def decompose(times, values, segments=None,
+              algorithm=ALGORITHMS[1], smoothing=1.0, prominence=0.01):
+    """Full tonic/phasic decomposition of a conductance series.
+
+    Runs the same smoothness-prior analysis as ``detect_peaks`` but returns
+    both components aligned with the input ``times`` (NaN at non-finite
+    samples, so the plot breaks the trace there instead of inventing values).
+    """
+    times = np.asarray(times, dtype=float)
+    values = np.asarray(values, dtype=float)
+    finite = np.isfinite(values)
+    if finite.sum() < 3:
+        empty = np.full(len(times), np.nan)
+        return empty, empty.copy()
+    if segments is not None:
+        segments = np.asarray(segments)[finite]
+    else:
+        segments = np.zeros(int(finite.sum()), dtype=int)
+    tonic, phasic, _peaks = analyze(times[finite], values[finite], segments,
+                                    algorithm, float(smoothing), float(prominence))
+    full_tonic = np.full(len(times), np.nan)
+    full_phasic = np.full(len(times), np.nan)
+    full_tonic[finite] = tonic
+    full_phasic[finite] = phasic
+    return full_tonic, full_phasic
 
 
 def peak_measures(times, values, peak_times, peak_values):

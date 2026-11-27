@@ -48,16 +48,12 @@ class SessionPanel(FakePanel):
         super().__init__()
         self.device = device
         self.configuration = {}
-        self.decomposition = None
 
     def configuration_snapshot(self):
         return self.configuration
 
     def apply_configuration(self, values):
         self.configuration = values
-
-    def set_decomposition(self, **values):
-        self.decomposition = values
 
     def close(self):
         pass
@@ -160,7 +156,8 @@ class LoadCsvTests(unittest.TestCase):
             self.workspace.device_frames["heepidermis"]["variable"].set(True)
         row = self.workspace.signal_rows[-1]
         self.assertEqual((row.device, row.signal), ("biopac", "conductance_uS"))
-        self.assertEqual(self.workspace.table_rows[-1]["device"].get(), "biopac")
+        self.assertEqual(self.workspace.table_rows[-1]["device"].get(),
+                         app.source_name("biopac"))
 
     def test_load_adds_a_row_for_the_loaded_device_when_none_exists(self):
         path = self.write("biopac.csv", "sample_index,time_s,adc_count")
@@ -262,7 +259,6 @@ class LoadCsvTests(unittest.TestCase):
     def test_one_save_and_load_restores_both_devices_and_all_signal_rows(self):
         panels = self.session_panels()
         ws = self.workspace
-        ws.decomposition_variables["smoothing"].set("3")
         ws.add_signal_row("heepidermis", "conductance_uS", color="#123456", y_scale="Fixed", y_max=20)
         ws.add_signal_row("biopac", "conductance_uS", axis="Right", color="#654321")
         ws.add_signal_row("comparison", "Difference (A − B)", source_a="heepidermis:conductance_uS",
@@ -286,7 +282,6 @@ class LoadCsvTests(unittest.TestCase):
         self.assertEqual([r["time_s"] for r in rows if r["workspace_device"] == "biopac"
                           and r["workspace_kind"] == "signal" and not r["workspace_row"]],
                          ["0.0", "1.0", "2.0"])
-        ws.decomposition_variables["smoothing"].set("9")
         for widgets in list(ws.table_rows):
             ws._remove_row(widgets)
         with patch.object(app.filedialog, "askopenfilename", return_value=str(path)) as dialog:
@@ -303,8 +298,6 @@ class LoadCsvTests(unittest.TestCase):
         self.assertTrue(bi.samples[-1].clipped)
         self.assertTrue(bi.samples[0].segment.verified)
         self.assertEqual(bi.samples[0].segment.settings.sensitivity, 5)
-        self.assertEqual(panels["heepidermis"].decomposition["smoothing"], 3)
-        self.assertEqual(panels["biopac"].decomposition["smoothing"], 3)
         for directory in ws.recording_directories:
             directory.cleanup()
 
@@ -382,6 +375,21 @@ class LoadCsvTests(unittest.TestCase):
         ws._annotation_add()
         self.assertEqual([(a.time, a.label) for a in ws.annotations], [(7.0, "renamed")])
 
+    def test_enter_in_annotation_fields_adds_the_marker(self):
+        ws = self.workspace
+        ws.viewport.cursor = 4.0
+        app.set_widget_value(ws.annotation_label_entry, "tap")
+        self.assertEqual(ws._annotation_field_return(), "break")
+        self.assertEqual([(a.time, a.label) for a in ws.annotations], [(4.0, "tap")])
+        # While editing, Enter must accept the edit instead of adding another
+        # marker: still one annotation, with the rename applied.
+        ws._annotation_edit()
+        self.assertIsNone(ws._annotation_field_return())
+        app.set_widget_value(ws.annotation_label_entry, "renamed")
+        ws._annotation_field_return()
+        ws._annotation_edit_accept()
+        self.assertEqual([(a.time, a.label) for a in ws.annotations], [(4.0, "renamed")])
+
     def test_annotation_click_selects_within_one_percent_of_the_window(self):
         ws = self.workspace
         from gui.common.plots import TimePlot
@@ -448,6 +456,113 @@ class LoadCsvTests(unittest.TestCase):
                       ws.messages_text.get("1.0", "end"))
         for directory in ws.recording_directories:
             directory.cleanup()
+
+
+class RenderFrameTests(unittest.TestCase):
+    """Frame rendering must survive pseudo-traces and malformed entries.
+
+    Regression: the ``event_markers`` pseudo-trace appended by
+    ``_compute_frame`` reached the per-trace loop of ``_render_frame`` and
+    raised ``KeyError: 'row_key'``, so every display refresh failed as soon
+    as a test had emitted events — including when merely loading a recorded
+    session back. The whole visualization was lost, not just the markers.
+    """
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.addCleanup(self.root.destroy)
+        with patch.object(app, "WORKSPACE_CONFIG",
+                          Path(self.temporary.name) / "ws.json"):
+            self.workspace = app.Workspace(self.root)
+
+    def test_feature_choices_come_from_the_features_module(self):
+        from gui.common import features as feature_module
+        choices = self.workspace._signal_choices("features")
+        self.assertEqual(choices, list(feature_module.FEATURE_LABELS))
+        # The tonic/phasic decomposition is offered here, not as a device signal.
+        self.assertIn("Tonic conductance", choices)
+        self.assertIn("Phasic conductance", choices)
+
+    def test_tonic_and_phasic_feature_rows_trace_the_decomposition(self):
+        series = {"biopac:conductance_uS": {"times": [i / 10 for i in range(300)],
+                                            "values": [2.0 + (i % 20) / 100 for i in range(300)],
+                                            "segments": [0] * 300}}
+        tonic = app.SignalRow(device="features", signal="Tonic conductance",
+                              source_a="biopac:conductance_uS")
+        trace = self.workspace._build_trace(tonic, series)
+        self.assertEqual(trace["name"], "Tonic conductance · biopac:conductance_uS")
+        self.assertEqual(len(trace["times"]), len(series["biopac:conductance_uS"]["times"]))
+        self.assertFalse(trace["markers"])  # A full series, not peak markers.
+        phasic = app.SignalRow(device="features", signal="Phasic conductance",
+                               source_a="biopac:conductance_uS")
+        self.assertEqual(len(self.workspace._build_trace(phasic, series)["values"]), 300)
+
+    def test_removing_a_row_updates_the_plots_immediately(self):
+        self.workspace._render_frame([
+            {"row_key": (1, False), "times": [0.0, 1.0], "values": [1.0, 2.0],
+             "name": "biopac:conductance_uS"},
+            {"row_key": (1, False), "times": [0.0, 1.0], "values": [3.0, 4.0],
+             "name": "heepidermis:conductance_uS"},
+        ], [])
+        self.assertEqual(len(self.workspace.row_plots[1].traces), 2)
+        he_row = app.SignalRow(device="heepidermis", signal="conductance_uS", color="#00ff00")
+        self.workspace.signal_rows.append(he_row)
+        self.workspace._add_table_row(he_row)
+        row = app.SignalRow(device="biopac", signal="conductance_uS", color="#ff0000")
+        self.workspace.signal_rows.append(row)
+        self.workspace._add_table_row(row)
+        # The background frame is still pending; the removal must not wait for it.
+        self.workspace._remove_row(self.workspace.table_rows[-1])
+        self.assertEqual([t.name for t in self.workspace.row_plots[1].traces],
+                         ["heepidermis:conductance_uS"])
+
+    def test_event_markers_frame_renders(self):
+        self.workspace._render_frame(
+            [{"event_markers": [(1.0, "correct", "#3fbf5f", 0)]}], [])
+        marker = self.workspace.row_plots[1].markers[0]
+        self.assertEqual((1.0, "correct", "#3fbf5f", 0), tuple(marker))
+
+    def test_malformed_trace_is_skipped_without_losing_the_rest(self):
+        good = {"row_key": (1, False), "times": [0.0, 1.0], "values": [1.0, 2.0],
+                "name": "partial"}  # Every other field left at its default.
+        broken = {"times": [0.0], "values": [1.0]}  # No row_key at all.
+        self.workspace._render_frame([good, broken], [])
+        self.assertEqual([t.name for t in self.workspace.row_plots[1].traces],
+                         ["partial"])
+
+    def test_transform_styles_map_to_the_trace(self):
+        series = {"biopac:conductance_uS": {"times": [0.0, 1.0], "values": [1.0, 2.0],
+                                            "segments": None}}
+
+        def trace_for(transform):
+            row = app.SignalRow(device="biopac", signal="conductance_uS",
+                                transform=transform)
+            return self.workspace._build_trace(row, series)
+
+        markers = trace_for("markers")  # "No interpolation": dots only.
+        self.assertTrue(markers["markers"])
+        self.assertFalse(markers["line"])
+        self.assertFalse(markers["spline"])
+        spline = trace_for("spline")
+        self.assertTrue(spline["spline"] and spline["line"])
+        self.assertFalse(spline["markers"] or spline["steps"])
+        line = trace_for("line")
+        self.assertTrue(line["line"])
+        self.assertFalse(line["markers"] or line["steps"] or line["spline"])
+
+    def test_spline_smoothing_passes_through_every_sample(self):
+        from gui.common.plots import spline_points
+        points = [(0.0, 0.0), (1.0, 10.0), (2.0, 0.0)]
+        smooth = spline_points(points)
+        self.assertEqual(points[0], smooth[0])
+        self.assertEqual(points[-1], smooth[-1])
+        for original in points:
+            self.assertIn(original, smooth)
+        self.assertGreater(len(smooth), len(points))
+        self.assertEqual([(3.0, 1.0)], spline_points([(3.0, 1.0)]))  # Too short.
 
 
 if __name__ == "__main__":

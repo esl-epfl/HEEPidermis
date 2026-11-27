@@ -817,11 +817,6 @@ class BiopacGUI:
     def apply_configuration(self, values):
         self._set_configuration(Configuration.parse(values))
 
-    def set_decomposition(self, algorithm, smoothing, prominence):
-        self.processing = replace(self.processing, algorithm=algorithm,
-                                  smoothing=smoothing, prominence=prominence)
-        self.analysis_key = None
-
     def load_config(self, path=None):
         if self.state != "disconnected" or self.pending:
             return
@@ -856,8 +851,7 @@ class BiopacGUI:
         recording = SimpleNamespace(samples=self.recording.samples, times=self.recording.times,
                                     segments=self.recording.segments.copy())
         data = SimpleNamespace(recording=recording, processing=self.processing,
-                               analysis=self.analysis, count=len(recording.times),
-                               compute_analysis=bool({"tonic_uS", "phasic_uS"}.intersection(requested)))
+                               analysis=self.analysis, count=len(recording.times))
         return SimpleNamespace(get_series=partial(BiopacGUI.get_series, data),
                                invalid_spans=partial(BiopacGUI.invalid_spans, data),
                                signals=lambda: BiopacGUI.signals(None),
@@ -892,14 +886,6 @@ class BiopacGUI:
             "voltage_V": {"times": selected_times, "values": volts if average else raw_v, "segments": identities},
             "conductance_uS": {"times": selected_times, "values": conductance if average else raw_g, "segments": identities},
         }
-        analysis = self.analysis
-        if getattr(self, "compute_analysis", False):
-            analysis = analyze_recording(selected, **asdict(self.processing))
-        if analysis.get("times"):
-            series["tonic_uS"] = {"times": analysis.get("times", []), "values": analysis.get("tonic", []),
-                                  "segments": analysis.get("segments")}
-            series["phasic_uS"] = {"times": analysis.get("times", []), "values": analysis.get("phasic", []),
-                                   "segments": analysis.get("segments")}
         return series
 
     def invalid_spans(self, low=None, high=None):
@@ -919,12 +905,15 @@ class BiopacGUI:
                 and (high is None or start <= high)]
 
     def signals(self) -> dict[str, dict]:
-        """Signal catalogue for the workspace signal-selection table."""
+        """Signal catalogue for the workspace signal-selection table.
+
+        Tonic/phasic is not offered here: it is a workspace feature row
+        ("features" source) computed from a conductance signal, not a
+        magnitude the amplifier measures.
+        """
         return {
             "voltage_V": {"label": "Amplifier voltage", "unit": "V"},
             "conductance_uS": {"label": "Skin conductance", "unit": "µS", "primary": True},
-            "tonic_uS": {"label": "Tonic conductance", "unit": "µS"},
-            "phasic_uS": {"label": "Phasic conductance", "unit": "µS"},
         }
 
     def save_recording(self):

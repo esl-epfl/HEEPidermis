@@ -11,7 +11,9 @@ import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 from matplotlib.patches import Patch
 
-from .classification.features_to_classification import _training_rows, classify_features, feature_matrix
+from .classification.features_to_classification import (
+    _training_rows, classify_features, feature_matrix, plane_margins,
+)
 from .conversion.data_to_conductance_S import normalized_conductance
 from .features.conductance_S_to_features import decompose_conductance, extraction_options
 from .features.features import INSTANT_RATE_Q85_HZ, PEAK_HEIGHT_Q50_S
@@ -331,13 +333,11 @@ def plot_feature_trajectory(model, features, feature_names=None, time_range=None
     times = predictions.time[mask]
     step_index = np.flatnonzero(mask)
     adjacent = np.diff(step_index) == 1
-    preprocess, svm = pipeline[:-1], pipeline[-1]
+    svm = pipeline[-1]
     classes = list(pipeline.classes_)
     stress_name = next((name for name in classes if name == "stress"), classes[-1])
     class_colors = {name: "tab:red" if name == stress_name else "tab:blue" for name in classes}
     x_train, labels, _ = _training_rows(model["training_features"], model["training_annotations"], model_names)
-    imputer = pipeline.named_steps["simpleimputer"]
-    base = np.nan_to_num(imputer.statistics_, nan=0.)
     # Annotated stress windows, the only ones that get square trajectory markers.
     marked = None
     if annotations is not None and len(annotations.time):
@@ -359,9 +359,7 @@ def plot_feature_trajectory(model, features, feature_names=None, time_range=None
         span = np.maximum(high - low, 1e-12) * .08
         uu, vv = np.meshgrid(np.linspace(low[0] - span[0], high[0] + span[0], 160),
                              np.linspace(low[1] - span[1], high[1] + span[1], 160))
-        rows = np.tile(base, (uu.size, 1))
-        rows[:, index[0]], rows[:, index[1]] = uu.ravel(), vv.ravel()
-        scores = svm.decision_function(preprocess.transform(rows)).reshape(uu.shape)
+        scores = plane_margins(model, pair, uu, vv)
         plane = (uu * scales[0][0], vv * scales[1][0])
         space.contourf(plane[0], plane[1], scores > threshold, levels=[-.5, .5, 1.5],
                        colors=["#d9eaf7", "#f9dddd"], alpha=.7)

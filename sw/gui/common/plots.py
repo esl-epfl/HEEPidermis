@@ -67,6 +67,7 @@ class Trace:
     markers: bool = False
     steps: bool = False
     line: bool = True
+    spline: bool = False
 
 
 def blend(color: str, alpha: float, background: str = UI_PLOT) -> str:
@@ -122,6 +123,34 @@ def ticks(low, high, count=5):
     return [first + i * step for i in range(max(0, int((high - first) / step) + 1))]
 
 
+def spline_points(points, max_points=4000):
+    """Catmull-Rom smoothing over (time, value) pairs; display-only.
+
+    Passes exactly through every sample and densifies between samples, so a
+    sparse signal reads as a continuous curve. The point budget bounds the
+    canvas work regardless of zoom level; runs keep their real sample times
+    and values untouched (axis scaling still uses the raw data).
+    """
+    count = len(points)
+    if count < 3:
+        return points
+    divisions = max(2, min(8, max_points // count))
+    smooth = [points[0]]
+    for index in range(count - 1):
+        p0 = points[index - 1] if index else points[index]
+        p1, p2 = points[index], points[index + 1]
+        p3 = points[index + 2] if index + 2 < count else points[index + 1]
+        for step in range(1, divisions + 1):
+            s = step / divisions
+            s2, s3 = s * s, s * s * s
+            smooth.append(tuple(
+                0.5 * (2 * b + (c - a) * s
+                       + (2 * a - 5 * b + 4 * c - d) * s2
+                       + (3 * b - a - 3 * c + d) * s3)
+                for a, b, c, d in zip(p0, p1, p2, p3)))
+    return smooth
+
+
 class TimePlot(tk.Canvas):
     """A shared viewport with independent left/right y axes and segment breaks."""
 
@@ -135,6 +164,7 @@ class TimePlot(tk.Canvas):
         self.traces, self.markers, self.invalid, self.peaks = [], [], [], []
         self.annotations = []  # (time, value, label, right-axis) in data coordinates.
         self.annotation_lines = []  # (time, annotation, selected); vertical user markers.
+        self.areas = []  # (start, end) full-height red highlights (e.g. POSITIVE).
         self.on_click = None  # Optional callback(time) on Button-1 press.
         self.fixed_bounds = {}  # Per-axis (lo, hi) when a row pins the range.
         self.bind("<Configure>", lambda _e: self.redraw())
@@ -177,10 +207,11 @@ class TimePlot(tk.Canvas):
         return "break"
 
     def set_data(self, traces, markers=(), invalid=(), peaks=(), annotations=(),
-                 fixed_bounds=None, annotation_lines=()):
+                 fixed_bounds=None, annotation_lines=(), areas=()):
         self.traces, self.markers, self.invalid, self.peaks = traces, markers, invalid, peaks
         self.annotations = list(annotations)
         self.annotation_lines = list(annotation_lines)
+        self.areas = list(areas)   # Full-height (start, end) highlights, e.g. POSITIVE.
         self.fixed_bounds = dict(fixed_bounds or {})
         self.redraw()
 
@@ -226,6 +257,9 @@ class TimePlot(tk.Canvas):
         for a, b in self.invalid:
             if b >= start and a <= end:
                 self.create_rectangle(x(max(a, start)), top, x(min(b, end)), bottom, fill="#442630", outline="")
+        for a, b in self.areas:
+            if b >= start and a <= end:
+                self.create_rectangle(x(max(a, start)), top, x(min(b, end)), bottom, fill="#6e2222", outline="")
         for t in self.peaks:
             if start <= t <= end:
                 self.create_rectangle(x(max(start, t - 0.25)), top, x(min(end, t + 0.25)), bottom,
@@ -316,6 +350,8 @@ class TimePlot(tk.Canvas):
             fill = blend(trace.color, trace.alpha)
             for times, values in runs:
                 points = envelope(times, values, start, span, max(1, right - left))
+                if trace.spline:
+                    points = spline_points(points)
                 coords = [coordinate for t, value in points for coordinate in (x(t), y(value, trace.right))]
                 if trace.steps and len(coords) >= 4:
                     stepped = coords[:2]

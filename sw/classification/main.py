@@ -1,7 +1,7 @@
 # In[1]:
 # Configuration: training/testing switches, sample plots and processing options.
 # Optional notebook backend:
-%matplotlib widget
+%matplotlib inline
 from pathlib import Path
 import sys
 import json
@@ -20,18 +20,19 @@ from sw.classification.classification.features_to_classification import (
     train_svm, classify_features, evaluate_test, leave_one_person_out,
     load_model, save_model,
 )
+from sw.classification.classification.scoring import evaluate_szcore
 from sw.classification.plots import (
     plot_classification, plot_feature_trajectory, plot_recording,
 )
 
 TRAIN               = False
-TEST                = False
-VALIDATION          = ROOT / "datasets/test/sub_26.pkl"  # None disables single-recording inference.
-FEATURE_OPTIONS     = dict(sample_rate_Hz=4., window_s=60., step_s=15.)
+TEST                = True
+VALIDATION          = ROOT / "datasets/validation/Anna.pkl"  # None disables single-recording inference.
+FEATURE_OPTIONS     = dict(sample_rate_Hz=10., window_s=60., step_s=15.)
 # Features to extract and to feed the SVM: a list of the string constants
 # defined in features/features.py. Add or remove names to taste
 FEATURES            = FEATURE_SELECTION_JUAN
-SVM_OPTIONS         = dict(kernel="linear", decision_threshold=3)
+SVM_OPTIONS         = dict(kernel="linear", decision_threshold=0)
 # kernel: linear, quadratic, poly or rbf. decision_threshold is the margin a
 # window must exceed to be predicted as stress; raise it (e.g. 0.5, 1, ...)
 # when the SVM over-predicts stress. Also C, gamma, degree.
@@ -46,7 +47,7 @@ COMPARE_KERNELS     = True                   # Print leave-one-person-out scores
 # computed from that, so absolute set-up levels disappear. Amplitude-like
 # features then lose their physical meaning (e.g. level_mean_S) — choose
 # FEATURES to match. Inference follows the model, not this switch.
-NORMALIZATION       = True
+NORMALIZATION       = False
 # The two FEATURES drawn in the SVM feature map (svm_trajectory.png).
 FEATURE_MAP         = (PEAK_RATE_PER_MIN, PEAK_HEIGHT_Q25_S)
 PLOT_NORMALIZED     = True                # Conductance row normalized (mean + 3 sigma, clipped to 0-1).
@@ -98,6 +99,9 @@ if TEST:
                            for name in data}
     predictions         = {name: classify_features(model, features[name], THRESHOLD) for name in data}
     scores              = evaluate_test(model, predictions, annotations)
+    # SzCORE metrics (sensitivity/precision/F1/false alarms per day, on the
+    # time axis) complement the window-level accuracy of evaluate_test.
+    scores["szcore"]    = evaluate_szcore(predictions, annotations)
     (OUTPUT / "metrics.json").write_text(json.dumps(scores, indent=2) + "\n")
     (OUTPUT / "test").mkdir(exist_ok=True)
     for name, prediction in predictions.items():
@@ -138,7 +142,7 @@ plt.show()
 
 # In[5]:
 # Validate a specific recording through the same conversion, features and fitted SVM.
-%matplotlib widget
+%matplotlib inline
 
 if VALIDATION is not None and not Path(VALIDATION).exists():
     print(f"Validation recording not found: {VALIDATION}\n"

@@ -151,6 +151,18 @@ def decompose_conductance(data, **options):
     return result
 
 
+def feature_unit(name, processing):
+    """Unit of one feature under the given processing settings.
+
+    With relative_windows, amplitude features become dimensionless ratios of
+    the window's own mean conductance; the slope keeps its per-second part.
+    """
+    if processing.get("relative_windows") and name in AMPLITUDE_FEATURES:
+        return "1/s" if name == LEVEL_SLOPE_S_PER_S else "1"
+    return ("S/s" if "slope" in name else "peaks/min" if name == PEAK_RATE_PER_MIN
+            else "Hz" if name.startswith("instant") else "S")
+
+
 def summarize_window(decomposition, start, end, relative=False):
     """Calculate one window's scalar statistics; instantaneous rates never cross gaps.
 
@@ -233,10 +245,7 @@ def conductance_S_to_features(data, feature_names=None, **options):
         params[key] = ts
     result = {}
     for name in selected:
-        if p["relative_windows"] and name in AMPLITUDE_FEATURES:
-            unit = "1/s" if name == LEVEL_SLOPE_S_PER_S else "1"
-        else:
-            unit = "S/s" if "slope" in name else "peaks/min" if name == PEAK_RATE_PER_MIN else "Hz" if name.startswith("instant") else "S"
+        unit = feature_unit(name, p)
         ts = Timeseries(data.name, columns[name], times)
         ts.params.update(params)
         ts.params[TSP_MAGNITUDE], ts.params[TSP_UNITS], ts.params[TSP_FEATURE] = "feature", unit, name

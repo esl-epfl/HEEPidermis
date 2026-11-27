@@ -37,8 +37,14 @@ DEFAULT_PATH = ROOT / "sw/gui/outs/tests/events.jsonl"
 # yellow marks every run/section start/stop (the run itself, calibration,
 # rest, practice/control/stress blocks), green/red are right/wrong verdicts,
 # "stimulus"-labeled events are the stimulus onsets, and everything else is
-# a phase.  Hiding a group is display-only: the workspace CSV and the event
-# feed keep every event.
+# a phase. Which groups appear on the plots is decided by the workspace
+# signal table: one Tests row per group below, in the table's Source column.
+MARKER_SIGNALS = (
+    ("Start/stop", "start_stop"),
+    ("Right/wrong", "verdicts"),
+    ("Stimulus onsets", "stimuli"),
+    ("Other phases", "phases"),
+)
 VERDICT_COLORS = frozenset({"green", "red"})
 STIMULUS_LABELS = frozenset({"stimulus", "calibration stimulus"})
 PHASE_GROUP = "phases"
@@ -100,17 +106,6 @@ class TestsPanel:
                                                             os.environ.get("HEEPIDERMIS_STROOP_EVENTS", ""))
                                        or str(DEFAULT_PATH))
         self.launch_options = tk.StringVar(value="")
-        self.show_stimuli = tk.BooleanVar(value=False)
-        self.show_start_stop = tk.BooleanVar(value=True)
-        self.show_verdicts = tk.BooleanVar(value=True)
-        self.show_phases = tk.BooleanVar(value=True)
-        # (group key, variable, checkbox text) in display order; drives the
-        # marker filter, the configuration snapshot and the plot revision.
-        self.marker_toggles = (
-            ("start_stop", self.show_start_stop, "Start/stop"),
-            ("verdicts", self.show_verdicts, "Right/wrong"),
-            ("stimuli", self.show_stimuli, "Stimulus onsets"),
-            ("phases", self.show_phases, "Other phases"))
         self.status = tk.StringVar(value="Closed")
         self.count_text = tk.StringVar(value="No events yet")
         self.connect_labels = ("Open", "Close")
@@ -144,14 +139,11 @@ class TestsPanel:
         ttk.Entry(frame, textvariable=self.launch_options).pack(fill="x", pady=(3, 8))
         self.form_frame = ttk.Frame(frame)
         self.form_frame.pack(fill="x")
-        marker_row = ttk.Frame(frame)
-        marker_row.pack(anchor="w", pady=(6, 0))
-        ttk.Label(marker_row, text="Markers shown:").pack(side="left")
-        for _group, variable, text in self.marker_toggles:
-            ttk.Checkbutton(marker_row, text=text, variable=variable).pack(side="left", padx=(8, 0))
         ttk.Label(frame, text="Open launches the selected test (with the options above) and "
-                  "listens for its events; Close stops listening. Colored labeled events\n"
-                  "appear on every plot. The task window uses SPACE to begin and ESC to finish.",
+                  "listens for its events; Close stops listening. Which marker groups "
+                  "appear on the plots (start/stop, right/wrong, stimulus onsets, other\n"
+                  "phases) is chosen with the Tests rows of the SIGNALS table, one row "
+                  "per group; the task window uses SPACE to begin and ESC to finish.",
                   wraplength=620).pack(anchor="w", pady=6)
         self._build_form()
         report = ttk.Frame(reports, padding=8)
@@ -591,15 +583,39 @@ class TestsPanel:
         else:
             self.launch()
 
+    def _terminate_task(self):
+        """Stop the test subprocess without ever blocking the Tk thread.
+
+        A test window left running would keep the keyboard grabbed after the
+        GUI is gone, so closing must terminate it — but waiting for the exit
+        here would freeze the interface for up to the wait timeout.
+        """
+        process, self.process = self.process, None
+        if process is None or process.poll() is not None:
+            return
+        terminate = getattr(process, "terminate", None)
+        if terminate is None:  # Not a real subprocess handle; nothing to stop.
+            return
+        try:
+            terminate()
+        except OSError:
+            return
+
+        def reap():
+            try:
+                process.wait(timeout=5)
+            except Exception:
+                try:
+                    process.kill()  # Escalate if it ignores SIGTERM.
+                    process.wait(timeout=5)
+                except Exception:
+                    pass
+
+        threading.Thread(target=reap, name="test-reap", daemon=True).start()
+
     def close_task(self):
         """Close the test window (if we launched it) and stop listening."""
-        if self._task_alive():
-            try:
-                self.process.terminate()
-                self.process.wait(timeout=2)
-            except Exception as error:
-                self._log(f"Could not stop the test: {error}")
-            self.process = None
+        self._terminate_task()
         self.disconnect()
 
     def transport(self, action):
@@ -640,8 +656,7 @@ class TestsPanel:
         return {"event_path": self.event_path.get(), "test": self.test_selection.get(),
                 "config_file": self.config_selection.get(),
                 "values": {key: variable.get() for key, variable in self.form_values.items()},
-                "launch_options": self.launch_options.get(),
-                **{f"show_{group}": variable.get() for group, variable, _text in self.marker_toggles}}
+                "launch_options": self.launch_options.get()}
 
     def apply_configuration(self, values):
         values = validate_configuration(values)
@@ -653,10 +668,6 @@ class TestsPanel:
                 self.event_path.set(value)
             elif name == "launch_options":
                 self.launch_options.set(value)
-            elif name.startswith("show_"):
-                variable = getattr(self, name, None)
-                if isinstance(variable, tk.BooleanVar):
-                    variable.set(value)
             elif name == "config_file":
                 self.config_selection.set(value)
             elif name == "values":
@@ -664,16 +675,33 @@ class TestsPanel:
                     variable = self.form_values.get(key)
                     if variable is not None:
                         variable.set(form_value)
+        # Legacy "show_*" marker-group keys are accepted but ignored: which
+        # groups appear is decided by the workspace signal table now.
 
     @staticmethod
     def signals():
-        return {"events": {"label": "Test events", "unit": "", "primary": True, "kind": "events"}}
+        """Signal catalogue for the workspace signal-selection table.
+
+        One selectable entry per marker group (kind "markers"); the raw
+        "events" series (the feed's CSV-export shape) stays in the catalogue
+        for exports but is not offered as a table row.
+        """
+        return {
+            "events": {"label": "Test events", "unit": "", "kind": "events"},
+            **{name: {"label": name, "unit": "", "kind": "markers", "group": group,
+                      "primary": group == "verdicts"}
+               for name, group in MARKER_SIGNALS},
+        }
 
     def plot_snapshot(self, requested=()):
         # Events are small immutable records; insertion of a delayed voice event
         # must not mutate a snapshot already being rendered/exported.
         events, times = tuple(self.events), tuple(self.times)
-        shown = {group: variable.get() for group, variable, _text in self.marker_toggles}
+        # The workspace requests exactly the Tests signals whose rows are
+        # visible in the signal table; those decide the shown marker groups.
+        catalogue = self.signals()
+        shown = {entry["group"] for name, entry in catalogue.items()
+                 if name in set(requested) and "group" in entry}
 
         def get_series(low=None, high=None):
             first = 0 if low is None else bisect.bisect_left(times, low)
@@ -685,13 +713,15 @@ class TestsPanel:
                                "segments": [e.run_id for e in selected], "kind": "events"}}
 
         def markers(low, high):
+            if not shown:
+                return []
             return [(e.time_s, e.label, e.hex_color())
                     for e in events[bisect.bisect_left(times, low):bisect.bisect_right(times, high)]
-                    if shown[marker_group(e.label, e.color)]]
+                    if marker_group(e.label, e.color) in shown]
 
         return SimpleNamespace(get_series=get_series, get_markers=markers, signals=self.signals,
                                invalid_spans=lambda *_args: [],
-                               revision=(len(events), tuple(shown[group] for group, _v, _t in self.marker_toggles)),
+                               revision=(len(events), tuple(sorted(shown))),
                                clock_origin=self.clock_origin, latest=times[-1] if times else 0.0)
 
     def recording_snapshot(self):
@@ -717,5 +747,8 @@ class TestsPanel:
         self.closed = True
         self.disconnect()
         self.root.after_cancel(self.job)
+        # Never leave the test subprocess running: its fullscreen window would
+        # keep capturing the keyboard after the GUI is gone.
+        self._terminate_task()
         for child in self.host.winfo_children():
             child.destroy()

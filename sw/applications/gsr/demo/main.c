@@ -18,7 +18,7 @@
 #define SYS_FCLK_HZ 10000000
 #define VCO_FS_HZ 10
 #define VCO_SAMPLE_RATE_MILLIHZ 10000
-#define INJECTED_CURRENT_NA 40
+#define INJECTED_CURRENT_NA 800
 
 #define IDAC_LSB_NA 40
 #define IDAC_MAX_CODE 255
@@ -176,8 +176,16 @@ int main(void) {
         return 1;
     }
 
-    run_acquisition(&uart);
-    _writestr("[i] Acquisition stopped: reset board and start recording again.\n");
-    // Returning from main would reenter startup with live peripheral state.
-    while (1) __asm__ volatile ("wfi");
+    // A failed reconfiguration (JTAG rate/current/dLC change, dLC DMA
+    // timeout) must not leave the device silent until a hardware reset:
+    // reinitialize and keep sampling. Stopping and starting the recording
+    // still resets the chip completely.
+    while (1) {
+        run_acquisition(&uart);
+        _writestr("[i] Acquisition stopped: reinitializing; stop and start the recording for a full reset.\n");
+        uint32_t pause_start = timer_get_cycles();
+        while ((uint32_t)(timer_get_cycles() - pause_start) < SYS_FCLK_HZ) {
+            __asm__ volatile ("nop"); // Wait ~1 s before retrying (wrap-safe).
+        }
+    }
 }

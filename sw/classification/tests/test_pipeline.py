@@ -17,7 +17,7 @@ from sw.classification.conversion.data_to_conductance_S import (
 )
 from sw.classification.features.conductance_S_to_features import (
     FEATURE_NAMES, baseline_relative, conductance_S_to_features,
-    decompose_conductance, summarize_window,
+    decompose_conductance, feature_unit, summarize_window,
 )
 from sw.classification.features.features import (
     INSTANT_RATE_Q95_HZ, LEVEL_MAX_S, LEVEL_MEAN_S, LEVEL_MIN_S,
@@ -26,7 +26,7 @@ from sw.classification.features.features import (
 )
 from sw.classification.classification.features_to_classification import (
     _pipeline, classify_features, evaluate_test, leave_one_person_out,
-    load_model, save_model, train_svm, window_annotations,
+    load_model, plane_margins, save_model, train_svm, window_annotations,
 )
 from sw.classification.datasets.io import load_dataset
 from sw.classification.datasets.raw_to_timeseries import (
@@ -369,6 +369,76 @@ class ClassificationTests(unittest.TestCase):
         self.assertEqual(prediction.params[TSP_CLASSES][int(prediction.data[-1])], "stress")
         rbf = train_svm(feature_sets, annotated, feature_names=names, kernel="rbf")
         self.assertEqual(classify_features(rbf, validation).params[TSP_CLASSES][int(prediction.data[-1])], "stress")
+
+
+class PlaneMarginTests(unittest.TestCase):
+    def training_model(self, names):
+        """Small model over named features, trained on separable synthetic windows."""
+        subjects = {"a": (0., 1.), "b": (10., 11.), "c": (100., 101.)}
+        feature_sets, annotated = {}, {}
+        for subject, (amplitude, rate) in subjects.items():
+            features = feature_set(subject, np.array([amplitude, amplitude + 1.]),
+                                   np.array([rate, rate + 1.]))
+            if "third" in names:   # Add a constant third feature when the model needs it.
+                time = features["amplitude"].time
+                valid = features["amplitude"].params[TSP_VALID]
+                features["third"] = series(subject, time, np.array([5., 7.]), "feature", "1",
+                                           {**features["amplitude"].params, TSP_FEATURE: "third",
+                                            TSP_VALID: valid})
+            feature_sets[subject] = features
+            annotated[subject] = annotations(subject, [(0., 60., 0), (60., 120., 1)])
+        return train_svm(feature_sets, annotated, feature_names=names)
+
+    def test_plane_matches_direct_decision_function(self):
+        model = self.training_model(("amplitude", "rate"))
+        uu, vv = np.meshgrid(np.linspace(0., 100., 5), np.linspace(1., 11., 7))
+        margins = plane_margins(model, ("amplitude", "rate"), uu, vv)
+        self.assertEqual(margins.shape, uu.shape)
+        pipeline = model["pipeline"]
+        rows = np.column_stack([uu.ravel(), vv.ravel()])
+        expected = pipeline[-1].decision_function(pipeline[:-1].transform(rows))
+        np.testing.assert_allclose(margins.ravel(), expected, atol=1e-10)
+
+    def test_omitted_feature_fixed_at_given_values(self):
+        model = self.training_model(("amplitude", "rate", "third"))
+        uu, vv = np.meshgrid(np.linspace(0., 100., 4), np.linspace(1., 11., 4))
+        low = plane_margins(model, ("amplitude", "rate"), uu, vv, at={"third": 5.})
+        high = plane_margins(model, ("amplitude", "rate"), uu, vv, at={"third": 7.})
+        self.assertFalse(np.allclose(low, high))   # The slice moves with the fixed feature.
+        pipeline = model["pipeline"]
+        # A fully specified row (including the fixed feature) must agree exactly.
+        row = np.array([[3., 4., 7.]])
+        expected = pipeline[-1].decision_function(pipeline[:-1].transform(row))[0]
+        grid = plane_margins(model, ("amplitude", "rate"),
+                             np.array([[3.]]), np.array([[4.]]), at={"third": 7.})
+        self.assertAlmostEqual(float(grid[0, 0]), float(expected), places=10)
+
+    def test_rejects_invalid_pairs(self):
+        model = self.training_model(("amplitude", "rate"))
+        uu, vv = np.zeros((1, 1)), np.zeros((1, 1))
+        for pair in (("amplitude",), ("amplitude", "rate", "third"),
+                     ("amplitude", "unknown"), ("unknown", "unknown")):
+            with self.assertRaisesRegex(ValueError, "two model features"):
+                plane_margins(model, pair, uu, vv)
+
+
+class FeatureUnitTests(unittest.TestCase):
+    def test_absolute_window_units(self):
+        processing = {"relative_windows": False}
+        self.assertEqual(feature_unit("level_mean_S", processing), "S")
+        self.assertEqual(feature_unit("peak_height_mean_S", processing), "S")
+        self.assertEqual(feature_unit(LEVEL_SLOPE_S_PER_S, processing), "S/s")
+        self.assertEqual(feature_unit("peak_rate_per_min", processing), "peaks/min")
+        self.assertEqual(feature_unit("instant_rate_q95_hz", processing), "Hz")
+
+    def test_relative_window_amplitudes_are_ratios(self):
+        processing = {"relative_windows": True}
+        self.assertEqual(feature_unit("level_mean_S", processing), "1")
+        self.assertEqual(feature_unit("peak_height_mean_S", processing), "1")
+        self.assertEqual(feature_unit(LEVEL_SLOPE_S_PER_S, processing), "1/s")
+        # Rates are never relative; the slope keeps its per-second part.
+        self.assertEqual(feature_unit("peak_rate_per_min", processing), "peaks/min")
+        self.assertEqual(feature_unit("instant_rate_q95_hz", processing), "Hz")
 
 
 class DatasetTests(unittest.TestCase):

@@ -94,26 +94,27 @@ class SerialPersistenceTests(unittest.TestCase):
 
 
 class DisplayTests(unittest.TestCase):
-    def test_he_windowed_snapshot_computes_tonic_without_tk(self):
+    def test_he_windowed_snapshot_computes_conductance_without_tk(self):
         from itertools import accumulate
 
         samples = [he.Sample(i / 10, 70000, 50000) for i in range(2000)]
-        variable = lambda value: SimpleNamespace(get=lambda: value)
         panel = SimpleNamespace(samples=samples, times=[s.time_s for s in samples],
             prefix_p=[0] + list(accumulate(s.p_uv for s in samples)),
             prefix_n=[0] + list(accumulate(s.n_uv for s in samples)),
             prefix_delta=[0] + list(accumulate(s.delta_uv for s in samples)),
             prefix_current=[0] + list(accumulate(s.current_ua for s in samples)),
             offset_uv=0, filter_size=10, SERIES_NAMES=he.VCOGui.SERIES_NAMES,
-            algorithm=variable(he.ALGORITHMS[1]), smoothing=variable(1.),
-            peak_prominence=variable(.01), dlc_interpolation=variable("ZOH"), analysis_generation=0)
-        snapshot = he.VCOGui.plot_snapshot(panel, {"tonic_uS"})
+            analysis_generation=0)
+        snapshot = he.VCOGui.plot_snapshot(panel, {"conductance_uS"})
         series = snapshot.get_series(25, 50)
-        self.assertLess(len(series["tonic_uS"]["times"]), 300)
+        self.assertLess(len(series["conductance_uS"]["times"]), 300)
         self.assertEqual(snapshot.latest, 199.9)
-        for raw, tonic in zip(series["conductance_uS"]["values"], series["tonic_uS"]["values"]):
+        for raw in series["conductance_uS"]["values"]:
             self.assertAlmostEqual(raw, 26.)
-            self.assertAlmostEqual(tonic, 26.)
+        # Tonic/phasic is not a device signal anymore: it is a workspace
+        # feature row computed from the conductance source.
+        self.assertNotIn("tonic_uS", he.VCOGui.signals(None))
+        self.assertNotIn("phasic_uS", he.VCOGui.signals(None))
 
     def test_large_window_frame_is_computed_without_tk_and_reduced(self):
         from gui.common.plots import TimeViewport

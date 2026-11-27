@@ -9,9 +9,11 @@ make gui
 
 The window is organized for wide screens:
 
-* **Left** — a scrollable configuration column with collapsible menus: device
-  selection, the **SIGNALS** table, shared **DECOMPOSITION · ALL DEVICES**
-  settings, and one hardware/signal-conditioning menu per enabled device.
+* **Left** — a scrollable configuration column with collapsible menus: the
+  **SOURCES** selection (grouped into Devices, Processing and Stimuli), the
+  **SIGNALS** table, and one hardware/signal-conditioning menu per enabled
+  device. Feature rows carry their own decomposition/peak settings behind
+  their **conf.** button.
 * **Right** — stacks of time plots sharing one time axis and cursor. The
   signal table decides which device signal goes to which stack row and y-axis,
   and with which style, amplification, color, transparency (α), and z-order.
@@ -33,6 +35,7 @@ own SDK package; the workspace only renders the panels and plots the signals:
 | HEEPidermis (X-HEEP VCO GSR board) | `sw/gui/sdk/heepidermis` | Full acquisition + dLC + analysis |
 | BIOPAC MP160 (EDA100C / BioNomadix) | `sw/gui/sdk/biopac` | Full native Linux UDP acquisition |
 | Test events (Stroop, MIST, SSST) | `sw/gui/sdk/tests` | Passive local listener + test launcher |
+| Classification (live SVM) | `sw/gui/sdk/classification` | Live Setz features + SVM inference over any device signal |
 | Shimmer | `sw/gui/sdk/shimmer` | Placeholder (not implemented yet) |
 | Empatica (E4) | `sw/gui/sdk/empatica` | Placeholder (not implemented yet) |
 
@@ -41,6 +44,11 @@ Every device panel exposes the same interface to the workspace:
 and processing segments), `plot_snapshot()` (Tk-free data for background
 computation), `recording_snapshot()` (native samples and calibration for a
 workspace export), `invalid_spans()` (shaded gaps) and `close()`.
+
+The **SOURCES** pane groups these entries into **Devices**, **Processing**
+(Classification) and **Stimuli** (Tests). The Comparison and Features
+computed rows are not in the pane — they compute from other sources'
+signals and are only selectable in the signal table's **Source** column.
 
 ### Tests device (Stroop, MIST, SSST)
 
@@ -86,16 +94,17 @@ beside the line (`instructions`, `calibration`, `rest`, `test start`,
 `correct`, `wrong`, `timeout`, `test end`, …). Each event carries its own
 color from the test: verdict lines are **green** for `correct`, **red** for
 `wrong` and `timeout`, and every informational phase stays white (see
-`sw/gui/tests/AGENTS.md` for the event standard). Correct/wrong answers also
-feed the signal catalogue (`1` for correct, `0` for wrong) and can be added
-to the SIGNALS table like any signal. Per-stimulus lines are optional
-(**Also show each stimulus onset**). Dense zoom-outs aggregate nearby markers
-and note the hidden label count; zoom in to read them.
+`sw/gui/tests/AGENTS.md` for the event standard). Which marker groups appear
+is decided in the SIGNALS table: the Tests source offers one row per group
+(**Start/stop**, **Right/wrong**, **Stimulus onsets**, **Other phases**), and
+hiding or deleting a row stops drawing that group (display-only — the
+workspace CSV and the event feed keep every event). Dense zoom-outs aggregate
+nearby markers and note the hidden label count; zoom in to read them.
 
 The event lines interleave with the signals by the **Z** (z-order) column of
-the Tests rows: lowering the Tests row's z-order draws the lines *behind*
+the Tests rows: lowering a Tests row's z-order draws the lines *behind*
 the signal traces, raising it draws them in front. Hiding every Tests row
-(**Hide** button) removes the event lines too, while keeping the events
+(**Hide** button) removes the event lines too, while keeping the groups
 configured and saved.
 
 Event timestamps come from the task's own clock at the moment each phase
@@ -104,6 +113,63 @@ The workspace converts them to the common host-monotonic timeline, so
 Tests events line up with HEEPidermis/BIOPAC samples even though the
 devices and the task started at different moments. The per-device offsets are
 stored in the workspace JSON sidecar and restored on load.
+
+### Classification device (live SVM inference)
+
+The Classification device runs the `sw/classification` pipeline live on any
+device signal — it adds no hardware, it computes. Enable it like a device,
+then in its configuration menu:
+
+1. **Load…** a `.joblib` model trained by `sw/classification` (e.g.
+   `sw/classification/outputs/svm.joblib`). The pane shows the kernel, the
+   model's feature list and the stored decision threshold.
+2. Set the **Decision threshold**: the raw SVM margin must exceed it for a
+   window to be classified POSITIVE. Editing it takes effect immediately
+   (inference-time operating point, no retraining) and is stored with the
+   workspace.
+3. Tune the **Windowing** fields — window size (s), window step (s) and the
+   resampling rate (Hz) used by the live feature extraction. Loading a model
+   fills them from the model's trained extraction settings; editing a field
+   re-computes immediately (the features and window grid follow the new
+   values) and the tuned values are stored with the workspace. Changing them
+   away from the training values changes the feature semantics, so treat this
+   as an experiment knob, not a free parameter.
+4. Pick the **Source signal** from every enabled device's catalogue (e.g.
+   `heepidermis:conductance_uS`). Units are converted the same way the
+   pipeline's `data_to_conductance_S` does; the model's own input
+   representation (`input_units`, e.g. normalized conductance) is applied
+   automatically.
+
+Press the device's **Connect** (or the shared **Start**): a background worker
+extracts the Setz features from the latest source data and classifies every
+window, re-computing whenever new samples arrive. Because windows are long
+(60 s window, 15 s step by default — the model's extraction settings, tunable
+in the pane), the first margin appears only after enough covered source data
+exists, and each decision updates at the window-step pace.
+
+The device adds these signals to the SIGNALS table:
+
+* **one signal per model feature** — the live feature values in display units
+  (e.g. µS, peaks/min), window-end timestamps;
+* **SVM margin** — the raw decision function per window;
+* **Margin threshold** — the constant operating point, so the margin crossing
+  is visible when plotted on the same axis;
+* **Decision** — 0/1 per window (NEGATIVE/POSITIVE), drawn as a **red
+  full-height area** wherever the margin is POSITIVE. The area rides along
+  with the row, and the 0/1 values still export to CSV.
+
+The configuration pane also draws the **feature space** of the model's first
+two features: red (POSITIVE) and blue (NEGATIVE) regions, the threshold as a
+solid line, the fitted margin-0 boundary dotted (they differ when a threshold
+is set), and the **operating point** — a white circle with black outline that
+moves as live windows are classified. With 3-feature models the remaining
+feature is fixed at its latest live value, so the shown boundary is the true
+slice through the current operating point. No support points are drawn.
+
+Like the Tests device, the Classification panel contributes nothing to
+recordings (`recording count 0`); its outputs are computed, not captured, and
+are re-derived from the source devices after **Load CSV…** if they are enabled
+and their model is loaded again.
 
 ### Time alignment
 
@@ -117,22 +183,28 @@ so HEEPidermis timing keeps its usual UART reception uncertainty.
 
 ### The SIGNALS table
 
-Add a row with **+ Add signal row**. The **Hide**, color and **X** (remove)
-controls sit directly after the device/signal names so they are always visible;
+Add a row with **+ Add**. The row's **Source** column lists every source
+grouped by category — **Devices** (HEEPidermis, BIOPAC, Shimmer, Empatica),
+**Processing** (Classification, Comparison, Features), **Stimuli** (Tests) and
+the built-in **Annotations** markers. The **Hide**, color and **X** (remove)
+controls sit directly after the source/signal names so they are always visible;
 the remaining columns scroll horizontally inside the table when the window is
 narrow. **Hide** removes a signal from the plots without deleting it — its
 settings stay in the table, its data keeps recording and saving, and the
 button flips to **Show** to bring it back (a hidden row is restored hidden
 after **Load CSV…**). The table starts with a permanent **annotations** row
-(device `annotations`, signal `markers`): it cannot be removed (**X** is
+(source `annotations`, signal `markers`): it cannot be removed (**X** is
 disabled) and has no color cell — it exists so the **Hide**/**Show** toggle
 can silence or restore every annotation marker at once. Per row you choose the
-device, one of its
+source, one of its
 signals, the stack row (each stack row is one plot; all share the time axis),
 the y-axis side (Left/Right), the y-axis **Range** — `Auto` fits the visible
 data, `Fixed` pins it to the Min/Max fields (NRMSE defaults to 0–100,
 correlation to −1–1, device signals to Auto) — the line style
-(line/markers/steps), an amplification (0.01x–100x, `normalize`, or
+(`line` linear, `markers` the raw samples as dots with no interpolation,
+`steps` zero-order hold, `spline` Catmull-Rom smoothing that passes through
+every sample; all display-only, the recorded data is untouched), an
+amplification (0.01x–100x, `normalize`, or
 `normalize row/axis`), color, α and z-order (see the Tests section for how
 z-order also layers event lines against the signals). `normalize row/axis`
 applies one common scale to every signal in the same stack and y-axis,
@@ -141,24 +213,36 @@ share one axis, the axis spans the union of their ranges. Row colors are
 picked from the same discrete color matrix as the annotations (no free-form
 RGB chooser).
 
-**+ Add comparison (A vs B)** adds a derived signal computed on the host
+A **Comparison** source row adds a derived signal computed on the host
 between two recorded signals — NRMSE, correlation, difference or ratio. Because
 the devices are not hardware-synchronized, comparisons run on a common 20 Hz
 host-time grid over a 2 s sliding window.
 
-### Shared decomposition and configuration
+A **Features** source row computes from one chosen source signal (the **A**
+column): the dropdown lists every feature the `sw/gui/common/features.py`
+module implements — phasic **peak detection**, per-peak measures
+(**peak-to-peak amplitude**, **rising/falling time**) and the full
+**tonic/phasic decomposition** of the source. Peak rows draw one marker per
+detected response; measure rows annotate each peak with its value; the
+tonic/phasic rows draw the decomposition as a full trace. Each feature row
+keeps its own decomposition algorithm, smoothing λ and peak prominence behind
+its **conf.** button (they prefill from the defaults).
 
-**DECOMPOSITION · ALL DEVICES** selects the tonic/phasic algorithm, smoothing,
-and peak prominence for every device's tonic/phasic signals. Feature-extraction
-rows keep their own **conf.** parameters. Device sections contain acquisition,
-calibration, reconstruction, and screening controls; file actions and
-decomposition controls belong to the workspace.
+### Decomposition and configuration
+
+Tonic/phasic decomposition is a **Features** row, not a device signal: a
+feature row ("Tonic conductance" / "Phasic conductance") computes the
+decomposition of any conductance source, and every feature row keeps its own
+algorithm, smoothing and peak prominence behind its **conf.** button — there
+is no shared workspace-wide decomposition setting. Device sections contain
+acquisition, calibration, reconstruction, and screening controls; file
+actions belong to the workspace.
 
 **Save configuration…** and **Load configuration…** use one JSON file for the
 entire workspace: device selection, device settings (including remembered
-settings for disabled devices), all signal/comparison/feature rows, plot ranges
-and styles, time span, and shared decomposition settings. Loading requires idle
-devices and does not start hardware acquisition.
+settings for disabled devices), all signal/comparison/feature rows, plot
+ranges and styles, and time span. Loading requires idle devices and does not
+start hardware acquisition.
 
 ### Data and settings
 
@@ -218,7 +302,7 @@ their SDK column names. Transport-level UART logs and BIOPAC full-rate binary
 captures remain alongside the original device autosaves.
 
 **Load CSV…** restores the complete saved workspace in one operation, including
-the devices, signal table, annotations, and shared decomposition settings. All native
+the devices, signal table and annotations. All native
 recordings are validated before panels are changed. Stop HEEPidermis and
 disconnect BIOPAC before loading. Missing sidecars or incomplete recordings are
 reported rather than loading only part of the session. Choose a new filename
@@ -287,6 +371,13 @@ settings files. On Ubuntu, install `python3-tk`, then the GUI dependencies:
 python3 -m pip install -r sw/gui/requirements.txt
 ```
 
+The project normally runs inside its conda environment (`conda activate
+heepidermis`; see the repository `environment.yml`) — install the
+requirements with that environment's pip, not the system Python. The
+Classification device additionally needs the `scikit-learn`, `joblib` and
+`matplotlib` entries of `sw/gui/requirements.txt` in whatever environment
+launches `make gui`; a missing module surfaces when loading a model.
+
 Voice answers additionally need Vosk + sounddevice (see
 `sw/gui/tests/Stroop/README.md`); the keyboard response mode needs nothing
 beyond Tk.
@@ -324,6 +415,13 @@ Set **Sampling frequency** with the slider below **Record**. It offers
 starts at the rate in the demo source. Moving the slider while recording writes
 the selected rate to the firmware over JTAG; the firmware rereads the volatile
 setting and reconfigures VCO acquisition. Build still sets the startup rate.
+Note that the workspace display batches new samples about five times per
+second, so a faster sampling rate shows up as more samples per batch (select
+the `markers` line style in SIGNALS to see every individual sample), not as a
+faster refresh. If the firmware cannot reconfigure (for example a failed VCO
+restart after a rate change), it now reinitializes itself after a short pause
+instead of going silent until a hardware reset; stopping and starting the
+recording still gives the cleanest restart.
 For rates below 1 Hz, `gsr/demo` refreshes the VCO at 1 Hz and emits samples
 at the chosen average rate. `test_VCO_counter` requires at least 1 Hz.
 The current slider also sits below **Record**. It selects iDAC codes 1–255,
@@ -577,8 +675,9 @@ step, and `voltage_offset_mV` records the calibration used. Session CSV
 rows retain the screening/calibration active when appended; Save CSV recomputes
 and exports the full session with the current settings.
 
-Workspace CSV export computes tonic/phasic signals and the configured feature
-and comparison rows over the full saved history. These are signal records in
+Workspace CSV export computes the configured feature rows (peaks, per-peak
+measures and the tonic/phasic decomposition) and comparison rows over the
+full saved history. These are signal records in
 the combined CSV; the native sample records retain their acquisition metadata
 and dLC bytes. Undefined derived values are represented as NaN.
 
