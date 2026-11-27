@@ -229,6 +229,7 @@
         0.3,
         0.4,
         0.5,
+        0.8,
         1.0,
         2.0
       ],
@@ -1008,7 +1009,7 @@
         "uuid": "3aa5b069-cd8a-454c-b0f9-98fe40d88006"
       }
     ],
-    "used_designators": "#PWR1-25,ANT1,BT1,C1-6,C14,Crect1,Ctune1,D1-4,E1-2,HEEPidermis1,J1-6,NT1,Q1,R1-16,Rchg1,SW1,U1-2",
+    "used_designators": "#PWR1-25,#PWR28,#PWR32,ANT1,BT1,C1-6,C14,Crect1,Ctune1,D1-4,E1-3,HEEPidermis1,J1-6,JP1-2,NT1,Q1,R1-16,R18,Rchg1,SW1,U1-3",
     "variants": []
   },
   "sheets": [
