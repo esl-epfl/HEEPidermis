@@ -1,0 +1,71 @@
+(footprint "eC_tooling_hole_3mm"
+	(version 20260206)
+	(generator "claude")
+	(layer "F.Cu")
+	(descr "Eurocircuits eC-registration PCB location hole: 3.05 mm NPTH for the 3H8 pin of the eC-stencil-mate, copper ring 3.6-5.6 mm on both layers")
+	(tags "tooling hole stencil eC-registration")
+	(property "Reference" "H**"
+		(at 0 -4 0)
+		(layer "F.SilkS")
+		(uuid "6f1d1a2e-1c51-4f0a-9d84-0b3f0b6d9a01")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "eC 3mm tooling hole"
+		(at 0 4 0)
+		(layer "F.Fab")
+		(uuid "6f1d1a2e-1c51-4f0a-9d84-0b3f0b6d9a02")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr board_only exclude_from_pos_files exclude_from_bom)
+	(fp_circle
+		(center 0 0)
+		(end 2.3 0)
+		(stroke
+			(width 1)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.Cu")
+		(uuid "6f1d1a2e-1c51-4f0a-9d84-0b3f0b6d9a03")
+	)
+	(fp_circle
+		(center 0 0)
+		(end 2.3 0)
+		(stroke
+			(width 1)
+			(type solid)
+		)
+		(fill no)
+		(layer "B.Cu")
+		(uuid "6f1d1a2e-1c51-4f0a-9d84-0b3f0b6d9a04")
+	)
+	(fp_circle
+		(center 0 0)
+		(end 3 0)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.SilkS")
+		(uuid "6f1d1a2e-1c51-4f0a-9d84-0b3f0b6d9a05")
+	)
+	(pad "" np_thru_hole circle
+		(at 0 0)
+		(size 3.05 3.05)
+		(drill 3.05)
+		(layers "*.Cu" "*.Mask")
+		(uuid "6f1d1a2e-1c51-4f0a-9d84-0b3f0b6d9a06")
+	)
+	(embedded_fonts no)
+)

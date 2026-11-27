@@ -1,0 +1,8 @@
+# KiCad local/backup files
+patch-backups/
+*.kicad_prl
+fp-info-cache
+~*.lck
+_autosave-*
+# review snapshots and renders (local only)
+_claude_review/

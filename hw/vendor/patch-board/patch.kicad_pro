@@ -39,9 +39,9 @@
         "other_text_thickness": 0.15,
         "other_text_upright": false,
         "pads": {
-          "drill": 0.6,
-          "height": 1.0,
-          "width": 1.0
+          "drill": 4.4,
+          "height": 6.0,
+          "width": 6.0
         },
         "silk_line_width": 0.1,
         "silk_text_italic": false,
@@ -60,7 +60,7 @@
           "hatch_smoothing_level": 0,
           "hatch_smoothing_value": 0.1,
           "hatch_thickness": 1.0,
-          "min_clearance": 0.2,
+          "min_clearance": 0.0,
           "min_island_area": 10.0,
           "min_thickness": 0.5,
           "pad_connection": 1,
@@ -78,27 +78,11 @@
       ],
       "drc_exclusions": [
         [
-          "solder_mask_bridge|101037728|74286586|4242f464-6d30-458c-9833-1dceca95baeb|7f1b4dcd-f24e-4e3b-80da-b3aafd0d2a50",
+          "clearance|90700000|80990000|4f8dffd9-6795-47eb-bcab-e7b9bcc4d72d|c652b6af-875c-4b58-8be8-1aebd3261563",
           ""
         ],
         [
-          "solder_mask_bridge|101321893|74568107|4242f464-6d30-458c-9833-1dceca95baeb|7f1b4dcd-f24e-4e3b-80da-b3aafd0d2a50",
-          ""
-        ],
-        [
-          "solder_mask_bridge|101890222|75131150|4242f464-6d30-458c-9833-1dceca95baeb|7f1b4dcd-f24e-4e3b-80da-b3aafd0d2a50",
-          ""
-        ],
-        [
-          "starved_thermal|95644084|58225112|8bf6b377-fe7f-4b63-938d-4782287a482c|8f07521e-bb31-44f8-8563-e4637b7d00f1|F.Cu",
-          ""
-        ],
-        [
-          "starved_thermal|95809819|56127934|8bf6b377-fe7f-4b63-938d-4782287a482c|8f05edf9-752a-4a14-bb8b-a070fed06c25|F.Cu",
-          ""
-        ],
-        [
-          "starved_thermal|97903916|56328888|8bf6b377-fe7f-4b63-938d-4782287a482c|74298d5f-84b0-4ac8-a55f-7df758924d40|F.Cu",
+          "clearance|90700000|87100000|4f8dffd9-6795-47eb-bcab-e7b9bcc4d72d|8cb1c84c-da26-40c3-ab29-ebce401d020a",
           ""
         ]
       ],
@@ -173,7 +157,7 @@
         "max_error": 0.005,
         "min_clearance": 0.0,
         "min_connection": 0.0,
-        "min_copper_edge_clearance": 0.5,
+        "min_copper_edge_clearance": 0.15,
         "min_groove_width": 0.0,
         "min_hole_clearance": 0.25,
         "min_hole_to_hole": 0.25,
@@ -203,6 +187,7 @@
         {
           "td_allow_use_two_tracks": true,
           "td_curve_segcount": 0,
+          "td_enabled": false,
           "td_height_ratio": 1.0,
           "td_length_ratio": 0.5,
           "td_maxheight": 2.0,
@@ -214,6 +199,7 @@
         {
           "td_allow_use_two_tracks": true,
           "td_curve_segcount": 0,
+          "td_enabled": false,
           "td_height_ratio": 1.0,
           "td_length_ratio": 0.5,
           "td_maxheight": 2.0,
@@ -225,6 +211,7 @@
         {
           "td_allow_use_two_tracks": true,
           "td_curve_segcount": 0,
+          "td_enabled": false,
           "td_height_ratio": 1.0,
           "td_length_ratio": 0.5,
           "td_maxheight": 2.0,
@@ -236,11 +223,13 @@
       ],
       "track_widths": [
         0.0,
+        0.05,
         0.1,
         0.2,
         0.3,
         0.4,
         0.5,
+        0.8,
         1.0,
         2.0
       ],
@@ -790,6 +779,7 @@
       "pin_to_pin": "warning",
       "power_pin_not_driven": "error",
       "same_local_global_label": "warning",
+      "same_local_global_power": "warning",
       "similar_label_and_power": "warning",
       "similar_labels": "warning",
       "similar_power": "warning",
@@ -834,14 +824,50 @@
         "via_diameter": 0.6,
         "via_drill": 0.3,
         "wire_width": 6
+      },
+      {
+        "bus_width": 12,
+        "clearance": 0.3,
+        "diff_pair_gap": 0.25,
+        "diff_pair_via_gap": 0.25,
+        "diff_pair_width": 0.2,
+        "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "name": "RF",
+        "pcb_color": "rgb(255, 153, 0)",
+        "priority": 0,
+        "schematic_color": "rgba(0, 0, 0, 0.000)",
+        "track_width": 0.3,
+        "tuning_profile": "",
+        "via_diameter": 0.6,
+        "via_drill": 0.3,
+        "wire_width": 6
       }
     ],
     "meta": {
       "version": 5
     },
-    "net_colors": null,
-    "netclass_assignments": null,
-    "netclass_patterns": []
+    "net_colors": {},
+    "netclass_assignments": {},
+    "netclass_patterns": [
+      {
+        "netclass": "RF",
+        "pattern": "Net-(Q1-D)"
+      },
+      {
+        "netclass": "RF",
+        "pattern": "Net-(C2-Pad2)"
+      },
+      {
+        "netclass": "RF",
+        "pattern": "Net-(J3-In)"
+      },
+      {
+        "netclass": "RF",
+        "pattern": "Net-(J4-Pin_1)"
+      }
+    ]
   },
   "pcbnew": {
     "last_paths": {
@@ -983,7 +1009,7 @@
         "uuid": "3aa5b069-cd8a-454c-b0f9-98fe40d88006"
       }
     ],
-    "used_designators": "Ctune1,C1-6,C14,NT1,SW1,J1-6,#PWR1-25,HEEPidermis1,ANT1,BT1,E1-2,R1-16,Crect1,Q1,Rchg1,D1-4,U1-2",
+    "used_designators": "#PWR1-25,#PWR28,#PWR32,ANT1,BT1,C1-6,C14,Crect1,Ctune1,D1-4,E1-3,HEEPidermis1,J1-6,JP1-2,NT1,Q1,R1-16,R18,Rchg1,SW1,U1-3",
     "variants": []
   },
   "sheets": [

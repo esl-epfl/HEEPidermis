@@ -1,0 +1,4 @@
+(version 1)
+(rule "J2 gold fingers"
+	(constraint edge_clearance (min 0.15mm))
+	(condition "A.memberOfFootprint('J2')"))
